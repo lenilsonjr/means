@@ -2,11 +2,35 @@
 
 Books that survive an audit. Local double-entry accounting across entities and currencies, with a terminal UI and a CLI. Your ledger lives in a SQLite file on your computer.
 
+![means overview showing one vault’s balances and recent entries](website/public/media/overview.png)
+
+*Captured from the running TUI with fictional demo data.*
+
 - **Engine**: Rust, SQLite file, double-entry journal per entity, functional-currency valuation, immutable statement lines as evidence, hash-chained entries.
 - **Imports**: Account Tracker Pro backups and bank exports, plus Pluggy, Enable Banking, Mercury, Wise business and Banco Inter PJ API pulls, and email attachments through IMAP. Rules draft or post entries; matching links captured entries to bank evidence.
 - **Terminal workflows**: capture, review, accounts, imports, bank connections, reconciliation, and reports. The CLI also supports chart maintenance, import retries, and Beancount export.
 
 The TUI connects to a local gRPC server. CLI commands use the accounting core directly and do not require a running server. There is no web interface.
+
+## In the terminal
+
+Split an imported purchase between categories, preview every posting, then confirm.
+The bank posting and its statement evidence stay linked.
+
+![An imported purchase split into 72.40 for groceries and 18.10 for household expenses, followed by a posting preview and confirmation](docs/media/review-split.gif)
+
+<details>
+<summary>See the account ledger and expense report</summary>
+
+Browse an account’s transactions, newest first, with the balance after each posting.
+
+![Account ledger with transaction dates, categories and running balances](website/public/media/account-ledger.png)
+
+View spending by expense class in the vault’s accounting currency.
+
+![Expense report grouping fictional spending by expense class](website/public/media/expense-report.png)
+
+</details>
 
 ## Build and install
 
