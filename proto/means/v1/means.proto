@@ -1,0 +1,703 @@
+syntax = "proto3";
+
+package means.v1;
+
+// means: books that survive an audit.
+//
+// One contract for the terminal UI and future native clients. Money never crosses
+// the wire as a float: quantities, amounts, rates and prices are decimal
+// strings such as "1234.56" or "-0.00012345". Dates are ISO 8601 "YYYY-MM-DD".
+// Timestamps are RFC 3339. Ids are int64 and 0 means "none".
+
+// ---------------------------------------------------------------------------
+// Reference data
+// ---------------------------------------------------------------------------
+
+message Entity {
+  int64 id = 1;
+  string name = 2;
+  string kind = 3;            // person | company
+  string country = 4;         // ISO 3166-1 alpha-2, optional
+  string currency = 5;        // functional currency code, e.g. "EUR"
+  string lock_date = 6;       // entries dated on or before cannot change; "" = none
+  bool archived = 7;
+}
+
+message Commodity {
+  int64 id = 1;
+  string code = 2;            // EUR, USD, BTC, VWCE
+  string kind = 3;            // currency | security | crypto
+  string name = 4;
+  int32 precision = 5;        // display decimals: 2 for EUR, 8 for BTC
+  string isin = 6;
+}
+
+message Price {
+  int64 id = 1;
+  string commodity = 2;       // commodity code being priced
+  string currency = 3;        // quoted in this currency code
+  string on = 4;              // date
+  string price = 5;           // decimal string
+  string source = 6;          // ecb | bcb | provider | manual | import
+}
+
+// ---------------------------------------------------------------------------
+// Chart of accounts
+// ---------------------------------------------------------------------------
+
+message Account {
+  int64 id = 1;
+  int64 entity_id = 2;
+  int64 parent_id = 3;
+  string code = 4;            // optional account number
+  string name = 5;
+  string path = 6;            // "Assets:Bank:N26" (names joined by ":")
+  string type = 7;            // asset | liability | equity | income | expense
+  string subtype = 8;         // bank | cash | card | receivable | payable | loan | holding | equity | income | expense | placeholder
+  string commodity = 9;       // commodity code of the account
+  string system_role = 10;    // "" | opening_balance | suspense | fx_gain_loss | retained_earnings | owner_contributions | owner_distributions | distributions_received | investment_in_entity
+  bool placeholder = 11;      // groups only, no postings
+  bool in_net_worth = 12;
+  string closed_at = 13;      // timestamp or ""
+  int32 position = 14;
+  int32 depth = 15;
+  string credit_limit = 16;   // decimal or ""
+  int32 statement_day = 17;
+  int32 due_day = 18;
+  string external_ids = 19;   // JSON object: {"account_tracker": "411"}
+  // Derived, filled by List/Get:
+  string balance = 20;            // in the account's commodity, normal-balance sign (positive when as expected)
+  string balance_functional = 21; // in the entity's functional currency
+  int32 postings_count = 22;
+  string last_reconciled_at = 23;
+  string notes = 24;
+  string class = 25;          // budget nature of an expense account: fixed | committed | discretionary | savings | not-spending | ""
+}
+
+// ---------------------------------------------------------------------------
+// Journal
+// ---------------------------------------------------------------------------
+
+message Posting {
+  int64 id = 1;
+  int64 journal_entry_id = 2;
+  int64 account_id = 3;
+  string account_path = 4;    // derived
+  string commodity = 5;       // derived: account's commodity code
+  string quantity = 6;        // decimal, in the account's commodity, debit positive
+  string amount = 7;          // decimal, in the entity's functional currency, debit positive
+  string rate = 8;            // decimal amount/quantity, "" when 1
+  string memo = 9;
+  string external_id = 10;
+  string reconciled_at = 11;
+  string metadata = 12;       // JSON object, "" when empty
+  int32 position = 13;
+  string fingerprint = 14;    // imported transaction deduplication evidence
+}
+
+message JournalEntry {
+  int64 id = 1;
+  int64 entity_id = 2;
+  string date = 3;
+  string payee = 4;
+  string description = 5;
+  string notes = 6;
+  string status = 7;          // draft | posted | void
+  int64 reverses_id = 8;
+  int64 reversed_by_id = 9;
+  int64 counterpart_id = 10;
+  int64 template_id = 11;
+  string origin = 12;         // capture | import | rule | schedule | migration | transfer | system | refund
+  string posted_at = 13;
+  string created_at = 14;
+  repeated Posting postings = 15;
+  // Derived for lists:
+  string kind = 16;           // expense | refund | income | transfer | exchange | trade | payment | adjustment | opening | other
+  string amount_functional = 17; // absolute size of the entry in functional currency
+  int64 statement_line_id = 18;  // first evidencing line, 0 if none
+  repeated string tags = 19;     // key:value lenses (bare key allowed); outside the hash chain
+  int64 refund_of_id = 21;       // original expense; refund leaves it posted
+  int64 payee_id = 22;
+  string display_payee = 23;
+  string reviewed_at = 20;       // "" on machine-posted entries awaiting a human's confirmation
+}
+
+// Input shape for creating or updating entries. Preserve evidence when rebuilding postings.
+message PostingInput {
+  int64 account_id = 1;
+  string quantity = 2;        // decimal in the account's commodity, debit positive
+  string amount = 3;          // optional: functional-currency value; computed from rates when ""
+  string memo = 4;
+  string metadata = 5;        // JSON object or ""
+  string external_id = 6;     // bank transaction reference, "" when absent
+  string fingerprint = 7;     // imported transaction deduplication evidence, "" when absent
+}
+
+message JournalEntryInput {
+  int64 entity_id = 1;
+  string date = 2;
+  string payee = 3;
+  string description = 4;
+  string notes = 5;
+  string status = 6;          // draft | posted (default posted)
+  repeated PostingInput postings = 7;
+  int64 template_id = 8;
+  string origin = 9;
+}
+
+// Account Tracker style capture: one form, balanced entry generated.
+message SimpleEntryInput {
+  int64 entity_id = 1;
+  string date = 2;
+  string kind = 3;            // expense | income | transfer
+  int64 account_id = 4;       // the bank/card/cash account (expense: credited; income: debited; transfer: from)
+  int64 contra_account_id = 5;// expense/income: the income or expense account; transfer: the "to" account
+  string quantity = 6;        // amount in `account_id`'s commodity, positive
+  string contra_quantity = 7; // transfer across commodities: amount in the "to" account's commodity; "" = same
+  string payee = 8;
+  string notes = 9;
+  repeated SplitInput splits = 10; // expense/income splits across several contra accounts; overrides contra_account_id
+  string status = 11;         // draft | posted
+  string fee = 12;            // optional fee in `account_id`'s commodity (transfers), posted to fee_account_id
+  int64 fee_account_id = 13;
+}
+
+message SplitInput {
+  int64 account_id = 1;
+  string quantity = 2;        // in the main account's commodity; negative discounts allowed; Capture/PostDraft allow an empty final remainder
+  string memo = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+message TemplateLine {
+  int64 account_id = 1;
+  string account_path = 2;    // derived
+  string method = 3;          // fixed | percent_of | balance | input
+  string value = 4;           // fixed: decimal; percent_of: decimal percent; input: default or ""
+  int32 of_line = 5;          // percent_of: 1-based index of the referenced line
+  string memo = 6;
+  string label = 7;           // for input lines: what to ask
+}
+
+message EntryTemplate {
+  int64 id = 1;
+  int64 entity_id = 2;
+  string name = 3;
+  string payee = 4;
+  string description = 5;
+  repeated TemplateLine lines = 6;
+  string rrule = 7;           // RFC 5545 RRULE, "" when not scheduled
+  string starts_on = 8;
+  string next_on = 9;
+  string ends_on = 10;
+  bool auto_post = 11;
+  int32 lead_days = 12;
+  int32 version = 13;
+  bool active = 14;
+  string created_at = 15;
+}
+
+// ---------------------------------------------------------------------------
+// Imports and statement lines
+// ---------------------------------------------------------------------------
+
+message Import {
+  int64 id = 1;
+  string source = 2;          // account_tracker | n26_csv | mercury_csv | inter_ofx | inter_csv | revolut_csv | remessa_csv | wise_csv | wise_history_csv | generic_csv
+  int64 account_id = 3;
+  string filename = 4;
+  string checksum = 5;
+  string status = 6;          // done | failed | preview | pending (an inbox file waiting for its account)
+  string period_from = 7;
+  string period_to = 8;
+  string opening_balance = 9;
+  string closing_balance = 10;
+  int32 lines_count = 11;
+  int32 created_count = 12;
+  int32 matched_count = 13;
+  int32 duplicate_count = 14;
+  int32 skipped_count = 15;
+  int32 unmatched_count = 16;
+  int32 error_count = 17;
+  string error = 18;
+  string created_at = 19;
+  string options = 20;        // JSON: column mapping, entity mapping
+}
+
+message StatementLine {
+  int64 id = 1;
+  int64 import_id = 2;
+  int32 position = 3;
+  string date = 4;
+  string amount = 5;          // decimal, signed as the bank shows it (positive = money in)
+  string currency = 6;
+  string description = 7;
+  string reference = 8;
+  string balance_after = 9;
+  string fingerprint = 10;
+  int64 posting_id = 11;
+  int64 journal_entry_id = 12;
+  int64 duplicate_of_id = 13;
+  string status = 14;         // unmatched | matched | created | duplicate | skipped | error
+  string note = 15;
+  string raw = 16;            // JSON of the original record
+  int64 account_id = 17;
+}
+
+// Column mapping for generic CSV (and overrides for known formats).
+message CsvMapping {
+  string delimiter = 1;       // "," ";" "\t" or "" = auto
+  int32 header_row = 2;       // 1-based row index of the header; 0 = auto
+  string date_column = 3;
+  string date_format = 4;     // strftime-like: %Y-%m-%d, %d/%m/%Y, %d.%m.%Y, %m/%d/%Y
+  string amount_column = 5;   // signed amount, or
+  string debit_column = 6;    // separate debit/credit columns
+  string credit_column = 7;
+  string description_column = 8;
+  string reference_column = 9;
+  string balance_column = 10;
+  string currency_column = 11;
+  string decimal_separator = 12; // "." or "," ("" = auto)
+  bool invert_sign = 13;
+  string currency = 14;       // fixed currency when no column
+  repeated string extra_description_columns = 15;
+}
+
+// ---------------------------------------------------------------------------
+// Rules
+// ---------------------------------------------------------------------------
+
+message RuleCondition {
+  string field = 1;           // description | payee | reference | amount | account
+  string op = 2;              // contains | equals | starts_with | regex | gt | lt | eq
+  string value = 3;
+}
+
+message Rule {
+  int64 id = 1;
+  int64 entity_id = 2;
+  string name = 3;
+  int32 position = 4;
+  bool enabled = 5;
+  repeated RuleCondition conditions = 6;   // all must match
+  int64 account_id = 7;       // contra account to post to, or
+  int64 template_id = 8;      // template to apply
+  string payee = 9;           // payee to set, "" keeps the line's description
+  int32 hits_count = 10;
+  string created_at = 11;
+  string tags = 12;           // space-separated key:value, set on entries this rule posts
+}
+
+// ---------------------------------------------------------------------------
+// Reports
+// ---------------------------------------------------------------------------
+
+message ReportRow {
+  int64 account_id = 1;
+  string path = 2;
+  string name = 3;
+  string type = 4;
+  int32 depth = 5;
+  bool placeholder = 6;
+  string commodity = 7;
+  string quantity = 8;        // balance or movement in the account's commodity, normal-balance sign
+  string amount = 9;          // in functional currency, normal-balance sign
+  string debit = 10;          // trial balance: debit column
+  string credit = 11;         // trial balance: credit column
+  string market_value = 12;   // holdings: quantity x latest price, functional currency
+}
+
+message LedgerRow {
+  string display_payee = 16;
+  int64 posting_id = 1;
+  int64 journal_entry_id = 2;
+  string date = 3;
+  string payee = 4;
+  string description = 5;
+  string status = 6;
+  string contra_path = 7;     // the other side (or "split")
+  string debit = 8;           // in the account's commodity
+  string credit = 9;
+  string running_balance = 10;
+  string amount = 11;         // functional currency, signed
+  bool reconciled = 12;
+  int64 statement_line_id = 13;
+}
+
+message CashflowDay {
+  string date = 1;
+  string posted_in = 2;
+  string posted_out = 3;
+  string draft_in = 4;
+  string draft_out = 5;
+  string balance = 6;         // running projected balance of the entity's bank/cash/card accounts in functional currency
+}
+
+// ---------------------------------------------------------------------------
+// Requests and responses
+// ---------------------------------------------------------------------------
+
+message Empty {}
+
+message GetStatusRequest {}
+message GetStatusResponse {
+  string version = 1;
+  string db_path = 2;
+  int32 entities = 3;
+  int32 accounts = 4;
+  int32 journal_entries = 5;
+  int32 drafts = 6;
+  int32 unmatched_lines = 7;
+  int32 prices = 8;
+  int32 postings_without_rate = 9;
+  string replica_status = 15;
+  bool onboarded = 10;        // at least one entity with one non-placeholder account
+  string latest_price_date = 11;
+  string today = 12;
+  int32 pending_imports = 13; // inbox files waiting for an account
+  int32 unreviewed = 14;      // posted entries awaiting a human's confirmation
+}
+
+message ListEntitiesRequest { bool include_archived = 1; }
+message ListEntitiesResponse { repeated Entity entities = 1; }
+message CreateEntityRequest { string name = 1; string kind = 2; string country = 3; string currency = 4; }
+message UpdateEntityRequest { Entity entity = 1; }
+message EntityResponse { Entity entity = 1; }
+
+message ListCommoditiesRequest {}
+message ListCommoditiesResponse { repeated Commodity commodities = 1; }
+message CreateCommodityRequest { string code = 1; string kind = 2; string name = 3; int32 precision = 4; string isin = 5; }
+message CommodityResponse { Commodity commodity = 1; }
+
+message ListPricesRequest { string commodity = 1; string currency = 2; string from = 3; string to = 4; int32 limit = 5; }
+message ListPricesResponse { repeated Price prices = 1; }
+message SetPriceRequest { string commodity = 1; string currency = 2; string on = 3; string price = 4; string source = 5; }
+message FetchRatesRequest { string from = 1; }   // earliest date to fetch, "" = 2020-01-01
+message FetchRatesResponse { int32 inserted = 1; int32 revalued = 2; string latest = 3; }
+
+message ListAccountsRequest { int64 entity_id = 1; bool include_closed = 2; string as_of = 3; string type = 4; }
+message ListAccountsResponse { repeated Account accounts = 1; }
+message GetAccountRequest { int64 id = 1; }
+message AccountResponse { Account account = 1; }
+message CreateAccountRequest {
+  int64 entity_id = 1; int64 parent_id = 2; string code = 3; string name = 4; string type = 5; string subtype = 6;
+  string commodity = 7; bool placeholder = 8; bool in_net_worth = 9; string credit_limit = 10; int32 statement_day = 11; int32 due_day = 12;
+  string opening_balance = 13; string opening_date = 14; string notes = 15;
+}
+message UpdateAccountRequest { Account account = 1; }
+message CloseAccountRequest { int64 id = 1; bool reopen = 2; }
+message MergeAccountsRequest { int64 source_id = 1; int64 target_id = 2; }   // move every posting, rule and template line from source into target, then remove source
+message MergeAccountsResponse { int32 moved_postings = 1; int32 moved_rules = 2; int32 moved_template_lines = 3; bool source_deleted = 4; }
+message ChartAccount { string code = 1; string path = 2; string type = 3; bool placeholder = 4; string description = 5; }
+message ApplyChartRequest { int64 entity_id = 1; repeated ChartAccount accounts = 2; }   // create missing accounts of a chart template; existing paths keep their postings and get the code
+message ApplyChartResponse { int32 created = 1; int32 existing = 2; }
+message RemapMove { int64 source_id = 1; string target_path = 2; }
+// Create the target chart and merge old accounts into it, atomically, with one hash-chain recompute.
+message RemapAccountsRequest { int64 entity_id = 1; repeated ChartAccount accounts = 2; repeated RemapMove moves = 3; }
+message RemapAccountsResponse { int32 created = 1; int32 existing = 2; int32 merged = 3; int64 moved_postings = 4; repeated string skipped = 5; }
+
+message ListJournalEntriesRequest {
+  int64 entity_id = 1; int64 account_id = 2; string status = 3; string from = 4; string to = 5; string query = 6;
+  int32 limit = 7; int32 offset = 8; string origin = 9;
+  bool only_unreviewed = 10;  // posted entries no human has confirmed
+}
+message ListJournalEntriesResponse { repeated JournalEntry entries = 1; int32 total = 2; }
+message GetJournalEntryRequest { int64 id = 1; }
+message JournalEntryResponse { JournalEntry entry = 1; JournalEntry counterpart = 2; }
+message CreateJournalEntryRequest { JournalEntryInput entry = 1; }
+message CreateSimpleEntryRequest { SimpleEntryInput entry = 1; }
+message UpdateJournalEntryRequest { int64 id = 1; JournalEntryInput entry = 2; }
+message PostJournalEntryRequest { int64 id = 1; }
+message PostDraftRequest { int64 id = 1; repeated SplitInput splits = 2; optional string payee = 3; }
+// Empty confirmation previews atomically without committing. Re-send the returned
+// token to commit exactly that proposal; changed books require another preview.
+message ReviewPostingRequest { SimpleEntryInput capture = 1; PostDraftRequest categorize = 2; bool existing = 3; string tags = 4; string confirmation = 5; }
+message ReviewPostingResponse { JournalEntry entry = 1; string confirmation = 2; }
+
+message VoidJournalEntryRequest { int64 id = 1; string date = 2; string reason = 3; }
+message DeleteJournalEntryRequest { int64 id = 1; }
+message SetTagsRequest { int64 entry_id = 1; repeated string tags = 2; }  // replace-all; tags never touch the hash chain
+message ConfirmEntriesRequest { repeated int64 ids = 1; }  // stamp the review mark; edits confirm implicitly
+message ConfirmEntriesResponse { int32 confirmed = 1; }  // drafts only
+
+message CreateTransferRequest {
+  string date = 1;
+  int64 from_account_id = 2;
+  int64 to_account_id = 3;
+  string from_quantity = 4;   // positive, in the from account's commodity
+  string to_quantity = 5;     // positive, in the to account's commodity ("" = same as from)
+  string fee = 6;             // optional, in the from account's commodity
+  int64 fee_account_id = 7;
+  string payee = 8;
+  string notes = 9;
+  int64 from_contra_account_id = 10; // cross-entity: contra in the from entity (default owner_distributions / investment_in_entity)
+  int64 to_contra_account_id = 11;   // cross-entity: contra in the to entity (default distributions_received / owner_contributions)
+  string status = 12;
+}
+message CreateTransferResponse { JournalEntry entry = 1; JournalEntry counterpart = 2; }
+
+message ListTemplatesRequest { int64 entity_id = 1; bool include_inactive = 2; }
+message ListTemplatesResponse { repeated EntryTemplate templates = 1; }
+message SaveTemplateRequest { EntryTemplate template = 1; }   // id 0 creates
+message TemplateResponse { EntryTemplate template = 1; }
+message DeleteTemplateRequest { int64 id = 1; }
+message ApplyTemplateRequest {
+  int64 template_id = 1; string date = 2; map<int32, string> inputs = 3; // 1-based line index -> decimal
+  string payee = 4; string status = 5;
+}
+message RunSchedulesRequest { string until = 1; }   // create drafts for occurrences up to this date ("" = today + lead_days)
+message RunSchedulesResponse { int32 created = 1; }
+
+message ListImportsRequest { int64 account_id = 1; int32 limit = 2; }
+message ListImportsResponse { repeated Import imports = 1; }
+message UploadImportRequest {
+  string source = 1;
+  int64 account_id = 2;
+  string filename = 3;
+  bytes content = 4;
+  CsvMapping mapping = 5;     // generic_csv, or overrides
+  bool preview = 6;           // parse and report, commit nothing
+  string options = 7;         // JSON: source-specific options (account tracker entity mapping)
+}
+message UploadImportResponse {
+  Import import = 1;
+  repeated StatementLine lines = 2;     // preview: parsed lines (first 200)
+  repeated string headers = 3;          // preview of a csv: detected header names
+  repeated string sample_rows = 4;      // preview: first raw rows joined by " | "
+  string detected_source = 5;
+}
+message GetImportRequest { int64 id = 1; }
+message GetImportResponse { Import import = 1; repeated StatementLine lines = 2; }
+message DeleteImportRequest { int64 id = 1; bool force = 2; }
+message CompleteImportRequest { int64 id = 1; int64 account_id = 2; }  // finish a pending inbox import  // rollback: removes created entries; force discards entries edited after the import
+message RematchImportRequest { int64 id = 1; }  // re-run matching against captured/migrated entries; merges duplicates, keeps your categories
+message RematchImportResponse { int32 lines = 1; int32 rematched = 2; int32 category_kept = 3; int32 untouched = 4; repeated string notes = 5; }
+message ListStatementLinesRequest { int64 account_id = 1; string status = 2; int32 limit = 3; int64 import_id = 4; }
+message ListStatementLinesResponse { repeated StatementLine lines = 1; }
+message MatchLineRequest { int64 line_id = 1; int64 posting_id = 2; }
+message CreateEntryFromLineRequest { int64 line_id = 1; int64 contra_account_id = 2; string payee = 3; int64 template_id = 4; bool post = 5; repeated SplitInput splits = 6; }
+message SkipLineRequest { int64 line_id = 1; bool unskip = 2; }
+message SuggestMatchesRequest { int64 line_id = 1; }
+message RefundCandidatesRequest { int64 line_id = 1; int32 window_days = 2; } // 0 = 90 days
+message RefundCandidatesResponse { repeated JournalEntry candidates = 1; }
+message LinkRefundRequest { int64 line_id = 1; int64 original_entry_id = 2; }
+message SuggestMatchesResponse { repeated JournalEntry candidates = 1; repeated Rule matching_rules = 2; int64 suggested_account_id = 3; repeated JournalEntry refund_candidates = 4; }
+
+// Account Tracker backup: inspect first, then commit with a mapping.
+message AccountTrackerAccount {
+  string external_id = 1; string name = 2; string currency = 3; string group = 4; bool hidden = 5; bool closed = 6;
+  string balance = 7; string opening = 8; int32 transactions = 9; string credit_limit = 10; int32 due_day = 11; bool exclude = 12;
+}
+message AccountTrackerCategory { string name = 1; int32 uses = 2; int32 inflows = 3; int32 refunds = 4; }
+message InspectAccountTrackerRequest { bytes content = 1; }
+message InspectAccountTrackerResponse {
+  repeated AccountTrackerAccount accounts = 1;
+  repeated AccountTrackerCategory categories = 2;
+  repeated string groups = 3;
+  int32 transactions = 4; string first_date = 5; string last_date = 6; string base_currency = 7;
+  map<string, string> rates = 8; int32 recurring = 9;
+}
+message AccountTrackerMapping {
+  string external_id = 1;     // account tracker account id
+  int64 entity_id = 2;        // target entity
+  string type = 3;            // asset | liability
+  string subtype = 4;         // bank | cash | card | receivable | loan
+  bool skip = 5;
+}
+message ImportAccountTrackerRequest {
+  bytes content = 1; string filename = 2;
+  repeated AccountTrackerMapping mapping = 3;
+  int64 default_entity_id = 4;
+  bool expand_recurring = 5;  // materialise recurring occurrences up to the backup date (default true)
+  bool schedules = 6;         // create templates with schedules for recurring rows (default true)
+}
+message ImportAccountTrackerResponse { Import import = 1; repeated string warnings = 2; repeated AccountCheck checks = 3; }
+message AccountCheck { string name = 1; string expected = 2; string actual = 3; bool ok = 4; }
+
+message ListRulesRequest { int64 entity_id = 1; }
+message ListRulesResponse { repeated Rule rules = 1; }
+message SaveRuleRequest { Rule rule = 1; }
+message RuleResponse { Rule rule = 1; }
+message DeleteRuleRequest { int64 id = 1; }
+message RunRulesRequest { int64 entity_id = 1; int64 account_id = 2; bool include_drafts = 3; }  // apply to unmatched lines (and re-draft suspense drafts)
+message RunRulesResponse { int32 drafted = 1; int32 redrafted = 2; }
+
+message TrialBalanceRequest { int64 entity_id = 1; string as_of = 2; }
+message BalanceSheetRequest { int64 entity_id = 1; string as_of = 2; string currency = 3; } // entity_id 0 = consolidated in `currency`
+// Credentials are never sent through these RPCs. The server reads its environment.
+message ConnectionProvider { string id = 1; string name = 2; bool configured = 3; string requirements = 4; }
+message BankConnection {
+  int64 id = 1; string channel = 2; string item_id = 3; string provider_account_id = 4;
+  string provider_type = 5; string name = 6; string currency = 7; int64 account_id = 8;
+  string account_path = 9; int64 entity_id = 10; string last_pull_at = 11; string booked_from = 12;
+}
+message BankChoice { string name = 1; string country = 2; }
+message BankConsent { string id = 1; string bank = 2; string country = 3; string valid_until = 4; }
+message ConnectionJob {
+  string id = 1; string provider = 2; string operation = 3; string target = 4; string state = 5;
+  string message = 6; string started_at = 7; string finished_at = 8;
+  string authorization_url = 9; repeated BankChoice banks = 10;
+}
+message ListConnectionsRequest {}
+message ListConnectionsResponse {
+  repeated ConnectionProvider providers = 1; repeated BankConnection accounts = 2;
+  repeated ConnectionJob jobs = 3; repeated BankConsent consents = 4;
+}
+message StartConnectionJobRequest {
+  string provider = 1; string operation = 2; string item_id = 3; int64 connection_id = 4;
+  string bank = 5; string country = 6; uint32 callback_port = 7;
+}
+message ConnectionJobResponse { ConnectionJob job = 1; }
+message ConfigureConnectionRequest { int64 id = 1; int64 account_id = 2; string booked_from = 3; }
+message BankConnectionResponse { BankConnection account = 1; }
+message Budget {
+  int64 id = 1; int64 entity_id = 2; string name = 3; string scope = 4;
+  int64 account_id = 5; optional string class = 6; string tag = 7;
+  string starts_on = 8; string ends_on = 9; string amount = 10; string currency = 11;
+}
+message SaveBudgetRequest { Budget budget = 1; }
+message BudgetResponse { Budget budget = 1; }
+message DeleteBudgetRequest { int64 id = 1; }
+message ListBudgetsRequest { int64 entity_id = 1; string on = 2; string tag = 3; }
+message BudgetProgress { Budget budget = 1; string spent = 2; string remaining = 3; string group = 4; string target = 5; }
+message ListBudgetsResponse { repeated BudgetProgress rows = 1; }
+message ExpensesByTagRequest { int64 entity_id = 1; string from = 2; string to = 3; string tag = 4; }
+message TagExpenseRow { optional string tag = 1; string amount = 2; }
+message ExpensesByTagResponse { repeated TagExpenseRow rows = 1; string total = 2; string currency = 3; int64 entity_id = 4; string from = 5; string to = 6; string tag = 7; bool overlapping = 8; }
+message ExpensesByClassRequest { int64 entity_id = 1; string from = 2; string to = 3; string tag = 4; }
+message ClassExpenseRow { string class = 1; string amount = 2; }
+message ExpensesByClassResponse { repeated ClassExpenseRow rows = 1; string total = 2; string currency = 3; int64 entity_id = 4; string from = 5; string to = 6; string tag = 7; }
+message IncomeStatementRequest { int64 entity_id = 1; string from = 2; string to = 3; }
+message ReportResponse { repeated ReportRow rows = 1; string total_debit = 2; string total_credit = 3; string net = 4; string currency = 5; repeated ReportRow summary = 6; }
+message GeneralLedgerRequest { int64 account_id = 1; string from = 2; string to = 3; int32 limit = 4; bool newest_first = 5; }
+message GeneralLedgerResponse { repeated LedgerRow rows = 1; string opening_balance = 2; string closing_balance = 3; string commodity = 4; }
+message ReconciliationRequest { int64 account_id = 1; }
+message ReconciliationResponse {
+  string statement_balance = 1; string statement_date = 2; string ledger_balance = 3; string difference = 4;
+  int32 unmatched_lines = 5; int32 unreconciled_postings = 6; repeated StatementLine lines = 7; repeated LedgerRow postings = 8;
+}
+message CashflowRequest { int64 entity_id = 1; string from = 2; string to = 3; }
+message CashflowResponse { repeated CashflowDay days = 1; }
+// A vault must be selected. Net worth never implies ownership of other vaults.
+message NetWorthRequest { string currency = 1; string as_of = 2; int64 entity_id = 3; }
+message NetWorthResponse { repeated ReportRow by_entity = 1; string total = 2; string currency = 3; repeated ReportRow by_account = 4; }
+
+// ---------------------------------------------------------------------------
+// Service
+// ---------------------------------------------------------------------------
+
+// Move matching postings between categories, atomically. Preview performs validation only.
+message SplitCategoryRequest {
+  int64 source_id = 1;
+  int64 target_id = 2;
+  string query = 3;
+  bool preview = 4;
+}
+message SplitCategoryResponse { int64 entries = 1; int64 postings = 2; }
+
+message Payee { int64 id=1; string uid=2; int64 entity_id=3; string name=4; bool active=5; repeated string aliases=6; }
+message ListPayeesRequest { int64 entity_id=1; }
+message ListPayeesResponse { repeated Payee payees=1; }
+message SavePayeeRequest { Payee payee=1; string confirmation=2; }
+message PayeeImpact { int64 entry_id=1; int64 line_id=2; string booked=3; string evidence=4; repeated int64 candidates=5; int64 before_rule=6; int64 after_rule=7; }
+message PayeePreview { string token=1; bool applied=2; Payee payee=3; repeated PayeeImpact impacts=4; repeated string warnings=5; string backup=6; }
+message LinkPayeesRequest { int64 entity_id=1; string confirmation=2; bool chart_reviewed=3; }
+message ReassignPayeeRequest { int64 source_id=1; int64 target_id=2; int64 entry_id=3; string confirmation=4; }
+message PayeeExpensesRequest { int64 entity_id=1; string from=2; string to=3; string tag=4; }
+message PayeeExpenseRow { int64 payee_id=1; string name=2; string amount=3; }
+message PayeeExpensesResponse { repeated PayeeExpenseRow rows=1; string total=2; string currency=3; }
+
+service Means {
+  rpc Sharing(SharingRequest) returns (SharingResponse);
+  rpc ListPayees(ListPayeesRequest) returns (ListPayeesResponse);
+  rpc SavePayee(SavePayeeRequest) returns (PayeePreview);
+  rpc LinkPayees(LinkPayeesRequest) returns (PayeePreview);
+  rpc ReassignPayee(ReassignPayeeRequest) returns (PayeePreview);
+  rpc PayeeExpenses(PayeeExpensesRequest) returns (PayeeExpensesResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  rpc ListEntities(ListEntitiesRequest) returns (ListEntitiesResponse);
+  rpc CreateEntity(CreateEntityRequest) returns (EntityResponse);
+  rpc UpdateEntity(UpdateEntityRequest) returns (EntityResponse);
+
+  rpc ListCommodities(ListCommoditiesRequest) returns (ListCommoditiesResponse);
+  rpc CreateCommodity(CreateCommodityRequest) returns (CommodityResponse);
+  rpc ListPrices(ListPricesRequest) returns (ListPricesResponse);
+  rpc SetPrice(SetPriceRequest) returns (Empty);
+  rpc FetchRates(FetchRatesRequest) returns (FetchRatesResponse);
+
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+  rpc GetAccount(GetAccountRequest) returns (AccountResponse);
+  rpc CreateAccount(CreateAccountRequest) returns (AccountResponse);
+  rpc UpdateAccount(UpdateAccountRequest) returns (AccountResponse);
+  rpc CloseAccount(CloseAccountRequest) returns (AccountResponse);
+  rpc SplitCategory(SplitCategoryRequest) returns (SplitCategoryResponse);
+  rpc MergeAccounts(MergeAccountsRequest) returns (MergeAccountsResponse);
+  rpc ApplyChart(ApplyChartRequest) returns (ApplyChartResponse);
+  rpc RemapAccounts(RemapAccountsRequest) returns (RemapAccountsResponse);
+
+  rpc ListJournalEntries(ListJournalEntriesRequest) returns (ListJournalEntriesResponse);
+  rpc GetJournalEntry(GetJournalEntryRequest) returns (JournalEntryResponse);
+  rpc CreateJournalEntry(CreateJournalEntryRequest) returns (JournalEntryResponse);
+  rpc CreateSimpleEntry(CreateSimpleEntryRequest) returns (JournalEntryResponse);
+  rpc CreateTransfer(CreateTransferRequest) returns (CreateTransferResponse);
+  rpc UpdateJournalEntry(UpdateJournalEntryRequest) returns (JournalEntryResponse);
+  rpc SetTags(SetTagsRequest) returns (JournalEntryResponse);
+  rpc ConfirmEntries(ConfirmEntriesRequest) returns (ConfirmEntriesResponse);
+  rpc PostJournalEntry(PostJournalEntryRequest) returns (JournalEntryResponse);
+  rpc PostDraft(PostDraftRequest) returns (JournalEntryResponse);
+  rpc ReviewPosting(ReviewPostingRequest) returns (ReviewPostingResponse);
+  rpc VoidJournalEntry(VoidJournalEntryRequest) returns (JournalEntryResponse);
+  rpc DeleteJournalEntry(DeleteJournalEntryRequest) returns (Empty);
+
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
+  rpc SaveTemplate(SaveTemplateRequest) returns (TemplateResponse);
+  rpc DeleteTemplate(DeleteTemplateRequest) returns (Empty);
+  rpc ApplyTemplate(ApplyTemplateRequest) returns (JournalEntryResponse);
+  rpc RunSchedules(RunSchedulesRequest) returns (RunSchedulesResponse);
+
+  rpc ListImports(ListImportsRequest) returns (ListImportsResponse);
+  rpc UploadImport(UploadImportRequest) returns (UploadImportResponse);
+  rpc CompleteImport(CompleteImportRequest) returns (UploadImportResponse);
+  rpc GetImport(GetImportRequest) returns (GetImportResponse);
+  rpc DeleteImport(DeleteImportRequest) returns (Empty);
+  rpc RematchImport(RematchImportRequest) returns (RematchImportResponse);
+  rpc ListStatementLines(ListStatementLinesRequest) returns (ListStatementLinesResponse);
+  rpc MatchLine(MatchLineRequest) returns (StatementLine);
+  rpc CreateEntryFromLine(CreateEntryFromLineRequest) returns (JournalEntryResponse);
+  rpc SkipLine(SkipLineRequest) returns (StatementLine);
+  rpc SuggestMatches(SuggestMatchesRequest) returns (SuggestMatchesResponse);
+  rpc RefundCandidates(RefundCandidatesRequest) returns (RefundCandidatesResponse);
+  rpc LinkRefund(LinkRefundRequest) returns (JournalEntryResponse);
+  rpc InspectAccountTracker(InspectAccountTrackerRequest) returns (InspectAccountTrackerResponse);
+  rpc ImportAccountTracker(ImportAccountTrackerRequest) returns (ImportAccountTrackerResponse);
+
+  rpc ListRules(ListRulesRequest) returns (ListRulesResponse);
+  rpc SaveRule(SaveRuleRequest) returns (RuleResponse);
+  rpc DeleteRule(DeleteRuleRequest) returns (Empty);
+  rpc RunRules(RunRulesRequest) returns (RunRulesResponse);
+
+  rpc TrialBalance(TrialBalanceRequest) returns (ReportResponse);
+  rpc BalanceSheet(BalanceSheetRequest) returns (ReportResponse);
+  rpc ListConnections(ListConnectionsRequest) returns (ListConnectionsResponse);
+  rpc StartConnectionJob(StartConnectionJobRequest) returns (ConnectionJobResponse);
+  rpc ConfigureConnection(ConfigureConnectionRequest) returns (BankConnectionResponse);
+  rpc SaveBudget(SaveBudgetRequest) returns (BudgetResponse);
+  rpc DeleteBudget(DeleteBudgetRequest) returns (Empty);
+  rpc ListBudgets(ListBudgetsRequest) returns (ListBudgetsResponse);
+  rpc ExpensesByTag(ExpensesByTagRequest) returns (ExpensesByTagResponse);
+  rpc ExpensesByClass(ExpensesByClassRequest) returns (ExpensesByClassResponse);
+  rpc IncomeStatement(IncomeStatementRequest) returns (ReportResponse);
+  rpc GeneralLedger(GeneralLedgerRequest) returns (GeneralLedgerResponse);
+  rpc Reconciliation(ReconciliationRequest) returns (ReconciliationResponse);
+  rpc Cashflow(CashflowRequest) returns (CashflowResponse);
+  rpc NetWorth(NetWorthRequest) returns (NetWorthResponse);
+}
+
+// Local-only sharing administration. Secrets must never be logged.
+message SharingAction { string name = 1; string description = 2; repeated string fields = 3; bool passphrase = 4; bool new_passphrase = 5; }
+message SharingRequest { string operation = 1; repeated string arguments = 2; string passphrase = 3; string new_passphrase = 4; string confirmation = 5; }
+message SharingResponse { repeated string lines = 1; string confirmation = 2; string replica_server = 3; repeated SharingAction actions = 4; }

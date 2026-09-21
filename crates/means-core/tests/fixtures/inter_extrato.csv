@@ -1,0 +1,13 @@
+Extrato Conta Corrente
+Conta ;12345678
+Período ;01/03/2026 a 31/03/2026
+Saldo: ;2.415,86
+
+Data Lançamento;Descrição;Valor;Saldo
+02/03/2026;Pix recebido: "Cp :12345678-ACME COMERCIO LTDA";1.200,00;3.581,55
+03/03/2026;Pagamento efetuado: "Pagamento fatura cartao Inter";-318,19;3.263,36
+04/03/2026;Pix enviado: "Cp :00000000-Padaria Central";-34,04;3.229,32
+05/03/2026;Compra no debito: "No estabelecimento SUPERMERCADO BOM PRECO SAO PAULO BRA";-152,40;3.076,92
+09/03/2026;Aplicacao: "CDB Porq Obj BANCO INTER SA";-500,00;2.576,92
+12/03/2026;Transferencia recebida pelo Pix: "00019 000000001 MARIA SILVA";250,00;2.826,92
+20/03/2026;Pagamento de boleto efetuado: "BANCO XP S/A";-411,06;2.415,86

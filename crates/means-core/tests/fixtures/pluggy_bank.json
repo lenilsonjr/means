@@ -1,0 +1,113 @@
+{
+  "channel": "pluggy",
+  "pulledAt": "2026-09-18T09:12:30.412Z",
+  "itemId": "a1b2c3d4-0000-4000-8000-000000000001",
+  "createdAtFrom": null,
+  "account": {
+    "id": "b8e1c1a2-1111-4000-8000-000000000011",
+    "itemId": "a1b2c3d4-0000-4000-8000-000000000001",
+    "type": "BANK",
+    "subtype": "CHECKING_ACCOUNT",
+    "number": "12345678-9",
+    "name": "Conta Corrente",
+    "marketingName": "Conta Digital",
+    "balance": 3431.55,
+    "currencyCode": "BRL",
+    "owner": "Alex Example",
+    "taxNumber": "***.***.***-**",
+    "bankData": {
+      "transferNumber": "077/0001/12345678-9",
+      "closingBalance": 3431.55,
+      "automaticallyInvestedBalance": 0
+    },
+    "creditData": null
+  },
+  "transactions": [
+    {
+      "id": "1f6b9a20-2222-4000-8000-000000000101",
+      "accountId": "b8e1c1a2-1111-4000-8000-000000000011",
+      "description": "Pix enviado: Padaria do Bairro",
+      "descriptionRaw": "PIX ENVIADO PADARIA DO BAIRRO LTDA",
+      "amount": -34.04,
+      "currencyCode": "BRL",
+      "date": "2026-09-14T00:00:00.000Z",
+      "balance": 2381.55,
+      "category": "Food and drinks",
+      "categoryId": "05000000",
+      "type": "DEBIT",
+      "status": "POSTED",
+      "providerCode": "PIX",
+      "providerId": "E004169682026091400000000001",
+      "merchant": {
+        "name": "Padaria do Bairro",
+        "businessName": "PADARIA DO BAIRRO LTDA",
+        "cnpj": "00000000000000"
+      },
+      "paymentData": {
+        "payer": { "name": "Alex Example", "documentNumber": { "type": "CPF", "value": "***.***.***-**" } },
+        "receiver": { "name": "PADARIA DO BAIRRO LTDA", "documentNumber": { "type": "CNPJ", "value": "00.000.000/0000-00" } },
+        "paymentMethod": "PIX",
+        "referenceNumber": "E004169682026091400000000001"
+      }
+    },
+    {
+      "id": "1f6b9a20-2222-4000-8000-000000000102",
+      "accountId": "b8e1c1a2-1111-4000-8000-000000000011",
+      "description": "",
+      "descriptionRaw": "PIX RECEBIDO ACME COMERCIO LTDA",
+      "amount": 1200.00,
+      "currencyCode": "BRL",
+      "date": "2026-09-15T00:00:00.000Z",
+      "balance": 3581.55,
+      "category": "Transfers",
+      "categoryId": "10000000",
+      "type": "CREDIT",
+      "status": "POSTED",
+      "providerCode": "PIX",
+      "providerId": "E004169682026091500000000002",
+      "merchant": null,
+      "paymentData": {
+        "payer": { "name": "ACME COMERCIO LTDA", "documentNumber": { "type": "CNPJ", "value": "00.000.000/0000-01" } },
+        "receiver": { "name": "Alex Example", "documentNumber": { "type": "CPF", "value": "***.***.***-**" } },
+        "paymentMethod": "PIX",
+        "referenceNumber": "E004169682026091500000000002"
+      }
+    },
+    {
+      "id": "1f6b9a20-2222-4000-8000-000000000103",
+      "accountId": "b8e1c1a2-1111-4000-8000-000000000011",
+      "description": "Pagamento de boleto ENERGISA",
+      "descriptionRaw": "PAGAMENTO BOLETO ENERGISA MT",
+      "amount": -150.00,
+      "currencyCode": "BRL",
+      "date": "2026-09-16T00:00:00.000Z",
+      "balance": 3431.55,
+      "category": "Utilities",
+      "categoryId": "03000000",
+      "type": "DEBIT",
+      "status": "POSTED",
+      "providerCode": "BOLETO",
+      "providerId": "00000000000000000000000000000000000000000001",
+      "merchant": null,
+      "paymentData": null
+    },
+    {
+      "id": "1f6b9a20-2222-4000-8000-000000000104",
+      "accountId": "b8e1c1a2-1111-4000-8000-000000000011",
+      "description": "Compra no débito MERCADO CENTRAL",
+      "descriptionRaw": "COMPRA DEBITO MERCADO CENTRAL",
+      "amount": -89.90,
+      "currencyCode": "BRL",
+      "date": "2026-09-17T00:00:00.000Z",
+      "balance": null,
+      "category": "Groceries",
+      "categoryId": "05000001",
+      "type": "DEBIT",
+      "status": "PENDING",
+      "providerCode": null,
+      "providerId": null,
+      "merchant": null,
+      "paymentData": null
+    }
+  ]
+}

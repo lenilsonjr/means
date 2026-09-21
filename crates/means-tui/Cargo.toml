@@ -1,0 +1,19 @@
+[package]
+name = "means-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+zeroize = "1"
+rust_decimal = { workspace = true }
+means-proto = { path = "../means-proto" }
+anyhow = { workspace = true }
+open = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+chrono = { workspace = true }

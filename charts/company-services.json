@@ -1,0 +1,371 @@
+{
+  "id": "company-services",
+  "name": "Company \u00b7 services",
+  "for": "Generic operating accounts for a services company; adapt statutory and tax accounts separately",
+  "accounts": [
+    {
+      "code": "4000",
+      "path": "Income",
+      "type": "income",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "4100",
+      "path": "Income:Revenue",
+      "type": "income",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "4110",
+      "path": "Income:Revenue:Consulting",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "4120",
+      "path": "Income:Revenue:Projects",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "4130",
+      "path": "Income:Revenue:Subscriptions",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "4140",
+      "path": "Income:Revenue:Licensing",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "4200",
+      "path": "Income:Sales adjustments",
+      "type": "income",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "4210",
+      "path": "Income:Sales adjustments:Refunds",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "4220",
+      "path": "Income:Sales adjustments:Discounts",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "4300",
+      "path": "Income:Other income",
+      "type": "income",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "4310",
+      "path": "Income:Other income:Interest",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "4320",
+      "path": "Income:Other income:Other income",
+      "type": "income",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6000",
+      "path": "Expenses",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6100",
+      "path": "Expenses:Direct costs",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6110",
+      "path": "Expenses:Direct costs:Contractors",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6120",
+      "path": "Expenses:Direct costs:Materials",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6130",
+      "path": "Expenses:Direct costs:Client project costs",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6200",
+      "path": "Expenses:Software and infrastructure",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6210",
+      "path": "Expenses:Software and infrastructure:Subscriptions",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6220",
+      "path": "Expenses:Software and infrastructure:Hosting",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6230",
+      "path": "Expenses:Software and infrastructure:Domains and email",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6240",
+      "path": "Expenses:Software and infrastructure:Data services",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6300",
+      "path": "Expenses:Sales and marketing",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6310",
+      "path": "Expenses:Sales and marketing:Advertising",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6320",
+      "path": "Expenses:Sales and marketing:Design",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6330",
+      "path": "Expenses:Sales and marketing:Events",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6400",
+      "path": "Expenses:Professional services",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6410",
+      "path": "Expenses:Professional services:Accounting",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6420",
+      "path": "Expenses:Professional services:Legal",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6430",
+      "path": "Expenses:Professional services:Company administration",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6500",
+      "path": "Expenses:Bank and payment costs",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6510",
+      "path": "Expenses:Bank and payment costs:Bank fees",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6520",
+      "path": "Expenses:Bank and payment costs:Payment processing",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6530",
+      "path": "Expenses:Bank and payment costs:Transfer fees",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6540",
+      "path": "Expenses:Bank and payment costs:Interest",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6600",
+      "path": "Expenses:People",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6610",
+      "path": "Expenses:People:Salaries",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6620",
+      "path": "Expenses:People:Benefits",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6630",
+      "path": "Expenses:People:Training",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6700",
+      "path": "Expenses:Premises and operations",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6710",
+      "path": "Expenses:Premises and operations:Rent",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6720",
+      "path": "Expenses:Premises and operations:Utilities",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6730",
+      "path": "Expenses:Premises and operations:Office supplies",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6740",
+      "path": "Expenses:Premises and operations:Insurance",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6800",
+      "path": "Expenses:Travel",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6810",
+      "path": "Expenses:Travel:Transport",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6820",
+      "path": "Expenses:Travel:Accommodation",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6830",
+      "path": "Expenses:Travel:Meals",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6900",
+      "path": "Expenses:Other operating costs",
+      "type": "expense",
+      "placeholder": true,
+      "description": ""
+    },
+    {
+      "code": "6910",
+      "path": "Expenses:Other operating costs:Repairs",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6920",
+      "path": "Expenses:Other operating costs:Small equipment",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    },
+    {
+      "code": "6930",
+      "path": "Expenses:Other operating costs:Other costs",
+      "type": "expense",
+      "placeholder": false,
+      "description": ""
+    }
+  ]
+}

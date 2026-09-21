@@ -1,0 +1,4 @@
+# The house style: one statement per line, wide. Measured against the tree as it stood at
+# 85d62f9 — 200 moves 1586 lines, 160 moves 2458, 240 moves 1602.
+max_width = 200
+use_small_heuristics = "Max"

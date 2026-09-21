@@ -1,0 +1,7 @@
+"Date","Payee","Account number","Transaction type","Payment reference","Category","Amount (EUR)","Amount (Foreign Currency)","Type Foreign Currency","Exchange Rate"
+"2021-06-01","REWE SAGT DANKE","","MasterCard Payment","","Groceries","-23.45","","",""
+"2021-06-02","Acme GmbH","DE00000000000000000001","Income","Salary 05/2021","Income","3200.00","","",""
+"2021-06-03","Netflix.com","","MasterCard Payment","","Subscriptions","-12.99","","",""
+"2021-06-04","John Smith","DE00000000000000000002","Outgoing Transfer","Dinner split","Miscellaneous","-40.00","","",""
+"2021-06-05","Uber","","MasterCard Payment","","Transport & Car","-14.62","-17.30","USD","1.1833"
+"2021-06-06","Stadtwerke","DE00000000000000000003","Direct Debit","Kundennummer 12345","Household & Utilities","-85.00","","",""

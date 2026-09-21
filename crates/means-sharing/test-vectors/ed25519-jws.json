@@ -1,0 +1,10 @@
+{
+  "generator": "joserfc 1.5.0 / RFC8032 test seed",
+  "seed": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+  "public": "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo",
+  "payload": {
+    "message": "means vault vector",
+    "revision": "1"
+  },
+  "compact": "eyJhbGciOiJFZDI1NTE5IiwidHlwIjoibWVhbnMtdmF1bHQtdjErandzIn0.eyJtZXNzYWdlIjoibWVhbnMgdmF1bHQgdmVjdG9yIiwicmV2aXNpb24iOiIxIn0.xSl4cz6wVQvNgpfTOn7sIIEmSTtxir_bf41AAVY_UOMJhY4AnOpDRX0D4zxlFIORuIZoZEZz2UqQkha3resSAw"
+}

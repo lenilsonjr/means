@@ -1,0 +1,23 @@
+[package]
+name = "means-sharing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+means-core = { path = "../means-core" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+uuid = { workspace = true }
+age = { version = "=0.12.1", default-features = false }
+ed25519-dalek = { version = "=2.2.0", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64 = "0.22"
+serde_jcs = "=0.1.0"
+zeroize = { version = "1", features = ["derive"] }

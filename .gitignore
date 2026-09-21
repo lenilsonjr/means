@@ -1,0 +1,35 @@
+target/
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+.beads-credential-key
+.beads/proxieddb/
+
+# Gas City
+.beads/
+
+# Static documentation website
+website/node_modules/
+website/dist/
+website/.astro/
+website/src/content/docs/docs/guides/
+website/playwright-report/
+website/test-results/
+
+# Private release-audit results; never publish these with the source.
+.private-audit/
+website/public/third-party-notices.txt
+website/.demo-render/
+
+# Local agent configuration and private accounting inputs
+.codex/
+.claude/
+*.atb
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm

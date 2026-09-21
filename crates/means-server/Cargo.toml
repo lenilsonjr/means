@@ -1,0 +1,46 @@
+[package]
+name = "means-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+default-run = "means"
+
+[[bin]]
+name = "means"
+path = "src/main.rs"
+
+[dependencies]
+means-sharing = { path = "../means-sharing" }
+rpassword = "7.4"
+zeroize = "1"
+means-core = { path = "../means-core" }
+means-proto = { path = "../means-proto" }
+means-tui = { path = "../means-tui" }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true }
+rust_decimal = { workspace = true }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+open = { workspace = true }
+async-imap = { version = "=0.11.3", default-features = false, features = ["runtime-tokio"] }
+tokio-native-tls = "0.3"
+futures-util = "0.3"
+native-tls = "0.2"
+
+jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tower = { workspace = true }
+crossterm = { workspace = true }

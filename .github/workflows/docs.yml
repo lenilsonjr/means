@@ -1,0 +1,43 @@
+name: Documentation
+on:
+  pull_request:
+    paths: ['website/**', 'docs/**', '.github/workflows/docs.yml']
+  push:
+    branches: [main]
+    paths: ['website/**', 'docs/**', '.github/workflows/docs.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run check
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm test
+      - name: Check GitHub Pages base path
+        run: npm run build
+        env:
+          SITE_URL: https://lenilsonjr.github.io
+          SITE_BASE: /means
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-site
+          path: website/dist
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: docs-browser-results
+          path: website/test-results

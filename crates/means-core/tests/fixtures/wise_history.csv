@@ -1,0 +1,8 @@
+ID,Status,Direction,"Created on","Finished on","Source fee amount","Source fee currency","Target fee amount","Target fee currency","Source name","Source amount (after fees)","Source currency","Target name","Target amount (after fees)","Target currency","Exchange rate",Reference,Batch,"Created by",Category,Note
+TRANSFER-1100000001,COMPLETED,IN,"2026-03-02 10:14:55","2026-03-02 10:15:02",,,,,"Acme GmbH",2500.00,EUR,"Jane Doe",2500.00,EUR,1,INV-2026-017,,,"Money added",
+TRANSFER-1100000003,COMPLETED,OUT,"2026-03-05 14:20:01","2026-03-05 14:22:10",4.10,EUR,,,"Jane Doe",995.90,EUR,"John Smith",995.90,EUR,1.00000000,Rent March,,"Jane Doe",General,
+BALANCE-1100000004,COMPLETED,NEUTRAL,"2026-03-06 16:39:40","2026-03-06 16:40:00",2.05,EUR,,,"Jane Doe",497.95,EUR,"Jane Doe",540.06,USD,1.08460,,,"Jane Doe",,
+TRANSFER-1100000007,CANCELLED,OUT,"2026-03-07 09:00:00",,0.00,EUR,,,"Jane Doe",300.00,EUR,"Someone Else",300.00,EUR,1,,,"Jane Doe",,
+PLAN_ORDER-1100000020,COMPLETED,OUT,"2026-03-09 06:13:45","2026-03-09 06:41:51",,,,,,5.00,EUR,Wise,5.00,EUR,1.00000000,1100000020,,"Jane Doe",General,
+TRANSFER-1100000008,COMPLETED,IN,"2026-03-11 08:00:00","2026-03-11 08:00:05",,,,,"Client LLC",1200.00,USD,"Jane Doe",1200.00,USD,1,Retainer March,,,"Money added",
+TRANSFER-1100000009,PENDING,OUT,"2026-03-12 11:30:00",,1.20,EUR,,,"Jane Doe",148.80,EUR,"Maria Garcia",148.80,EUR,1,Gift,,"Jane Doe",,

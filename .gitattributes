@@ -1,0 +1,3 @@
+# Preserve provider fixtures that exercise CRLF and legacy encodings.
+crates/means-core/tests/fixtures/*.ofx -text whitespace=cr-at-eol
+crates/means-core/tests/fixtures/inter_extrato_legacy.csv -text whitespace=cr-at-eol

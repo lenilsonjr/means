@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.astro/
+src/content/docs/docs/guides/
+public/third-party-notices.txt
+test-results/
+playwright-report/
+package-lock.json
+.demo-render/
+public/media/*.cast

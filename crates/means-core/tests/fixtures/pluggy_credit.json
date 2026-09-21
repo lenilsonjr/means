@@ -1,0 +1,71 @@
+{
+  "channel": "pluggy",
+  "pulledAt": "2026-09-18T09:12:30.412Z",
+  "itemId": "a1b2c3d4-0000-4000-8000-000000000001",
+  "createdAtFrom": null,
+  "account": {
+    "id": "b8e1c1a2-1111-4000-8000-000000000012",
+    "itemId": "a1b2c3d4-0000-4000-8000-000000000001",
+    "type": "CREDIT",
+    "subtype": "CREDIT_CARD",
+    "number": "**** **** **** 4321",
+    "name": "Cartão de Crédito",
+    "marketingName": "Mastercard Black",
+    "balance": 1240.55,
+    "currencyCode": "BRL",
+    "owner": "Alex Example",
+    "taxNumber": "***.***.***-**",
+    "bankData": null,
+    "creditData": {
+      "level": "BLACK",
+      "brand": "MASTERCARD",
+      "balanceCloseDate": "2026-09-25",
+      "balanceDueDate": "2026-10-05",
+      "availableCreditLimit": 8759.45,
+      "creditLimit": 10000.00,
+      "minimumPayment": 186.08
+    }
+  },
+  "transactions": [
+    {
+      "id": "1f6b9a20-2222-4000-8000-000000000201",
+      "accountId": "b8e1c1a2-1111-4000-8000-000000000012",
+      "description": "PAGAMENTO FATURA",
+      "descriptionRaw": "PAGAMENTO DE FATURA CARTAO",
+      "amount": -1240.55,
+      "currencyCode": "BRL",
+      "date": "2026-09-10T00:00:00.000Z",
+      "balance": null,
+      "category": "Credit card payment",
+      "categoryId": "09000000",
+      "type": "CREDIT",
+      "status": "POSTED",
+      "providerCode": null,
+      "providerId": null,
+      "merchant": null,
+      "paymentData": null
+    },
+    {
+      "id": "1f6b9a20-2222-4000-8000-000000000202",
+      "accountId": "b8e1c1a2-1111-4000-8000-000000000012",
+      "description": "RESTAURANTE SUSHI YAMA",
+      "descriptionRaw": "RESTAURANTE SUSHI YAMA CUIABA BR",
+      "amount": 89.90,
+      "currencyCode": "BRL",
+      "date": "2026-09-12T00:00:00.000Z",
+      "balance": 1330.45,
+      "category": "Food and drinks",
+      "categoryId": "05000000",
+      "type": "DEBIT",
+      "status": "POSTED",
+      "providerCode": null,
+      "providerId": null,
+      "merchant": {
+        "name": "Sushi Yama",
+        "businessName": "SUSHI YAMA RESTAURANTE LTDA",
+        "cnpj": "11222333000144"
+      },
+      "paymentData": null
+    }
+  ]
+}

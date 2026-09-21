@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "plans": [
+    {
+      "entity": "Example Studio Pte. Ltd.",
+      "chart": [
+        {
+          "code": "6000",
+          "path": "Expenses",
+          "type": "expense",
+          "placeholder": true
+        },
+        {
+          "code": "6200",
+          "path": "Expenses:Software",
+          "type": "expense",
+          "placeholder": true
+        },
+        {
+          "code": "6210",
+          "path": "Expenses:Software:Subscriptions",
+          "type": "expense",
+          "placeholder": false
+        }
+      ],
+      "moves": [
+        {
+          "from": "Apps",
+          "to": "Expenses:Software:Subscriptions",
+          "type": "expense"
+        }
+      ]
+    }
+  ]
+}

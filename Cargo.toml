@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = ["crates/means-proto", "crates/means-core", "crates/means-server", "crates/means-tui", "crates/means-sharing"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v7"] }
+url = "2"
+csv = "1"
+regex = "1"
+plist = "1"
+rrule = "0.14"
+tokio = { version = "1", features = ["full"] }
+tonic = "0.14"
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+prost = "0.14"
+axum = "0.8"
+tower = "0.5"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ratatui = "0.29"
+crossterm = "0.28"
+open = "5"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

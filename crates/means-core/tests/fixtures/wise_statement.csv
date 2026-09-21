@@ -1,0 +1,8 @@
+"TransferWise ID","Date","Date Time","Amount","Currency","Description","Payment Reference","Running Balance","Exchange From","Exchange To","Exchange Rate","Payer Name","Payee Name","Payee Account Number","Merchant","Card Last Four Digits","Card Holder Full Name","Attachment","Note","Total fees","Exchange To Amount","Transaction Type","Transaction Details Type"
+TRANSFER-1100000001,02-03-2026,02-03-2026 10:15:02.000,2500.00,EUR,Received money from Acme GmbH with reference INV-2026-017,INV-2026-017,3250.40,,,,Acme GmbH,,,,,,,,0,,CREDIT,DEPOSIT
+CARD-1100000002,03-03-2026,03-03-2026 09:00:00.000,-12.50,EUR,Card transaction of 35.00 MYR issued by Corner Cafe,,3237.90,EUR,MYR,2.8000,,,,Corner Cafe,1234,Jane Doe,,,0.30,35.00,DEBIT,CARD
+FEE-CARD-1100000002,03-03-2026,03-03-2026 09:00:00.000,-0.30,EUR,Wise Charges for: CARD-1100000002,,3237.60,,,,,,,Corner Cafe,1234,Jane Doe,,,0,,DEBIT,CARD
+TRANSFER-1100000003,05-03-2026,05-03-2026 14:22:10.000,-1000.00,EUR,Sent money to John Smith,Rent March,2237.60,,,,,John Smith,DE00000000000000000002,,,,,,4.10,,DEBIT,TRANSFER
+BALANCE-1100000004,06-03-2026,06-03-2026 16:40:00.000,-500.00,EUR,Converted 500.00 EUR to 540.06 USD,,1737.60,EUR,USD,1.08460,,,,,,,,,2.05,540.06,DEBIT,CONVERSION
+CARD-1100000005,08-03-2026,08-03-2026 12:05:33.000,-23.90,EUR,"Card transaction of 23.90 EUR issued by Ristorante Da Mario, Roma",,1713.70,,,,,,,"Ristorante Da Mario, Roma",1234,Jane Doe,,,0,,DEBIT,CARD
+DIRECT_DEBIT-1100000006,10-03-2026,10-03-2026 06:00:00.000,-19.99,EUR,Direct Debit for Vodafone GmbH,Mobile plan 03/2026,1693.71,,,,,Vodafone GmbH,,,,,,,0,,DEBIT,DIRECT_DEBIT

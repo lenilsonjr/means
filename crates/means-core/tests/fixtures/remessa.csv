@@ -1,0 +1,6 @@
+Data de operação;Direção;Tipo de operação;Contraparte;Valor da moeda estrangeira;Valor na moeda em real;Spread;IOF;VET
+05/03/2026;Envio;Manutenção de residente;Jane Doe;USD 1.000,00;R$ 5.456,90;1,30%;R$ 20,54;5,4569
+12/03/2026;Recebimento;Prestação de serviço;Client LLC;USD 2.500,00;R$ 13.412,50;1,30%;R$ 50,97;5,3650
+20/03/2026;Envio;Disponibilidade no exterior;Jane Doe;EUR 500,00;R$ 3.048,75;1,30%;R$ 33,54;6,0975
+25/03/2026;Recebimento;Prestação de serviço;Acme GmbH;EUR 1.200,00;R$ 7.230,00;1,30%;R$ 0,00;6,0250
+28/03/2026;Envio;Manutenção de residente;Jane Doe;USD 300,00;R$ 1.641,00;1,30%;R$ 6,17;5,4700

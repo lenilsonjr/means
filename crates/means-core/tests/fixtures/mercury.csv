@@ -1,0 +1,10 @@
+Date (UTC),Description,Amount,Status,Source Account,Bank Description,Reference,Note,Last Four Digits,Name On Card,Category,GL Code,Timestamp,Original Currency,Check Number,Tags
+03-02-2026,Client LLC,12500.00,Sent,Mercury Checking ••1234,CLIENT LLC ACH PAYMENT,Invoice 2026-017,,,,Revenue,,2026-03-02T14:05:11Z,,,
+03-03-2026,Amazon Web Services,-142.37,Sent,Mercury Checking ••1234,AMAZON WEB SERVICES AWS.AMAZON.CO,,Monthly hosting,4321,Jane Doe,Software,6100,2026-03-03T09:00:00Z,,,
+03-04-2026,Jane Doe,-3000.00,Sent,Mercury Checking ••1234,Send Money transaction initiated on Mercury,"Payroll, March",,,,Payroll,,2026-03-04T16:30:00Z,,,
+03-05-2026,GitHub,-21.00,Pending,Mercury Checking ••1234,GITHUB INC.,,,4321,Jane Doe,Software,6100,2026-03-05T10:00:00Z,,,
+03-06-2026,Expensive Vendor,-5876.95,Failed,Mercury Checking ••1234,Expensive Vendor; TRANSACTION_BLOCKED -- C10 -- User is not allowed to send over 5000.0 per 1 day(s).,,,,,,,2026-03-06T11:00:00Z,,,
+03-07-2026,Hetzner Online GmbH,-54.12,Sent,Mercury Checking ••1234,HETZNER ONLINE GMBH,,,4321,Jane Doe,Software,6100,2026-03-07T08:15:00Z,EUR,,
+03-08-2026,Wire fee,-25.00,Sent,Mercury Checking ••1234,Outgoing wire fee,,,,,Bank fees,6900,2026-03-08T12:00:00Z,,,
+03-09-2026,Old Supplier,-400.00,Cancelled,Mercury Checking ••1234,Send Money transaction initiated on Mercury,,,,,,,2026-03-09T12:00:00Z,,,
+03-10-2026,Stripe,4210.55,Sent,Mercury Checking ••1234,STRIPE TRANSFER,ST-ABC123,,,,Revenue,,2026-03-10T07:45:00Z,,,
