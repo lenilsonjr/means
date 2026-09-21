@@ -34,3 +34,17 @@ Inspect the captures after any change to the TUI. Timing or menu order can chang
 - `.vtt` files: descriptive captions for the silent videos.
 
 The samples are original project demo data. The source and generated captures follow the repository's Apache-2.0 license. Bundled website fonts retain their own licenses.
+
+## README animation
+
+The README reuses the PNG captures and a compact looping GIF derived from the split
+recording. From the repository root, regenerate the GIF with:
+
+```sh
+mkdir -p docs/media
+ffmpeg -y -ss 2 -t 25 -i website/public/media/review-split.mp4 \
+  -filter_complex '[0:v]setpts=PTS/1.35,fps=6,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle' \
+  -loop 0 docs/media/review-split.gif
+```
+
+This keeps the full terminal resolution and plays the workflow at 1.35× speed.
