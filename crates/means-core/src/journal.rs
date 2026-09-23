@@ -326,8 +326,7 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
         let replacement = identity.or_else(|| {
             candidates.iter().copied().find(|i| {
                 let p = &rows[*i];
-                !(old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id)
-                    && !(old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint)
+                !(old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id || old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint)
             })
         });
         let Some(index) = replacement else {
@@ -1153,18 +1152,14 @@ pub fn create_transfer(conn: &mut Connection, t: Transfer) -> Result<(JournalEnt
     b.origin = origin;
     b.postings.push(PostingInput::new(to.id, to_q));
     b.postings.push(PostingInput::balancing(to_contra.id));
-    let first = create_entry(conn, a)?;
+    let tx = conn.transaction()?;
+    let first = create_entry_in_transaction(&tx, a)?;
     b.counterpart_id = Some(first.id);
-    let second = match create_entry(conn, b) {
-        Ok(e) => e,
-        Err(e) => {
-            // Roll back the first half so the books do not keep a one-sided transfer.
-            let _ = conn.execute("DELETE FROM journal_entries WHERE id = ?1", [first.id]);
-            return Err(e);
-        }
-    };
-    conn.execute("UPDATE journal_entries SET counterpart_id = ?2 WHERE id = ?1", params![first.id, second.id])?;
-    Ok((get_entry(conn, first.id)?, Some(second)))
+    let second = create_entry_in_transaction(&tx, b)?;
+    tx.execute("UPDATE journal_entries SET counterpart_id = ?2 WHERE id = ?1", params![first.id, second.id])?;
+    let first = get_entry(&tx, first.id)?;
+    tx.commit()?;
+    Ok((first, Some(second)))
 }
 
 /// A human confirmed these entries (or touched them): stamp the review mark. Outside the chain.
