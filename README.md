@@ -183,6 +183,23 @@ Pluggy pulls accept `--booked-from YYYY-MM-DD` to exclude an account's existing 
 
 `means report expenses` groups expense postings by account class, or by tag with `--group-by tag`. Tag rows overlap; the total counts each posting once. It uses booked amounts in the entity’s functional currency. The dates are inclusive. An optional `--tag` selects one exact entry tag. See [expense report and budget semantics](docs/expense-reports.md).
 
+### Reports
+
+The `means report` commands read the ledger and write nothing. Each command takes an entity id, name or uid. Dates are inclusive. With `--json`, each command prints one object with `"schema_version": 1`, Money objects, account uids and a `basis` object. `basis` states the valuation and the entry statuses that the report reads.
+
+```sh
+means report trial-balance --entity Personal --from 2026-01-01 --to 2026-03-31   # opening, debits, credits, closing
+means report balance-sheet --entity Personal --as-of 2026-03-31                   # book values; --market-values for holdings
+means report income --entity Personal --from 2026-01-01 --to 2026-03-31          # revenue, expenses, result, expense classes
+means report cash-flow --entity Personal --from 2026-03-01 --to 2026-03-31       # direct method on bank, cash, card and wallet accounts
+means report general-ledger --entity Personal --from 2026-03-01 --to 2026-03-31 --account Assets:Bank:N26
+means report open-items --entity Personal --as-of 2026-03-31 --direction purchase
+means report tax-summary --entity Personal --from 2026-01-01 --to 2026-03-31     # the same report as means tax summary
+means report net-worth --entity Personal --as-of 2026-03-31 --json
+```
+
+The reports read posted and void entries at their booked values in the functional currency. A void entry and its reversal cancel each other. Drafts do not count, except in `cash-flow`, which shows them as projected columns. The balance sheet uses book values by default. With `--market-values`, holding accounts use the market price on the date, and the difference shows as unrealised gains. `net-worth` always uses the market price when a price exists. The trial balance opening sums every entry before the first date. See [the agent interface](docs/agent-interface.md#reports) for the JSON fields.
+
 Budgets set one limit for a chosen date range, defaulting to a calendar month, with no rollover. Target an expense category (including subcategories), an expense class, or an exact tag. In TUI Reports, press `u` for budgets, `n` to create, Enter to edit, and `v` to group by class or tag. Press `c`/`g` for expense reports by class/tag.
 
 `means reconcile --account ID` is read-only. For an account path, use `--entity Personal --account Assets:Bank:N26`. Balances use the statement closing date when available; missing statement balances remain unknown. The report shows up to 500 unmatched lines and unreconciled postings from up to 5,000 ledger rows, matching the existing reconciliation report.

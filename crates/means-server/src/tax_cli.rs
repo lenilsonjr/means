@@ -165,7 +165,7 @@ pub fn event_json(conn: &Connection, e: &TaxEvent) -> means_core::Result<Value> 
     }))
 }
 
-fn summary_json(r: &TaxSummaryRow) -> Value {
+pub(crate) fn summary_json(r: &TaxSummaryRow) -> Value {
     json!({
         "code": r.code,
         "kind": r.kind,

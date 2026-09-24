@@ -21,6 +21,7 @@ mod payees;
 mod policy_cli;
 mod rates_cli;
 mod refunds;
+mod report_cli;
 mod reports;
 mod sharing;
 mod statement_http;
@@ -69,7 +70,7 @@ enum Command {
         #[command(subcommand)]
         command: budgets::Command,
     },
-    /// Report booked expenses by account class, tag or payee
+    /// Management reports: trial balance, balance sheet, income, cash flow, ledger, open items, tax, net worth and expenses
     Report {
         #[command(subcommand)]
         command: reports::Command,

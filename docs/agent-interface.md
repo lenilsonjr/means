@@ -41,6 +41,14 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means intervault unlink <link uid> --reason R [--json]` | Removes a link of two drafts | No |
 | `means intervault list [--group G \| --entity E] --from D --to D [--status draft\|posted\|void] [--json]` | Nothing | No |
 | `means intervault exceptions --entity E --from D --to D [--json]` | Nothing | No |
+| `means report trial-balance --entity <e> --from D --to D [--json]` | Nothing | No |
+| `means report balance-sheet --entity <e> --as-of D [--book-values \| --market-values] [--json]` | Nothing | No |
+| `means report income --entity <e> --from D --to D [--json]` | Nothing | No |
+| `means report cash-flow --entity <e> --from D --to D [--json]` | Nothing | No |
+| `means report general-ledger --entity <e> --from D --to D [--account <path\|uid>] [--json]` | Nothing | No |
+| `means report open-items --entity <e> --as-of D [--direction sales\|purchase] [--json]` | Nothing | No |
+| `means report tax-summary --entity <e> --from D --to D [--json]` | Nothing | No |
+| `means report net-worth --entity <e> --as-of D [--json]` | Nothing | No |
 | `means export --format snapshot --output DIR [--entity <e>]... [--as-of D] [--json]` | A new snapshot directory. The ledger does not change. | No |
 | `means export verify DIR [--json]` | Nothing | No |
 | `means rates set --date D --base B --quote Q --rate R [--source S] [--no-revalue] [--json]` | A rate and revalued postings | No |
@@ -176,6 +184,23 @@ Each command writes exactly one JSON object to stdout. Each object has `"schema_
 `accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany` and `balance`. `entity list --json` returns an array. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`.
 
 `list --json` returns `entity_uid`, `count`, `total` and `entries`. `show --json` returns `entry`. Each entry has its postings, `evidence`, `review` (`state` and `reviewed_at`), `hash`, the uids of linked entries and `intervault_link_uids`. Without `--json`, `list` and `show` print text.
+
+## Reports
+
+The `means report` commands read the ledger. They write nothing. Dates are inclusive. Without `--json`, each command prints an aligned table. `means report expenses` is older. Its JSON has no `schema_version`.
+
+Each report object has `report`, `entity` (`uid`, `name` and `currency`), `functional_currency` and `basis`. `basis` has `valuation`, `statuses` and `note`. `valuation` is `book`, `market` or `invoice`. `statuses` lists the entry statuses that the report reads. Every report reads `posted` and `void` entries, so a void entry and its reversal cancel each other. Only `cash-flow` also reads `draft` entries. Amounts are booked values in the functional currency, unless the field says otherwise. Account rows have `uid` and `path`.
+
+| Report | Fields |
+| --- | --- |
+| `trial_balance` | `from`, `to`, `count`, `accounts`, `totals` and `balanced`. Each account has `uid`, `path`, `type`, `statutory_code`, `opening`, `debits`, `credits` and `closing`. Balances are debit positive. `opening` sums every entry before `from`. `totals` has the same four amounts. `balanced` is true when the debits equal the credits and the balances sum to zero. |
+| `balance_sheet` | `as_of`, `assets`, `liabilities`, `equity`, `total_assets`, `total_liabilities`, `total_equity`, `liabilities_and_equity` and `balanced`. Each section has `accounts` and `total`. Each account has `uid`, `path`, `name`, `type`, `depth`, `placeholder`, `statutory_code`, `quantity` (account commodity), `book_value`, `market_value` and `value`. A parent row includes its children, so the totals add the rows with depth 0. Equity has a `Retained earnings` row without a uid: every income and expense entry up to the date. The default is `book`. `--market-values` gives `market`: holding accounts use the market price on the date when a price exists, and an `Unrealised gains` row takes the difference. |
+| `income_statement` | `from`, `to`, `revenue`, `expenses` and `result`. `revenue` and `expenses` have `accounts` and `total`. `expenses` also has `by_class`: `class` and `amount`, with `unclassified` for accounts without a class. Each account has `uid`, `path`, `name`, `depth`, `placeholder`, `class`, `statutory_code` and `amount`. Amounts are positive in the normal direction of the account. `result` is revenue minus expenses. |
+| `cash_flow` | `from`, `to`, `method` (`direct`), `opening`, `days`, `totals`, `posted_closing` and `projected_closing`. The report sums the postings on accounts with the subtype `bank`, `cash`, `card` or `wallet`. Each day has `date`, `posted_in`, `posted_out`, `draft_in`, `draft_out` and `projected_balance`. A transfer between two such accounts shows as both in and out. |
+| `general_ledger` | `from`, `to`, `count` and `accounts`. Each account has `uid`, `path`, `type`, `commodity`, `statutory_code`, `opening_balance`, `debits`, `credits`, `closing_balance` and `postings`. Each posting has `entry_uid`, `posting_uid`, `date`, `status`, `payee`, `description`, `contra_path`, `debit`, `credit`, `amount` and `running_balance`. Quantities and balances use the account commodity. `amount` is the functional value. Without `--account`, the report lists each leaf account with postings or an opening balance. |
+| `open_items` | `as_of`, `direction`, `count`, `items` and `totals`. Each item has `invoice_uid`, `direction`, `series`, `number`, `party_uid`, `party_name`, `issue_date`, `due_date`, `gross`, `settled`, `open` and `days_overdue`, in the invoice commodity. `totals` has one row for each direction and commodity. Settlements dated after `as_of` do not count. |
+| `tax_summary` | `from`, `to`, `count` and `rows`, as in `means tax summary`. |
+| `net_worth` | `as_of`, `count`, `accounts`, `assets`, `liabilities` and `net_worth`. The valuation is `market`: holding accounts use the market price when a price exists. |
 
 ## Invoice document
 
