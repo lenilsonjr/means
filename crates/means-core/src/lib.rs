@@ -14,6 +14,7 @@ pub mod connections;
 pub mod cross_source;
 pub mod currency_migration;
 pub mod db;
+pub mod documents;
 pub mod entities;
 pub mod export;
 pub mod hashchain;

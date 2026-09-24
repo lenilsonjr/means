@@ -1545,7 +1545,7 @@ mod replica_tests {
         drop(db);
         // Install in a distinct empty database as the production importer does.
         let replica_path = path.with_extension("replica");
-        let staging = Db::open(&replica_path).unwrap();
+        let staging = Db::open_replica_staging(&replica_path).unwrap();
         means_sharing::snapshot::install(&staging, &snapshot, &entity.uid, "", 0).unwrap();
         drop(staging);
         let db = Arc::new(Db::open_replica(&replica_path).unwrap());

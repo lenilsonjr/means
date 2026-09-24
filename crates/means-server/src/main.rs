@@ -2,6 +2,7 @@
 
 mod budgets;
 mod connections;
+mod doc_cli;
 mod email;
 mod enable_banking;
 mod entry_cli;
@@ -223,6 +224,11 @@ enum Command {
     Policy {
         #[command(subcommand)]
         command: policy_cli::Command,
+    },
+    /// Documents as evidence: store, link, show and verify invoices, receipts and statements
+    Doc {
+        #[command(subcommand)]
+        command: doc_cli::Command,
     },
 }
 
@@ -1172,6 +1178,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&s)?);
             Ok(())
         }
+        Command::Doc { command } => doc_cli::run(db_path, command),
         Command::Verify => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
