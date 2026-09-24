@@ -18,6 +18,7 @@ mod refunds;
 mod reports;
 mod sharing;
 mod statement_http;
+mod tax_cli;
 mod void;
 mod wise;
 
@@ -244,6 +245,11 @@ enum Command {
     Party {
         #[command(subcommand)]
         command: party_cli::PartyCommand,
+    },
+    /// Tax codes, tax events and the tax summary of a period
+    Tax {
+        #[command(subcommand)]
+        command: tax_cli::TaxCommand,
     },
 }
 
@@ -1242,6 +1248,7 @@ async fn main() -> Result<()> {
         }
         Command::Entry { command } => entry_cli::run(db_path, command),
         Command::Policy { command } => policy_cli::run(db_path, command),
+        Command::Tax { command } => tax_cli::run(db_path, command),
     }
 }
 

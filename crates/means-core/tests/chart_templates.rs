@@ -228,7 +228,7 @@ fn migration_21_adds_empty_statutory_columns_to_existing_accounts() {
     .unwrap();
     means_core::db::migrate_to(&conn, i64::MAX).unwrap();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, means_core::db::latest_version());
     let a = accounts::get_account(&conn, 1).unwrap();
     assert_eq!((a.statutory_code.as_str(), a.tax_treatment.as_str(), a.intercompany), ("", "", false));
 }

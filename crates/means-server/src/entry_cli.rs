@@ -208,6 +208,7 @@ fn entry_view(conn: &means_core::rusqlite::Connection, entry: &JournalEntry) -> 
         "reversed_by_uid": proposal::uid_of(conn, "journal_entries", entry.reversed_by_id)?,
         "counterpart_uid": proposal::uid_of(conn, "journal_entries", entry.counterpart_id)?,
         "postings": postings,
+        "tax_events": means_core::tax::tax_events_for_entry(conn, entry.id)?.iter().map(|e| crate::tax_cli::event_json(conn, e)).collect::<means_core::Result<Vec<_>>>()?,
         "evidence": proposal::evidence(conn, entry.id)?,
     }))
 }

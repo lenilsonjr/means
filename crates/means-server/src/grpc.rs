@@ -418,6 +418,7 @@ fn posting_input_from_pb(p: &pb::PostingInput) -> Result<PostingInput, Status> {
         fingerprint: (!p.fingerprint.is_empty()).then(|| p.fingerprint.clone()),
         balance: p.quantity.trim().is_empty() || p.quantity.trim() == "balance",
         value_in: None,
+        tax: None,
     })
 }
 

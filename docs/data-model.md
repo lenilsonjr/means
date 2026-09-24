@@ -120,6 +120,62 @@ Each payee keeps its country (ISO 3166-1 alpha-2), tax ids as a JSON object, and
 
 Classifications, memberships and relationships use dated periods. A period includes its `effective_from` date and excludes its `effective_to` date. An empty `effective_to` keeps the period open. An "as of" query returns the rows whose period includes that date. To close a period, set `effective_to` to the first day that the fact no longer applies. Two periods of the same fact cannot overlap. Every change goes to the audit log with its values before and after.
 
+## Tax codes and tax events
+
+One tax code with one rate cannot feed a real return. means records a tax event for each taxed posting instead. Returns sum the events by code, kind and period. The mapping of these sums to the boxes of a return stays outside the engine.
+
+`tax_codes` holds dated rate versions of an entity. Each version has a code (one uppercase word, for example `SR`), a name, a kind, a rate in basis points (900 is 9%), an optional tax account, a recoverable share in basis points (default 10000) and a jurisdiction. The kinds are:
+
+| Kind | Tax lines that the engine adds |
+| --- | --- |
+| `output` | The tax on the tax account. |
+| `input` | The recoverable part on the tax account. The rest goes on the account of the taxed posting as a cost. |
+| `reverse_charge` | The tax negated and the recoverable part on the tax account. The rest goes on the account of the taxed posting. The lines sum to zero. |
+| `withholding` | The tax negated on the tax account. The other party receives less. |
+| `exempt`, `zero_rated`, `out_of_scope` | None. The rate must be 0. The event records the base. |
+
+A version applies from `effective_from` (inclusive) to `effective_to` (exclusive). A new version closes the open version of the same code on its start date. Other overlaps fail. The tax account must be a leaf account of the entity in the functional currency. A code without a tax account adds no lines. Every change goes to the audit log.
+
+`tax_events` holds one row per taxed posting and tax point:
+
+- The entry, the posting and the tax code version.
+- The tax point. It decides the period. The default is the entry date.
+- The base, the tax, the recoverable part and the withheld part, in minor units of the functional currency.
+- The native base and native tax, when the taxed posting holds another commodity.
+- The other party (a payee), a document reference, the rule version (`CODE@effective_from`), a correction link and metadata.
+
+Amounts follow the side of the taxed posting: debit positive. A sale on an income account gives a negative base and a negative tax. A purchase gives positive amounts. The recoverable part never exceeds the tax.
+
+### Tax blocks on entries
+
+A posting input can carry a tax block: a code, and optionally a base, a tax, a tax point, a party and a document reference. An entry input can carry a default block for each income or expense posting without its own block. The rule is:
+
+1. The caller gives net amounts.
+2. The engine takes the base from the functional amount of the posting, unless the block gives one.
+3. The engine computes the tax as base × rate / 10000, rounded half-even to the currency precision, unless the block gives one.
+4. The engine records the event and adds the tax lines of the kind. The balancing posting absorbs the tax lines, so the entry balances.
+
+Block amounts are magnitudes. The engine gives them the sign of the posting. A balancing posting cannot carry a block. Each tax line has `tax_line` (the code) and `tax_role` in its metadata.
+
+### Lifecycle
+
+- A void creates mirror events on the reversal. They have negated amounts, the tax point of the reversal and `corrects_event_id` set to the original event. The original stays in its period. The correction falls in the period of the reversal.
+- A deleted draft deletes its events.
+- An edit with tax blocks replaces the events. The engine drops the input postings marked `tax_line` and adds new tax lines.
+- An edit without tax blocks keeps the events and moves them to the replacement postings. Send the blocks again to compute new amounts.
+
+`tax_summary` and `tax_events_list` read the events of posted and void entries. Drafts do not count.
+
+| Command | Result |
+| --- | --- |
+| `means tax code add --entity <e> --code SR --name "Standard rated" --kind output --rate-bp 900 --tax-account <path> --from D` | Adds a version (`--recoverable-bp N`, `--jurisdiction J`). |
+| `means tax code list --entity <e> [--as-of D]` | Lists every version, or the versions in effect on the date. |
+| `means tax code close --entity <e> --code C --to D` | Ends the open version. |
+| `means tax summary --entity <e> --from D --to D` | Sums base, tax, recoverable and withheld by code, kind and rate. |
+| `means tax events --entity <e> --from D --to D [--code C]` | Lists the events. |
+
+Each command prints one JSON object with `"schema_version": 1`. Money uses the `Money` form. A failure prints `"ok": false` with an error code and exits with code 1.
+
 ## Reports and exports
 
 Balances, trial balances, income statements, and net worth are derived from the ledger. Reports keep entity scope explicit. Expense reports use stored book values. Currency-converted account reports round each account first, then sum the displayed rows. A missing required rate stops the report with an error.
