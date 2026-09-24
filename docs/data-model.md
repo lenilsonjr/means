@@ -40,7 +40,7 @@ Every account belongs to one entity and one of five types:
 
 Accounts form a hierarchy. Placeholder accounts group children; postings use leaf accounts. Spending categories are expense accounts. An expense account can have a class (`fixed`, `committed`, `discretionary`, `savings` or `not-spending`) for reports and budgets. A system role marks the accounts that the engine creates with the entity, such as `Uncategorized` and `FX gain/loss`.
 
-Each account has a commodity. `commodities` holds each currency, security or crypto asset with its precision. `prices` holds the price of one commodity in another on a date, with its source. ECB rates (`means rates fetch`), hand-entered rates (`means rates set`) and CSV rates (`means rates import`) all go in this table.
+Each account has a commodity. `commodities` holds each currency, security or crypto asset with its precision. `prices` holds the price of one commodity in another on a date, with its source. ECB rates (`means rates fetch`), hand-entered rates (`means rates set`) and CSV rates (`means rates import`) all go in this table. A posting in a commodity without a direct or an inverse rate takes a cross rate through a common quote, such as EUR. Its `rate_source` is then `cross:<SOURCE>`, for example `cross:ECB`. See [the rate lookup](agent-interface.md#drafting).
 
 Three columns map an account to statutory reporting. They never change postings:
 

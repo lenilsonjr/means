@@ -338,3 +338,37 @@ fn as_of_and_entity_scope_limit_the_snapshot() {
     let report = snapshot::verify(&out).unwrap();
     assert!(report.ok, "{:?}", report.problems);
 }
+
+#[test]
+fn only_postings_with_a_derived_rate_carry_the_marker() {
+    let dir = std::env::temp_dir().join(format!("means-snapshot-derived-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = Db::open(dir.join("ledger.db")).unwrap();
+    let mut c = db.conn();
+    let entity = entities::create_entity(&mut c, "Harbor Pte", "company", "SG", "SGD").unwrap();
+    let usd = accounts::ensure_account(&c, entity.id, AccountType::Asset, &["Bank", "USD"], "bank", "USD").unwrap();
+    let sgd = accounts::ensure_account(&c, entity.id, AccountType::Asset, &["Bank", "SGD"], "bank", "SGD").unwrap();
+    let fees = accounts::ensure_account(&c, entity.id, AccountType::Expense, &["Fees"], "expense", "SGD").unwrap();
+    means_core::rates::set_price(&c, "USD", "EUR", day("2026-03-02"), dec("0.9"), "ecb").unwrap();
+    means_core::rates::set_price(&c, "SGD", "EUR", day("2026-03-02"), dec("0.7"), "ecb").unwrap();
+    simple(&mut c, entity.id, "2026-03-02", "Wire fee", usd.id, fees.id, "10", EntryStatus::Posted);
+    simple(&mut c, entity.id, "2026-03-02", "Card fee", sgd.id, fees.id, "5", EntryStatus::Posted);
+    let out = dir.join("snapshot");
+    snapshot::export(&mut c, &out, &SnapshotOptions::default()).unwrap();
+    let postings: Vec<Value> = read_lines(&out.join("entries.jsonl")).iter().flat_map(|e| e["postings"].as_array().unwrap().clone()).collect();
+    let usd_uid = uid(&c, "accounts", usd.id);
+    assert_eq!(postings.len(), 4);
+    for p in &postings {
+        if p["account_uid"] == usd_uid.as_str() {
+            assert_eq!((p["rate_source"].as_str(), p["derived"].as_bool()), (Some("cross:ECB"), Some(true)));
+        } else {
+            assert!(p.get("derived").is_none(), "{p}");
+        }
+    }
+    assert_eq!(read_array(&out.join("rates.json")).len(), 2, "rates.json holds the stored rows only");
+    assert!(snapshot::verify(&out).unwrap().ok);
+    drop(c);
+    drop(db);
+    let _ = std::fs::remove_dir_all(&dir);
+}

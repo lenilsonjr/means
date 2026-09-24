@@ -1557,6 +1557,46 @@ mod tests {
         assert_eq!(e.postings[1].quantity.major(), d("18"));
         assert_eq!(e.postings[0].rate_source, "exact");
     }
+
+    #[test]
+    fn usd_posting_in_sgd_entity_uses_cross_rate_through_eur() {
+        let db = Db::open_memory().unwrap();
+        let mut conn = db.conn();
+        let entity = entities::create_entity(&mut conn, "Harbor Pte", "company", "SG", "SGD").unwrap();
+        let usd = accounts::ensure_account(&conn, entity.id, AccountType::Asset, &["Bank", "USD"], "bank", "USD").unwrap();
+        let fees = accounts::ensure_account(&conn, entity.id, AccountType::Expense, &["Fees"], "expense", "SGD").unwrap();
+        // ECB rows: 1 EUR = 1.10 USD and 1 EUR = 1.45 SGD.
+        rates::set_price(&conn, "USD", "EUR", date("2026-03-02"), d("1") / d("1.10"), "ecb").unwrap();
+        rates::set_price(&conn, "SGD", "EUR", date("2026-03-02"), d("1") / d("1.45"), "ecb").unwrap();
+        let entry = |conn: &mut Connection, on: &str| {
+            create_simple(
+                conn,
+                SimpleEntry {
+                    entity_id: entity.id,
+                    date: date(on),
+                    kind: "expense".into(),
+                    account_id: usd.id,
+                    contra_account_id: Some(fees.id),
+                    quantity: d("100"),
+                    contra_quantity: None,
+                    payee: "Wire fee".into(),
+                    notes: String::new(),
+                    splits: vec![],
+                    status: EntryStatus::Posted,
+                    fee: None,
+                    fee_account_id: None,
+                    origin: String::new(),
+                },
+            )
+            .unwrap()
+        };
+        let e = entry(&mut conn, "2026-03-02");
+        assert_eq!(e.postings[0].rate_source, "cross:ECB");
+        assert_eq!(e.postings[0].amount.major(), d("-131.82"));
+        // Before the first ECB row, one leg is missing, so the posting has no rate.
+        let early = entry(&mut conn, "2026-03-01");
+        assert_eq!(early.postings[0].rate_source, "missing");
+    }
 }
 
 /// Operations proposed by the UI. Preview runs exactly the same accounting code

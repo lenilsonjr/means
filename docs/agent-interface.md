@@ -84,6 +84,8 @@ These commands describe the books. They never change postings. See [entity facts
 | `means entry void <uid> --reason <text> [--date D]` | A reversal | Refused |
 | `means rates set --date D --base B --quote Q --rate R [--source S] [--no-revalue] [--json]` | A rate and revalued postings | Allowed |
 | `means rates list [--base B] [--quote Q] [--from D] [--to D] [--limit N] [--json]` | Nothing | Allowed |
+| `means rates list --derive B/Q --date D [--json]` | Nothing | Allowed |
+| `means rates fetch [--from D] [--pairs B/Q,...] [--to D] [--no-revalue]` | ECB rates, stored cross rates and revalued postings | Allowed |
 | `means rates import <csv> [--source S] [--no-revalue] [--json]` | Rates and revalued postings | Allowed |
 
 `--actor` defaults to `$USER`.
@@ -105,6 +107,12 @@ These commands describe the books. They never change postings. See [entity facts
 `rates set` stores one rate: one unit of the base costs `rate` units of the quote on the date. The row goes in the prices table, which `means rates fetch` also fills. The default source is `manual`. Drafts, imports and invoices find the row through the rate lookup: directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. `rates import` reads a CSV file with the header `date,base,quote,rate`. It writes all rows or none, and a refusal names the bad line. `set` and `import` then revalue the postings booked without a rate, unless you give `--no-revalue`.
 
 `rates set` returns `rate` and `revalued`. A rate has `id`, `date`, `base`, `quote`, `rate` (a decimal string) and `source`. `revalued` has `fixed`, `failed` and `first_error`. `rates list` returns `count` and `rates`, newest first. `rates import` returns `written`, `source` and `revalued`.
+
+The rate lookup uses the latest row on or before the date. A row older than 400 days does not count. When the ledger has no direct row and no inverse row, the lookup derives a cross rate through a currency that quotes both sides. EUR comes first, because ECB rates quote EUR. Each leg uses its latest row within the same 400 days. A missing leg gives no rate, and the posting gets `rate_source` `missing`. A cross rate has the `rate_source` `cross:<SOURCE>`, where `<SOURCE>` is the source of the legs in capitals, for example `cross:ECB`. Two legs with different sources give `cross:<A>+<B>`.
+
+`rates list --derive B/Q --date D` returns `rate` with `date`, `base`, `quote`, `rate`, `source` and `derived`. `source` is `exact`, `nearest`, `inverse` or `cross:<SOURCE>`. `derived` is true for a cross rate. When the lookup finds no rate, the command fails with `missing_rate`.
+
+`rates fetch` stores the ECB rate of every ECB currency against EUR from `--from`. `--pairs USD/SGD,GBP/SGD` also stores a cross rate for each pair on each day from `--from` to `--to` (default: today) that has a stored rate. The command skips a day where the pair has a direct or an inverse row. A stored cross row keeps its `cross:<SOURCE>` source, so reports, packs and snapshots see the pair. `rates fetch` needs a network, and it prints text.
 
 ### Draft document
 

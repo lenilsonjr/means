@@ -13,86 +13,194 @@ use crate::{Error, Result};
 /// How far back a "nearest" rate may be before it counts as missing.
 const MAX_STALE_DAYS: i64 = 400;
 
-#[derive(Debug, Clone)]
 pub struct RateLookup {
     pub rate: Decimal,
-    /// exact | nearest | inverse | cross | same
+    /// exact | nearest | inverse | same | cross:<SOURCE>
+    ///
+    /// A cross rate goes through a third currency that quotes both sides, for example EUR for
+    /// ECB rates. Its source names the source of the stored rows, for example `cross:ECB`. A
+    /// stored row whose own source starts with `cross:` keeps that source.
     pub source: String,
 }
 
+/// The prefix of the source of a derived (cross) rate.
+pub const CROSS_PREFIX: &str = "cross:";
+
+/// True when a rate source marks a rate derived through a third currency.
+pub fn is_cross(source: &str) -> bool {
+    source == "cross" || source.starts_with(CROSS_PREFIX)
+}
+
+/// The source of a cross rate made from two legs with these stored sources.
+fn cross_source(a: &str, b: &str) -> String {
+    let strip = |s: &str| s.strip_prefix(CROSS_PREFIX).unwrap_or(s).trim().to_ascii_uppercase();
+    let (a, b) = (strip(a), strip(b));
+    if a == b || b.is_empty() {
+        format!("{CROSS_PREFIX}{a}")
+    } else if a.is_empty() {
+        format!("{CROSS_PREFIX}{b}")
+    } else {
+        format!("{CROSS_PREFIX}{a}+{b}")
+    }
+}
+
 /// Price of one unit of `commodity` in `currency` on `date` (or the latest before it).
+///
+/// The lookup tries a direct row, then an inverse row, then a cross rate through a currency
+/// that quotes both sides. Each leg uses the latest row on or before `date`, within the
+/// staleness limit. EUR comes first as the common quote, because ECB rates quote EUR.
 pub fn rate_for(conn: &Connection, commodity: &str, currency: &str, date: NaiveDate) -> Result<Option<RateLookup>> {
     let commodity = commodity.trim().to_ascii_uppercase();
     let currency = currency.trim().to_ascii_uppercase();
     if commodity == currency {
         return Ok(Some(RateLookup { rate: Decimal::ONE, source: "same".into() }));
     }
-    if let Some((p, on)) = latest_price(conn, &commodity, &currency, date)? {
-        let source = if on == date { "exact" } else { "nearest" };
-        return Ok(Some(RateLookup { rate: p, source: source.into() }));
+    if let Some((p, on, stored)) = latest_price(conn, &commodity, &currency, date)? {
+        let source = if stored.starts_with(CROSS_PREFIX) {
+            // A stored cross row of an earlier day gives way to a fresh derivation.
+            if on != date {
+                if let Some((rate, source)) = cross_rate(conn, &commodity, &currency, date)? {
+                    return Ok(Some(RateLookup { rate, source }));
+                }
+            }
+            stored
+        } else if on == date {
+            "exact".into()
+        } else {
+            "nearest".into()
+        };
+        return Ok(Some(RateLookup { rate: p, source }));
     }
-    if let Some((p, _)) = latest_price(conn, &currency, &commodity, date)? {
+    if let Some((p, _, _)) = latest_price(conn, &currency, &commodity, date)? {
         if !p.is_zero() {
             return Ok(Some(RateLookup { rate: (Decimal::ONE / p).round_dp(12), source: "inverse".into() }));
         }
     }
-    // Cross through any currency that quotes both (EUR for ECB data).
+    Ok(cross_rate(conn, &commodity, &currency, date)?.map(|(rate, source)| RateLookup { rate, source }))
+}
+
+/// A cross rate of `commodity` in `currency` through a currency that quotes both, with its
+/// source. `None` when no common quote has both legs on or before `date`.
+fn cross_rate(conn: &Connection, commodity: &str, currency: &str, date: NaiveDate) -> Result<Option<(Decimal, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT DISTINCT cur.code FROM prices p JOIN commodities cur ON cur.id = p.currency_id
-         JOIN commodities c ON c.id = p.commodity_id WHERE c.code IN (?1, ?2) ORDER BY cur.code",
+        "SELECT DISTINCT code FROM (
+           SELECT cur.code AS code FROM prices p JOIN commodities cur ON cur.id = p.currency_id
+             JOIN commodities c ON c.id = p.commodity_id WHERE c.code IN (?1, ?2)
+           UNION
+           SELECT c.code FROM prices p JOIN commodities cur ON cur.id = p.currency_id
+             JOIN commodities c ON c.id = p.commodity_id WHERE cur.code IN (?1, ?2))
+         ORDER BY code <> 'EUR', code",
     )?;
     let vias: Vec<String> = stmt.query_map(params![commodity, currency], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
     for via in vias {
         if via == commodity || via == currency {
             continue;
         }
-        let a = price_in(conn, &commodity, &via, date)?;
-        let b = price_in(conn, &currency, &via, date)?;
-        if let (Some(a), Some(b)) = (a, b) {
+        let a = price_in(conn, commodity, &via, date)?;
+        let b = price_in(conn, currency, &via, date)?;
+        if let (Some((a, source_a)), Some((b, source_b))) = (a, b) {
             if !b.is_zero() {
-                return Ok(Some(RateLookup { rate: (a / b).round_dp(12), source: "cross".into() }));
+                return Ok(Some(((a / b).round_dp(12), cross_source(&source_a, &source_b))));
             }
         }
     }
     Ok(None)
 }
 
-/// Price of `commodity` in `currency`, direct or inverse, latest on or before `date`.
-fn price_in(conn: &Connection, commodity: &str, currency: &str, date: NaiveDate) -> Result<Option<Decimal>> {
-    if commodity == currency {
-        return Ok(Some(Decimal::ONE));
+/// Price of `commodity` in `currency`, direct or inverse, latest on or before `date`, with the
+/// source of the stored row.
+fn price_in(conn: &Connection, commodity: &str, currency: &str, date: NaiveDate) -> Result<Option<(Decimal, String)>> {
+    if let Some((p, _, source)) = latest_price(conn, commodity, currency, date)? {
+        return Ok(Some((p, source)));
     }
-    if let Some((p, _)) = latest_price(conn, commodity, currency, date)? {
-        return Ok(Some(p));
-    }
-    if let Some((p, _)) = latest_price(conn, currency, commodity, date)? {
+    if let Some((p, _, source)) = latest_price(conn, currency, commodity, date)? {
         if !p.is_zero() {
-            return Ok(Some(Decimal::ONE / p));
+            return Ok(Some((Decimal::ONE / p, source)));
         }
     }
     Ok(None)
 }
 
-fn latest_price(conn: &Connection, commodity: &str, currency: &str, date: NaiveDate) -> Result<Option<(Decimal, NaiveDate)>> {
-    let row: Option<(String, String)> = conn
+fn latest_price(conn: &Connection, commodity: &str, currency: &str, date: NaiveDate) -> Result<Option<(Decimal, NaiveDate, String)>> {
+    let row: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT p.price, p.on_date FROM prices p
+            "SELECT p.price, p.on_date, p.source FROM prices p
              JOIN commodities c ON c.id = p.commodity_id JOIN commodities cur ON cur.id = p.currency_id
              WHERE c.code = ?1 AND cur.code = ?2 AND p.on_date <= ?3 ORDER BY p.on_date DESC LIMIT 1",
             params![commodity, currency, date.to_string()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
     match row {
-        Some((p, on)) => {
+        Some((p, on, source)) => {
             let on = NaiveDate::parse_from_str(&on, "%Y-%m-%d").map_err(|e| Error::Parse(e.to_string()))?;
             if (date - on).num_days() > MAX_STALE_DAYS {
                 return Ok(None);
             }
-            Ok(Some((money::parse(&p)?, on)))
+            Ok(Some((money::parse(&p)?, on, source)))
         }
         None => Ok(None),
     }
+}
+
+/// Store cross rates for `pairs` (base, quote) on each day from `from` to `to` that has a
+/// stored rate. The engine stores a pair only on a day where the lookup derives it through a
+/// common quote. A day with a direct or an inverse row keeps that row. Each stored row has the
+/// source of the cross rate, for example `cross:ECB`, so reports and snapshots see it as a
+/// derived rate. Returns the number of rows written.
+pub fn store_cross_pairs(conn: &mut Connection, pairs: &[(String, String)], from: NaiveDate, to: NaiveDate) -> Result<usize> {
+    if to < from {
+        return Err(Error::Invalid(format!("the range ends on {to}, before it starts on {from}")));
+    }
+    let mut checked = Vec::with_capacity(pairs.len());
+    for (base, quote) in pairs {
+        let base = currency_code("base", base)?;
+        let quote = currency_code("quote", quote)?;
+        if base == quote {
+            return Err(Error::Invalid(format!("base and quote are the same currency ({base})")));
+        }
+        checked.push((base, quote));
+    }
+    let tx = conn.transaction()?;
+    let days: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT DISTINCT on_date FROM prices WHERE on_date >= ?1 AND on_date <= ?2 ORDER BY on_date")?;
+        let rows = stmt.query_map(params![from.to_string(), to.to_string()], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    let mut written = 0usize;
+    for day in days {
+        let day = NaiveDate::parse_from_str(&day, "%Y-%m-%d").map_err(|e| Error::Parse(e.to_string()))?;
+        for (base, quote) in &checked {
+            // A stored cross row of an earlier run must not hide a fresh derivation.
+            if latest_price(&tx, base, quote, day)?.is_some_and(|(_, on, source)| on == day && !source.starts_with(CROSS_PREFIX)) {
+                continue;
+            }
+            if latest_price(&tx, quote, base, day)?.is_some_and(|(_, on, _)| on == day) {
+                continue;
+            }
+            if let Some((rate, source)) = cross_rate(&tx, base, quote, day)? {
+                set_price(&tx, base, quote, day, rate, &source)?;
+                written += 1;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(written)
+}
+
+/// Parse a list of pairs such as `USD/SGD,GBP/SGD`.
+pub fn parse_pairs(text: &str) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let Some((base, quote)) = part.split_once('/') else {
+            return Err(Error::Invalid(format!("a pair looks like USD/SGD, got {part:?}")));
+        };
+        out.push((currency_code("base", base)?, currency_code("quote", quote)?));
+    }
+    if out.is_empty() {
+        return Err(Error::Invalid("give at least one pair, such as USD/SGD".into()));
+    }
+    Ok(out)
 }
 
 pub fn set_price(conn: &Connection, commodity: &str, currency: &str, on: NaiveDate, price: Decimal, source: &str) -> Result<()> {
@@ -298,11 +406,43 @@ mod tests {
         assert_eq!(eur_in_usd.source, "inverse");
         assert_eq!(eur_in_usd.rate.round_dp(4), Decimal::from_str("1.1400").unwrap());
         let usd_in_brl = rate_for(&conn, "USD", "BRL", d).unwrap().unwrap();
-        assert_eq!(usd_in_brl.source, "cross");
+        assert_eq!(usd_in_brl.source, "cross:ECB");
         assert_eq!(usd_in_brl.rate.round_dp(4), Decimal::from_str("5.4386").unwrap());
         let later = rate_for(&conn, "USD", "EUR", NaiveDate::from_ymd_opt(2026, 9, 10).unwrap()).unwrap().unwrap();
         assert_eq!(later.source, "nearest");
         assert!(rate_for(&conn, "USD", "EUR", NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()).unwrap().is_none());
+    }
+
+    #[test]
+    fn cross_rate_through_eur_needs_both_legs() {
+        let db = Db::open_memory().unwrap();
+        let mut conn = db.conn();
+        // ECB quotes: 1 EUR = 1.10 USD and 1 EUR = 1.45 SGD on 2026-03-02. USD only on 2026-03-03.
+        let xml = r#"<gesmes:Envelope><Cube><Cube time="2026-03-03"><Cube currency="USD" rate="1.1200"/></Cube>
+            <Cube time="2026-03-02"><Cube currency="USD" rate="1.1000"/><Cube currency="SGD" rate="1.4500"/></Cube></Cube></gesmes:Envelope>"#;
+        import_ecb_xml(&mut conn, xml, None).unwrap();
+        let d = NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        let usd_sgd = rate_for(&conn, "USD", "SGD", d).unwrap().unwrap();
+        assert_eq!(usd_sgd.source, "cross:ECB");
+        assert_eq!(usd_sgd.rate.round_dp(6), Decimal::from_str("1.318182").unwrap());
+        // On 2026-03-03 the SGD leg comes from the nearest earlier day.
+        let next = rate_for(&conn, "USD", "SGD", d.succ_opt().unwrap()).unwrap().unwrap();
+        assert_eq!(next.rate.round_dp(6), Decimal::from_str("1.294643").unwrap());
+        // A missing leg gives no rate.
+        assert!(rate_for(&conn, "USD", "IDR", d).unwrap().is_none());
+        assert!(rate_for(&conn, "USD", "SGD", NaiveDate::from_ymd_opt(2026, 3, 1).unwrap()).unwrap().is_none());
+
+        // Stored pairs keep the cross source, and the snapshot of prices sees them as rows.
+        let pairs = parse_pairs("usd/sgd, SGD/USD").unwrap();
+        let written = store_cross_pairs(&mut conn, &pairs, d, d.succ_opt().unwrap()).unwrap();
+        assert_eq!(written, 2, "SGD/USD is skipped: the stored USD/SGD row is its inverse");
+        let rows = list_prices(&conn, "USD", "SGD", None, None, 0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.source == "cross:ECB"));
+        let stored = rate_for(&conn, "USD", "SGD", d).unwrap().unwrap();
+        assert_eq!((stored.source.as_str(), stored.rate.round_dp(6)), ("cross:ECB", Decimal::from_str("1.318182").unwrap()));
+        assert!(parse_pairs("USD").is_err());
+        assert!(store_cross_pairs(&mut conn, &parse_pairs("USD/USD").unwrap(), d, d).is_err());
     }
 
     #[test]

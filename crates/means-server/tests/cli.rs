@@ -1114,6 +1114,18 @@ fn rates_set_list_and_import_work_offline_and_value_drafts() {
     let dollar = entry.postings.iter().find(|p| p.account_id == usd).unwrap();
     assert_eq!((dollar.amount.minor(), dollar.rate_source.as_str()), (-2000, "inverse"));
 
+    // No USD/GBP row exists: the lookup derives it through EUR, and the source names the legs.
+    let derived = json(&["rates", "list", "--derive", "USD/GBP", "--date", "2026-03-03", "--json"]);
+    assert_eq!(derived["rate"]["source"], "cross:BANK-SHEET");
+    assert_eq!(derived["rate"]["derived"], true);
+    assert_eq!(derived["rate"]["rate"], "0.666666666667");
+    let direct = json(&["rates", "list", "--derive", "EUR/USD", "--date", "2026-03-03", "--json"]);
+    assert_eq!((direct["rate"]["source"].as_str(), direct["rate"]["derived"].as_bool()), (Some("exact"), Some(false)));
+    let missing = ledger.run(&["rates", "list", "--derive", "USD/GBP", "--date", "2026-03-02", "--json"]);
+    assert_eq!(missing.status.code(), Some(1));
+    let refusal: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(refusal["error"]["code"], "missing_rate");
+
     let out = ledger.run(&["rates", "set", "--date", "2026-03-02", "--base", "EUR", "--quote", "EUR", "--rate", "1", "--json"]);
     assert_eq!(out.status.code(), Some(1));
 }

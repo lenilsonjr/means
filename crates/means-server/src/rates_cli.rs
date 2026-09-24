@@ -56,6 +56,12 @@ pub struct ListArgs {
     /// Most rows to return, newest first
     #[arg(long, default_value_t = 500)]
     limit: i64,
+    /// Show the rate that the lookup finds for one pair, such as USD/SGD: direct, inverse or cross
+    #[arg(long, requires = "date", conflicts_with_all = ["base", "quote", "from", "to"])]
+    derive: Option<String>,
+    /// The day of the derived rate, YYYY-MM-DD (with --derive)
+    #[arg(long, requires = "derive")]
+    date: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -126,6 +132,9 @@ fn run_list(db_path: &Path, a: ListArgs) -> AgentResult<Output> {
     if a.limit < 1 {
         return Err(AgentError::new("invalid_input", "limit must be 1 or more"));
     }
+    if let Some(pair) = a.derive.as_deref() {
+        return derive(db_path, pair, a.date.as_deref().unwrap_or_default(), a.json);
+    }
     let from = a.from.as_deref().map(|d| parse_date("from", d)).transpose()?;
     let to = a.to.as_deref().map(|d| parse_date("to", d)).transpose()?;
     let db = open(db_path)?;
@@ -138,6 +147,26 @@ fn run_list(db_path: &Path, a: ListArgs) -> AgentResult<Output> {
     let mut text: String = rows.iter().map(|p| format!("{}  1 {} = {} {}  {}\n", p.on, p.commodity, money::plain(p.price), p.currency, p.source)).collect();
     text.push_str(&format!("{} rates\n", rows.len()));
     Ok(Output::Text(text))
+}
+
+/// The rate that the lookup finds for one pair on one day. `derived` is true for a cross rate.
+fn derive(db_path: &Path, pair: &str, date: &str, json: bool) -> AgentResult<Output> {
+    let on = parse_date("date", date)?;
+    let pairs = rates::parse_pairs(pair)?;
+    let [(base, quote)] = pairs.as_slice() else {
+        return Err(AgentError::new("invalid_input", format!("--derive takes one pair, such as USD/SGD, got {pair:?}")));
+    };
+    let db = open(db_path)?;
+    let conn = db.conn();
+    let Some(found) = rates::rate_for(&conn, base, quote, on)? else {
+        return Err(AgentError::new("missing_rate", format!("no {base} to {quote} rate on or before {on}, directly, as the inverse or through a common quote")));
+    };
+    let rate = money::plain(found.rate.normalize());
+    let derived = rates::is_cross(&found.source);
+    if json {
+        return Ok(Output::Json(json!({"rate": {"date": on.to_string(), "base": base, "quote": quote, "rate": rate, "source": found.source, "derived": derived}})));
+    }
+    Ok(Output::Text(format!("{on}  1 {base} = {rate} {quote}  {}\n", found.source)))
 }
 
 fn run_import(db_path: &Path, a: ImportArgs) -> AgentResult<Output> {

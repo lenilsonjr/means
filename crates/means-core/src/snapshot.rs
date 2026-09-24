@@ -543,13 +543,15 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
                     *credits.entry(entity_id).or_default() -= amount as i128;
                 }
             }
-            postings_by_entry.entry(entry_id).or_default().push(json!({
+            let rate_source: String = r.get(11)?;
+            let derived = crate::rates::is_cross(&rate_source);
+            let mut posting = json!({
                 "uid": r.get::<_, String>(1)?,
                 "account_uid": r.get::<_, String>(3)?,
                 "quantity": money(r.get(4)?, &r.get::<_, String>(5)?, r.get(6)?)?,
                 "amount": money(amount, &r.get::<_, String>(8)?, r.get(9)?)?,
                 "rate": r.get::<_, Option<String>>(10)?,
-                "rate_source": r.get::<_, String>(11)?,
+                "rate_source": rate_source,
                 "memo": r.get::<_, String>(12)?,
                 "metadata": json_text(&r.get::<_, String>(13)?),
                 "external_id": r.get::<_, Option<String>>(14)?,
@@ -558,7 +560,12 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
                 "statement_line_ids": line_ids_by_posting.remove(&id).unwrap_or_default(),
                 "document_uids": docs_by_posting.remove(&id).unwrap_or_default(),
                 "tax_event_uids": tax_by_posting.remove(&id).unwrap_or_default(),
-            }));
+            });
+            // Only a posting valued with a derived (cross) rate carries the marker.
+            if derived {
+                posting["derived"] = json!(true);
+            }
+            postings_by_entry.entry(entry_id).or_default().push(posting);
         }
     }
     let mut entries_json = Vec::new();
