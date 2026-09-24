@@ -11,6 +11,7 @@ mod entry_cli;
 mod filing_cli;
 mod grpc;
 mod inter_pj;
+mod intervault_cli;
 mod invoice_cli;
 mod local_api;
 mod mercury;
@@ -268,6 +269,11 @@ enum Command {
     Invoice {
         #[command(subcommand)]
         command: invoice_cli::Command,
+    },
+    /// Typed links between entries of different entities, and the intercompany exceptions
+    Intervault {
+        #[command(subcommand)]
+        command: intervault_cli::Command,
     },
 }
 
@@ -1270,6 +1276,7 @@ async fn main() -> Result<()> {
         Command::Filing { command } => filing_cli::run(db_path, command),
         Command::Tax { command } => tax_cli::run(db_path, command),
         Command::Invoice { command } => invoice_cli::run(db_path, command),
+        Command::Intervault { command } => intervault_cli::run(db_path, command),
     }
 }
 

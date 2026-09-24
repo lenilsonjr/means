@@ -852,6 +852,7 @@ impl Means for MeansService {
             status: EntryStatus::parse(&r.status).map_err(status)?,
             origin: "transfer".into(),
             external: None,
+            kind: Some(r.kind.clone()).filter(|k| !k.trim().is_empty()),
         };
         let (a, b) = self.run(move |c| journal::create_transfer(c, t)).await?;
         Ok(Response::new(pb::CreateTransferResponse { entry: Some(entry_pb(&a)), counterpart: b.as_ref().map(entry_pb) }))

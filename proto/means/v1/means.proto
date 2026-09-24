@@ -436,6 +436,7 @@ message CreateTransferRequest {
   int64 from_contra_account_id = 10; // cross-entity: contra in the from entity (default owner_distributions / investment_in_entity)
   int64 to_contra_account_id = 11;   // cross-entity: contra in the to entity (default distributions_received / owner_contributions)
   string status = 12;
+  string kind = 13;                  // cross-entity: kind of the inter-vault link ("" = transfer)
 }
 message CreateTransferResponse { JournalEntry entry = 1; JournalEntry counterpart = 2; }
 

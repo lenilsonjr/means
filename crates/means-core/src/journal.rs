@@ -475,7 +475,8 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
         (EntryStatus::Draft, _) => EntryStatus::Draft,
         (EntryStatus::Void, _) => EntryStatus::Void,
     };
-    if new_status == EntryStatus::Posted && before.status == EntryStatus::Draft {
+    let posts_draft = new_status == EntryStatus::Posted && before.status == EntryStatus::Draft;
+    if posts_draft {
         check_lock(&entity, input.date)?;
     }
     let keep_closed: std::collections::HashSet<i64> = before.postings.iter().map(|p| p.account_id).collect();
@@ -520,6 +521,9 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
         }
     }
     crate::audit::log(conn, "journal_entries", id, "update", Some(serde_json::to_value(&before)?), None)?;
+    if posts_draft {
+        crate::intervault::on_post(conn, id)?;
+    }
     get_entry(conn, id)
 }
 
@@ -707,6 +711,8 @@ pub(crate) fn post_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i6
     let entry = get_entry(conn, id)?;
     hashchain::append(conn, &entry)?;
     crate::audit::log(conn, "journal_entries", id, "post", None, None)?;
+    // A linked pair becomes posted when both entries are posted.
+    crate::intervault::on_post(conn, id)?;
     get_entry(conn, id)
 }
 
@@ -755,6 +761,7 @@ pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64,
         return Err(Error::Conflict(format!("entry #{id} is not posted")));
     }
     let entity = entities::get_entity(tx, entry.entity_id)?;
+    let requested_date = date;
     let date = date.unwrap_or(entry.date);
     check_lock(&entity, date)?;
     let mut input = EntryInput::new(entry.entity_id, date);
@@ -783,6 +790,8 @@ pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64,
     // Statement lines that evidenced the voided entry go back to the queue.
     tx.execute("UPDATE statement_lines SET status = 'unmatched', posting_id = NULL, journal_entry_id = NULL, note = 'entry voided' WHERE journal_entry_id = ?1", [id])?;
     crate::audit::log(tx, "journal_entries", id, "void", None, Some(serde_json::json!({"reversal": reversal.id, "reason": reason})))?;
+    // A void of one linked entry voids the other entry of the pair in this transaction.
+    crate::intervault::on_void(tx, id, requested_date, reason)?;
     get_entry(tx, id)
 }
 
@@ -795,6 +804,7 @@ pub fn delete_entry(conn: &mut Connection, id: i64) -> Result<()> {
     let tx = conn.transaction()?;
     tx.execute("UPDATE statement_lines SET status = 'unmatched', posting_id = NULL, journal_entry_id = NULL WHERE journal_entry_id = ?1", [id])?;
     crate::tax::delete_for_entry(&tx, id)?;
+    crate::intervault::on_delete(&tx, id)?;
     tx.execute("DELETE FROM journal_entries WHERE id = ?1", [id])?;
     crate::audit::log(&tx, "journal_entries", id, "delete", Some(serde_json::to_value(&entry)?), None)?;
     tx.commit()?;
@@ -1181,6 +1191,9 @@ pub struct Transfer {
     pub status: EntryStatus,
     pub origin: String,
     pub external: Option<(Option<String>, Option<String>)>,
+    /// The kind of the inter-vault link between the two entries. `None` gives `transfer`.
+    /// A transfer inside one entity has no link.
+    pub kind: Option<String>,
 }
 
 /// A transfer inside one entity (one entry) or between entities (two linked entries).
@@ -1191,6 +1204,7 @@ pub fn create_transfer(conn: &mut Connection, t: Transfer) -> Result<(JournalEnt
         return Err(Error::Invalid("amount must be positive".into()));
     }
     let to_q = t.to_quantity.unwrap_or(t.from_quantity);
+    let kind = crate::intervault::parse_kind(t.kind.as_deref().unwrap_or(""))?;
     let origin = if t.origin.is_empty() { "transfer".to_string() } else { t.origin.clone() };
     if from.entity_id == to.entity_id {
         let entry = create_simple(
@@ -1254,6 +1268,7 @@ pub fn create_transfer(conn: &mut Connection, t: Transfer) -> Result<(JournalEnt
     b.counterpart_id = Some(first.id);
     let second = create_entry_in_transaction(&tx, b)?;
     tx.execute("UPDATE journal_entries SET counterpart_id = ?2 WHERE id = ?1", params![first.id, second.id])?;
+    crate::intervault::link_in_transaction(&tx, first.id, second.id, &kind, "")?;
     let first = get_entry(&tx, first.id)?;
     tx.commit()?;
     Ok((first, Some(second)))
@@ -1458,6 +1473,7 @@ mod tests {
                 status: EntryStatus::Posted,
                 origin: String::new(),
                 external: None,
+                kind: None,
             },
         )
         .unwrap();

@@ -168,6 +168,7 @@ fn transfers_create_draft_pairs_under_draft_only() {
         status: EntryStatus::Posted,
         origin: String::new(),
         external: None,
+        kind: None,
     };
     let (a, pair) = journal::create_transfer(&mut c, transfer(other_bank.id)).unwrap();
     let pair = pair.unwrap();

@@ -22,6 +22,7 @@ pub mod filings;
 pub mod groups;
 pub mod hashchain;
 pub mod imports;
+pub mod intervault;
 pub mod invoices;
 pub mod journal;
 pub mod matcher;

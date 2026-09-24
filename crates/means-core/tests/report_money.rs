@@ -207,9 +207,11 @@ fn legacy_reversal_tag_repair_is_audited_atomic_and_preserves_edits() {
     means_core::db::migrate_to(&conn, 11).unwrap();
     // Seed legacy tag contents using current journal helpers. Payee, statutory and tax metadata are
     // independent of the tag repairs under test; do not advance their migration version.
+    // A void reads the inter-vault links, so the seed also creates that table.
     conn.execute_batch(include_str!("../migrations/0016_payees.sql")).unwrap();
     conn.execute_batch(include_str!("../migrations/0021_statutory_codes.sql")).unwrap();
     conn.execute_batch(include_str!("../migrations/0022_tax_events.sql")).unwrap();
+    conn.execute_batch(include_str!("../migrations/0025_intervault_links.sql")).unwrap();
     let e = entities::create_entity(&mut conn, "Personal", "person", "PT", "EUR").unwrap();
     let bank = accounts::ensure_account(&conn, e.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
     let expense = accounts::ensure_account(&conn, e.id, AccountType::Expense, &["Food"], "expense", "EUR").unwrap();

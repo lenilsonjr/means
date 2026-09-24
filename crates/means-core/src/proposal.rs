@@ -71,6 +71,22 @@ pub struct DraftDocument {
     /// A default tax block for each income or expense posting without a block of its own.
     #[serde(default)]
     pub tax: Option<DraftTax>,
+    /// Link the new draft to an existing entry of another entity, in the same transaction.
+    #[serde(default)]
+    pub intervault: Option<DraftIntervault>,
+}
+
+/// The inter-vault block of a draft document. The new draft becomes entry A of the link.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftIntervault {
+    /// The uid of an existing entry of another entity.
+    pub with: String,
+    /// The link kind. Default: transfer.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub note: String,
 }
 
 /// The tax block of a draft posting. Amounts are unsigned decimal strings in the functional
@@ -121,6 +137,8 @@ pub struct DraftPosting {
 pub struct Drafted {
     pub entry: JournalEntry,
     pub audit_event_id: i64,
+    /// The inter-vault link that the draft document asked for.
+    pub link: Option<crate::intervault::Link>,
 }
 
 /// Find an entry by its uid.
@@ -284,12 +302,26 @@ pub fn create_draft(conn: &mut Connection, entity_id: i64, doc: &DraftDocument) 
     }
     let entry = journal::create_entry_in_transaction(&tx, input)?;
     tags::set_tags_in_transaction(&tx, entry.id, &tag_pairs)?;
+    let link = match &doc.intervault {
+        Some(block) => {
+            if block.with.trim().is_empty() {
+                return Err(AgentError::invalid("the intervault block needs the uid of an entry in \"with\""));
+            }
+            let other = entry_id_by_uid(&tx, &block.with)?;
+            Some(crate::intervault::link_in_transaction(&tx, entry.id, other, &block.kind, &block.note)?)
+        }
+        None => None,
+    };
     let metadata = if doc.metadata.is_null() { serde_json::json!({}) } else { doc.metadata.clone() };
-    audit::log(&tx, "journal_entries", entry.id, "agent_draft", None, Some(serde_json::json!({"origin": "agent", "metadata": metadata, "postings": doc.postings.len()})))?;
+    let mut after = serde_json::json!({"origin": "agent", "metadata": metadata, "postings": doc.postings.len()});
+    if let Some(link) = &link {
+        after["intervault_link"] = serde_json::json!(link.uid);
+    }
+    audit::log(&tx, "journal_entries", entry.id, "agent_draft", None, Some(after))?;
     let audit_event_id = tx.last_insert_rowid();
     let entry = journal::get_entry(&tx, entry.id)?;
     tx.commit()?;
-    Ok(Drafted { entry, audit_event_id })
+    Ok(Drafted { entry, audit_event_id, link })
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]

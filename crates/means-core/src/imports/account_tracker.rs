@@ -936,6 +936,7 @@ fn post_transaction(
                     status: EntryStatus::Posted,
                     origin: "migration".into(),
                     external: None,
+                    kind: None,
                 },
             )?;
             // Tag the bank postings with the Account Tracker id (the transfer builder does not take references).

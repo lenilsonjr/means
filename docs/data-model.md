@@ -32,7 +32,7 @@ Each posting stores:
 
 A USD vault can hold a EUR bank account. Its postings retain EUR quantities and USD book values. Quantities and book values use integer minor units with explicit commodity precision. For example, 549 minor units with precision 2 means 5.49.
 
-A transfer between entities uses linked entries, one in each set of books. Currency differences post to FX gain or loss. A full refund reverses the original expense splits at their booked values and records any exchange difference separately.
+A transfer between entities uses linked entries, one in each set of books. The engine also writes an [inter-vault link](#inter-vault-links) for the pair. Currency differences post to FX gain or loss. A full refund reverses the original expense splits at their booked values and records any exchange difference separately.
 
 Historical changes to a vault’s functional currency use the [currency migration workflow](currency-migration.md). It preserves native account quantities and requires a reviewed preview and backup.
 
@@ -272,6 +272,50 @@ An invoice without a recognition entry converts nothing: the bank entry is then 
 | `means invoice settle <uid> --entry <uid> [--posting <uid>] --date D --amount X --kind K [--fx-account <path>]` | Records a settlement. |
 | `means invoice credit-note --entity <e> --credits <uid> (--json-file F \| --stdin)` | Records a credit note that settles the invoice. |
 | `means invoice cancel <uid> --reason R` | Cancels an invoice without settlements. |
+## Inter-vault links
+
+An inter-vault link joins two journal entries of different entities. Group reporting uses the links to find the two sides of each intercompany flow. `counterpart_id` stays on the entries of a transfer, but the link carries the kind, the amounts and the status of the pair.
+
+`intervault_links` has one row per pair:
+
+- `entry_a_id` and `entry_b_id`: two different entries. The engine refuses two entries of the same entity. One pair has one link, in either order.
+- `kind`: `transfer`, `capital`, `loan`, `interest`, `dividend`, `service`, `recharge`, `settlement` or `other`.
+- `amount_a`, `commodity_a`, `amount_b`, `commodity_b`: the native amount of the intercompany side of each entry, in minor units. The side is the sum of the postings on accounts with `intercompany = 1`. An entry without such postings uses its largest posting, and the result has a warning.
+- `rate`: the units of commodity B per unit of commodity A, from the two amounts. Two amounts in one commodity give `1`.
+- `note` and `status`: `draft`, `posted` or `void`.
+
+The audit log records every new link, every status change and every removal.
+
+### Pair lifecycle
+
+| Event | Result |
+| --- | --- |
+| Link, when either entry is a draft | The link is `draft`. |
+| Link, when both entries are posted | The link is `posted`. |
+| Post one entry of a draft link | The link stays `draft` until the other entry is posted too. Then it becomes `posted`. |
+| Void one entry | The engine voids the other posted entry in the same transaction, with the same reason. The link becomes `void`. A linked draft stays a draft. |
+| Void, when the period of the other entity is locked | The engine refuses the void with `locked_period` and names the entity. Nothing changes. Give a void date after the lock date, or unlock the period. |
+| Delete a linked draft | The engine deletes the link. |
+| Unlink | Allowed only while both entries are drafts. It needs a reason. For posted entries, void the pair. |
+
+A void without a date reverses each entry on its own date. A void with a date reverses both entries on that date.
+
+`create_transfer` between two entities writes a link. Its kind is `transfer`, unless the caller gives another kind. A transfer inside one entity has no link. Transfers from before migration 25 keep `counterpart_id` and have no link. Link them with `means intervault link` when a group report needs them.
+
+### Reconciliation and exceptions
+
+A link is reconciled when the current amount of entry A at the stored rate equals the current amount of entry B, within one minor unit of commodity B. The engine compares magnitudes. An edit of a linked entry after the link can make the link unreconciled.
+
+The exception list of an entity shows posted postings on intercompany accounts whose entry has no link. Void entries and their reversals cancel each other, so the list leaves them out. A group close resolves each row: link the entry to its other side, or explain it.
+
+| Command | Result |
+| --- | --- |
+| `means intervault link --a <entry uid> --b <entry uid> --kind loan [--note T]` | Links two entries. |
+| `means intervault unlink <link uid> --reason R` | Removes a link of two drafts. |
+| `means intervault list [--group G \| --entity E] --from D --to D [--status S]` | Lists the links with an entry in the period, with the `reconciled` flag. A group keeps the links where an entity is a member on the date of its entry. |
+| `means intervault exceptions --entity E --from D --to D` | Lists the unlinked intercompany postings. |
+
+With `--json`, each command prints one JSON object with `"schema_version": 1`. A failure prints `"ok": false` with an error code and exits with code 1. An agent can also link a new draft with the `intervault` block of `means entry draft`. See the [agent interface](agent-interface.md#inter-vault-block).
 
 ## Reports and exports
 

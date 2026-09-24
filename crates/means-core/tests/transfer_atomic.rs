@@ -24,6 +24,7 @@ fn fixture() -> (Db, journal::Transfer, i64, i64) {
             status: EntryStatus::Posted,
             origin: String::new(),
             external: None,
+            kind: None,
         };
         (transfer, from.id, to.id)
     };
