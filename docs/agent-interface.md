@@ -25,8 +25,14 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means entry show <uid> [--json]` | Nothing | No |
 | `means policy show [--json]` | Nothing | No |
 | `means policy set normal\|draft-only [--json]` | The policy | Yes |
+| `means close check --entity <e> --from D --to D [--json]` | Nothing | No |
+| `means close lock --entity <e> --through D --actor A --reason R [--force] [--json]` | The lock date and an audit event | Yes |
+| `means close unlock --entity <e> --to D --actor A --reason R [--amend] [--json]` | The lock date, an audit event and amendments | Yes |
+| `means filing record --entity <e> --jurisdiction J --code C --from D --to D [--status prepared] [--snapshot-digest X] [--artifact-digest Y] [--notes T] [--json]` | A filing | Only for `submitted` and `accepted` |
+| `means filing status <uid> --status S [--receipt R] [--at D] [--actor A] [--reason T] [--json]` | The filing status | Only for `submitted` and `accepted` |
+| `means filing list --entity <e> [--jurisdiction J] [--code C] [--json]` | Nothing | No |
 
-`--actor` defaults to `$USER`. The `unreviewed` status selects posted entries that no human has confirmed.
+`--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed.
 
 ## Draft document
 
@@ -74,6 +80,10 @@ Each command writes exactly one JSON object to stdout. Each object has `"schema_
 
 `void` returns `entry`, `reversal`, `already_void` and `evidence_lines_returned`.
 
+`close check --json` returns `report` and `report_digest`. The report has `entity_uid`, `period_start`, `period_end`, `lock_date`, `ok`, `error_count`, `warning_count`, `findings` and `totals`. Each finding has `code`, `severity` (`error` or `warning`), `message`, `entry_uid`, `account_uid`, `count` and `amount`. Its `ok` field tells whether the period can close. `close lock` returns `entity_uid`, `previous_lock`, `lock_date`, `forced`, `actor`, `reason`, `finding_counts`, `report`, `report_digest` and `audit_event_id`. `close unlock` returns `entity_uid`, `previous_lock`, `lock_date`, `actor`, `reason`, `amendments` and `audit_event_id`.
+
+`filing record` and `filing status` return `filing`. `filing status` also returns `previous_status`. `filing list` returns `entity_uid`, `count` and `filings`. A filing has `uid`, `entity_uid`, `jurisdiction`, `filing_code`, `period_start`, `period_end`, `status`, `snapshot_digest`, `chain_head_seq`, `chain_head_hash`, `artifact_digest`, `receipt_ref`, `submitted_at`, `notes`, `amends_uid`, `created_at` and `updated_at`.
+
 `list --json` returns `entity_uid`, `count`, `total` and `entries`. `show --json` returns `entry`. Each entry has its postings, `evidence`, `review` (`state` and `reviewed_at`), `hash`, and the uids of linked entries. Without `--json`, `list` and `show` print text.
 
 ## Errors
@@ -94,6 +104,10 @@ A refusal writes one JSON object to stdout and exits with code 1:
 | `not_found` | The entry or the entity does not exist. |
 | `stale_proposal` | The draft changed after the proposal, or the digest is wrong. |
 | `agent_not_allowed` | The command is a human action and `MEANS_AGENT=1` is set. |
+| `close_blocked` | The close check found errors. Resolve them, or lock with `--force`. |
+| `lock_not_forward` | A lock must move the lock date forward. Use `close unlock` to move it back. |
+| `filed_period` | A submitted or accepted filing covers a day that the unlock reopens. Unlock with `--amend`. |
+| `invalid_transition` | The filing cannot move from its status to the requested status. |
 | `invalid_input` | The input is not valid. The message tells you why. |
 | `internal` | The engine failed for an unexpected reason, such as a database error. |
 
@@ -101,7 +115,7 @@ Command-line usage errors, such as a missing argument, come from the argument pa
 
 ## Agent sessions
 
-Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses `entry confirm`, `entry void` and `policy set` with `agent_not_allowed`.
+Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses `entry confirm`, `entry void`, `policy set`, `close lock` and `close unlock` with `agent_not_allowed`. It also refuses `filing record` and `filing status` when the status is `submitted` or `accepted`.
 
 `MEANS_AGENT=1` is a workflow aid. It is not an access control. A restricted client needs a separate service boundary.
 

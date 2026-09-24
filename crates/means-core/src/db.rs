@@ -34,6 +34,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (19, Migration::Sql(include_str!("../migrations/0019_party_facts.sql"))),
     (20, Migration::Sql(include_str!("../migrations/0020_documents.sql"))),
     (21, Migration::Sql(include_str!("../migrations/0021_statutory_codes.sql"))),
+    (24, Migration::Sql(include_str!("../migrations/0024_close_and_filings.sql"))),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.

@@ -379,8 +379,8 @@ pub fn confirm(conn: &mut Connection, entry_id: i64, digest: &str, actor: &str) 
     }
     journal::post_entry_in_transaction(&tx, entry_id)?;
     journal::mark_reviewed(&tx, &[entry_id])?;
-    audit::log(&tx, "journal_entries", entry_id, "confirm", None, Some(serde_json::json!({"actor": actor, "action": "confirm", "proposal_digest": proposal.proposal_digest})))?;
-    let audit_event_id = tx.last_insert_rowid();
+    let audit_event_id =
+        audit::log_by(&tx, "journal_entries", entry_id, "confirm", None, Some(serde_json::json!({"actor": actor, "action": "confirm", "proposal_digest": proposal.proposal_digest})), actor, "")?;
     let entry = journal::get_entry(&tx, entry_id)?;
     tx.commit()?;
     Ok(Confirmed { entry, audit_event_id })

@@ -10,6 +10,7 @@
 pub mod accounts;
 pub mod audit;
 pub mod budgets;
+pub mod close;
 pub mod connections;
 pub mod cross_source;
 pub mod currency_migration;
@@ -17,6 +18,7 @@ pub mod db;
 pub mod documents;
 pub mod entities;
 pub mod export;
+pub mod filings;
 pub mod groups;
 pub mod hashchain;
 pub mod imports;

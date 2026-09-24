@@ -120,6 +120,51 @@ Each payee keeps its country (ISO 3166-1 alpha-2), tax ids as a JSON object, and
 
 Classifications, memberships and relationships use dated periods. A period includes its `effective_from` date and excludes its `effective_to` date. An empty `effective_to` keeps the period open. An "as of" query returns the rows whose period includes that date. To close a period, set `effective_to` to the first day that the fact no longer applies. Two periods of the same fact cannot overlap. Every change goes to the audit log with its values before and after.
 
+## Close, lock and filings
+
+A close check reads one period of one entity and lists findings. It writes nothing. An error blocks a final close. A warning needs attention but does not block it.
+
+| Code | Severity | Condition |
+| --- | --- | --- |
+| `unresolved_draft` | error | A draft entry is dated in the period. |
+| `unreviewed_entry` | error | A posted entry in the period has no review mark. |
+| `missing_rate` | error | A posting has `rate_source = 'missing'`, or a posting in a foreign commodity has no rate. |
+| `suspense_balance` | error | A suspense account has a non-zero balance in the period. A suspense account has the system role `suspense` (Uncategorized) or a path segment named `Uncategorized` or `Suspense`. |
+| `lock_moved_back` | error | The lock date is before the highest lock date that the audit log records since the last unlock. |
+| `unbalanced_period` | error | The debits and the credits of the booked entries in the period differ. |
+| `unmatched_evidence` | warning | Statement lines in the period have no posting link. Skipped and duplicate lines do not count. |
+| `intercompany_out_of_balance` | warning | An account with `intercompany = 1` has a non-zero balance in the period. Reconcile it with the other entity in a group close. |
+
+A report has the findings, their counts, and control totals: booked entries, drafts, postings, statement lines, debits, credits and the balance. Booked entries are `posted` and `void` entries. The `report_digest` is the SHA-256 of the canonical JSON of the report.
+
+A lock moves the lock date of the entity forward. The check runs over the days that the lock closes: from the day after the old lock date to the new lock date. An error finding refuses the lock. The `--force` option locks the period with the errors. The audit event of the lock records the actor, the reason, the old and the new lock date, the finding counts, the force flag and the report digest.
+
+An unlock moves the lock date back. It needs an actor and a reason, and it always writes an audit event. The gRPC call `UpdateEntity` can only move the lock date forward. A move back through it fails with a locked error.
+
+The audit log has an `actor` and a `reason` column. A lock, an unlock, a filing change and `means entry confirm` fill them.
+
+A filing records a return or a report for an authority. Each row has the entity, the jurisdiction, the filing code, the period (both days included) and a status: `prepared`, `submitted`, `accepted`, `rejected` or `amended`. It also keeps the digest of the books snapshot, the digest of the filed artifact, the receipt reference, the submission time, notes, and the sequence and hash of the last chained entry of the entity when the filing was recorded.
+
+The status follows these steps:
+
+| From | To |
+| --- | --- |
+| `prepared` | `submitted`, `rejected` |
+| `submitted` | `accepted`, `rejected`, `amended` |
+| `accepted` | `amended` |
+| `rejected` | `prepared`, `submitted` |
+
+A move to `submitted` needs a receipt reference. A filing in status `submitted` or `accepted` freezes its period. An unlock that reopens a day of a frozen period fails with `filed_period`. With `--amend`, the unlock creates a new filing in status `prepared` for each frozen filing. The new row points to the original filing through `amends_id`. The original filing keeps its status. A second unlock uses an amendment that is still `prepared`. The audit log records every filing change with its actor and reason.
+
+| Command | Result |
+| --- | --- |
+| `means close check --entity <e> --from D --to D` | Lists the findings of the period. |
+| `means close lock --entity <e> --through D --actor A --reason R [--force]` | Moves the lock date forward. |
+| `means close unlock --entity <e> --to D --actor A --reason R [--amend]` | Moves the lock date back. |
+| `means filing record --entity <e> --jurisdiction J --code C --from D --to D [--status S]` | Records a filing (`--snapshot-digest`, `--artifact-digest`, `--notes`). |
+| `means filing status <uid> --status S [--receipt R] [--at D] [--actor A]` | Changes the status of a filing. |
+| `means filing list --entity <e> [--jurisdiction J] [--code C]` | Lists the filings of an entity. |
+
 ## Reports and exports
 
 Balances, trial balances, income statements, and net worth are derived from the ledger. Reports keep entity scope explicit. Expense reports use stored book values. Currency-converted account reports round each account first, then sum the displayed rows. A missing required rate stops the report with an error.

@@ -133,14 +133,14 @@ fn execute(db_path: &Path, command: Command) -> AgentResult<Output> {
     }
 }
 
-fn resolve_entity(conn: &means_core::rusqlite::Connection, key: &str) -> AgentResult<Entity> {
+pub(crate) fn resolve_entity(conn: &means_core::rusqlite::Connection, key: &str) -> AgentResult<Entity> {
     let key = key.trim();
     let all = means_core::entities::list_entities(conn, true)?;
     let by_id = key.parse::<i64>().ok().and_then(|id| all.iter().find(|e| e.id == id).cloned());
     by_id.or_else(|| all.iter().find(|e| e.uid == key || e.name.eq_ignore_ascii_case(key)).cloned()).ok_or_else(|| AgentError::new("not_found", format!("no entity {key}")))
 }
 
-fn parse_date(field: &str, value: &str) -> AgentResult<chrono::NaiveDate> {
+pub(crate) fn parse_date(field: &str, value: &str) -> AgentResult<chrono::NaiveDate> {
     means_core::parse_date(value).map_err(|_| AgentError::new("invalid_input", format!("{field} must be YYYY-MM-DD, got {value:?}")))
 }
 

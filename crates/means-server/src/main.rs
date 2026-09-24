@@ -1,12 +1,14 @@
 //! `means`: books that survive an audit. One binary: engine, terminal UI, CLI.
 
 mod budgets;
+mod close_cli;
 mod connections;
 mod doc_cli;
 mod email;
 mod enable_banking;
 mod entity_cli;
 mod entry_cli;
+mod filing_cli;
 mod grpc;
 mod inter_pj;
 mod local_api;
@@ -244,6 +246,16 @@ enum Command {
     Party {
         #[command(subcommand)]
         command: party_cli::PartyCommand,
+    },
+    /// Period close: check a period, lock it, and reopen it with an actor and a reason
+    Close {
+        #[command(subcommand)]
+        command: close_cli::Command,
+    },
+    /// The register of returns and reports filed for an entity
+    Filing {
+        #[command(subcommand)]
+        command: filing_cli::Command,
     },
 }
 
@@ -1242,6 +1254,8 @@ async fn main() -> Result<()> {
         }
         Command::Entry { command } => entry_cli::run(db_path, command),
         Command::Policy { command } => policy_cli::run(db_path, command),
+        Command::Close { command } => close_cli::run(db_path, command),
+        Command::Filing { command } => filing_cli::run(db_path, command),
     }
 }
 

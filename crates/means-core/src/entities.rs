@@ -71,8 +71,16 @@ pub fn create_entity(conn: &mut Connection, name: &str, kind: &str, country: &st
     get_entity(conn, id)
 }
 
+/// Change the name, kind, country, lock date and archive state of an entity.
+/// The lock date can only move forward here. A move back needs `close::unlock`, which records
+/// the actor and the reason and checks the filed periods.
 pub fn update_entity(conn: &mut Connection, id: i64, name: &str, kind: &str, country: &str, lock_date: Option<NaiveDate>, archived: bool) -> Result<Entity> {
     let before = get_entity(conn, id)?;
+    if let Some(lock) = before.lock_date {
+        if lock_date.is_none_or(|new| new < lock) {
+            return Err(Error::Locked(format!("{} is locked through {lock}; move the lock date back with `means close unlock`, which records an actor and a reason", before.name)));
+        }
+    }
     let name = if name.trim().is_empty() { before.name.clone() } else { name.trim().to_string() };
     let kind = if kind.trim().is_empty() { before.kind.clone() } else { kind.trim().to_ascii_lowercase() };
     if kind != "person" && kind != "company" {

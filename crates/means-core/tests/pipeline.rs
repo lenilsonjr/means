@@ -624,7 +624,7 @@ fn rollback_cannot_remove_locked_entries_or_reconciliation_even_with_force() {
             assert!(matches!(imports::delete_import(&mut conn, out.import.id, force), Err(Error::Locked(_))));
             assert_eq!(ledger_snapshot(&conn), before);
         }
-        entities::update_entity(&mut conn, w.entity.id, "Personal", "person", "PT", None, false).unwrap();
+        means_core::close::unlock(&mut conn, w.entity.id, date("2026-01-01"), "Test Reviewer", "Reopen the fixture period", false).unwrap();
         imports::delete_import(&mut conn, out.import.id, false).unwrap();
     }
 }
@@ -646,7 +646,7 @@ fn rematch_preserves_both_sides_when_either_period_is_locked() {
         assert!(report.notes[0].contains("lock date"));
         // The pass itself is audited, but no accounting or evidence rows change.
         assert_eq!(ledger_snapshot(&conn)[..4], before[..4]);
-        entities::update_entity(&mut conn, w.entity.id, "Personal", "person", "PT", None, false).unwrap();
+        means_core::close::unlock(&mut conn, w.entity.id, date("2026-01-01"), "Test Reviewer", "Reopen the fixture period", false).unwrap();
         assert_eq!(imports::rematch_import(&mut conn, out.import.id).unwrap().rematched, 1);
     }
 }
