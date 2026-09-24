@@ -1,6 +1,6 @@
 # Chart templates
 
-A chart template is a starting income and expense side of an entity's chart of accounts (see [accounting model](../docs/data-model.md)). Applying one creates accounts in that entity; nothing is shared between entities afterwards. Codes are what make two entities comparable: an account with code 6100 means the same thing in every entity built from the same template.
+A chart template is a starting income and expense side of an entity's chart of accounts (see [accounting model](../docs/data-model.md)). A full chart template also lists the balance-sheet accounts (T7). Applying one creates accounts in that entity; nothing is shared between entities afterwards. Codes are what make two entities comparable: an account with code 6100 means the same thing in every entity built from the same template.
 
 Spending categories are expense accounts. Templates define the income and expense accounts used to classify transactions.
 
@@ -8,10 +8,13 @@ Spending categories are expense accounts. Templates define the income and expens
 |---|---|
 | `personal-nomad.json` | one person living across countries, several currencies, remote income |
 | `personal-family.json` | a household with children: two earners, a home, a car, school and childcare |
-| `us-llc-single-member.json` | a freelancer or consultant billing through a US single-member LLC (Schedule C) |
+| `us-llc-single-member.json` | a freelancer or consultant billing through a US single-member LLC (Schedule C), with the member's equity and balances |
 | `br-mei-servicos.json` | a Brazilian MEI providing services |
 | `br-empresa-servicos.json` | a small Brazilian services company in the Simples Nacional (ITG 1000 model chart) |
 | `company-services.json` | generic services-company operating accounts; examples include a Singapore Pte. Ltd., US C-corporation, and Estonian OÜ |
+| `sg-pte-ltd.json` | full chart: a Singapore private company limited by shares, with SFRS-style statement lines, GST and group balances |
+| `es-sl-pgc-pymes.json` | full chart: a Spanish sociedad limitada on the Plan General de Contabilidad de PYMES |
+| `pt-individual.json` | full chart: an individual resident in Portugal who holds shares in, and lends to, foreign companies |
 | `remap/` | per-entity remap plans: a target chart in the same account shape plus `moves` from existing category names to paths. A template is the generic starting point; a remap plan is one entity's concrete target |
 
 ## 1. File shape
@@ -23,7 +26,9 @@ Spending categories are expense accounts. Templates define the income and expens
   "for": "one person living across countries, several currencies, remote income",
   "accounts": [
     { "code": "4000", "path": "Income", "type": "income", "placeholder": true, "description": "" },
-    { "code": "6110", "path": "Expenses:Housing:Rent", "type": "expense", "placeholder": false, "description": "Long-term rent" }
+    { "code": "6110", "path": "Expenses:Housing:Rent", "type": "expense", "placeholder": false, "description": "Long-term rent" },
+    { "code": "2130", "path": "Liabilities:Current liabilities:GST output tax payable", "type": "liability", "placeholder": false,
+      "description": "", "statutory_code": "sfrs:TradeAndOtherPayables", "tax_treatment": "output_tax", "intercompany": false }
   ]
 }
 ```
@@ -35,18 +40,24 @@ Spending categories are expense accounts. Templates define the income and expens
 | `for` | One line naming who the template fits. |
 | `path` | Segments joined by `:`. The first segment is the account type's root name; the rest are account names. |
 | `code` | Four digits, the account's number. Becomes the account's `code` in the engine. |
-| `type` | `income` or `expense`, decided by the first segment. |
+| `type` | `asset`, `liability`, `equity`, `income` or `expense`, decided by the first segment. |
 | `placeholder` | `true` for accounts that hold children and never postings. |
-| `description` | English. Goes to the account's `notes`. For Portuguese account names, the description is the English gloss. Figures quoted in descriptions (rates, thresholds) carry their year and are guidance, not advice. |
+| `description` | English. Goes to the account's `notes`. For Portuguese or Spanish account names, the description is the English gloss. Figures quoted in descriptions (rates, thresholds) carry their year and are guidance, not advice. |
+| `statutory_code` | Optional string. The code of the matching line in a national chart or reporting taxonomy, such as a PGC account number (`572`) or a statement line (`sfrs:TradeAndOtherReceivables`). Free text. Goes to the account's `statutory_code`. |
+| `tax_treatment` | Optional string. A free-text tag for tax reports, such as `output_tax`, `input_tax`, `withholding_payable`, `income_tax`, `intercompany`, `owner_capital`, `owner_distribution` or `foreign_capital_income`. Goes to the account's `tax_treatment`. |
+| `intercompany` | Optional boolean. `true` when the account holds balances or flows with a related party: a parent, a subsidiary, a member or a shareholder. Goes to the account's `intercompany` flag. |
+
+The three statutory keys are optional, so a template without them stays valid. Statutory codes in the bundled templates are indicative: they show where a line usually goes, not a filing position. `means accounts --entity <id> --json` lists each account with its path, type, subtype, commodity, statutory keys and balance.
 
 Rules a template MUST satisfy. `validate_charts.py` (section 5) checks each one.
 
-- **T1** The first segment is `Income` or `Expenses`, the engine's fixed root names (`AccountType::root_name`). Portuguese templates keep the English roots and name their children in Portuguese.
+- **T1** The first segment is `Income` or `Expenses`, the engine's fixed root names (`AccountType::root_name`). A full chart (T7) also uses `Assets`, `Liabilities` and `Equity`. Portuguese and Spanish templates keep the English roots and name their children in their own language.
 - **T2** Every parent used by a path is itself listed, before its children, with `placeholder: true`. A placeholder has at least one child; a postable account has none.
 - **T3** Paths and codes are unique within the template. Depth is at most three segments.
-- **T4** Assets, liabilities and equity are not in templates. Bank accounts, cards and holdings come from onboarding and imports; `Opening balances`, `Uncategorized` and `FX gain/loss` are created with the entity (`create_system_accounts`). A template MUST NOT add its own uncategorised or FX accounts.
-- **T5** Between 45 and 80 accounts.
-- **T6** Equity flows stay out: owner draws, contributions, distributions paid, loan principal, refundable deposits, taxes withheld but not yet paid.
+- **T4** An income and expense template has no assets, liabilities or equity. Bank accounts, cards and holdings come from onboarding and imports; `Opening balances`, `Uncategorized` and `FX gain/loss` are created with the entity (`create_system_accounts`). A template MUST NOT add its own uncategorised or FX accounts. To give a system account a code, list it at its system path (T7).
+- **T5** Between 45 and 80 accounts. A full chart (T7) holds up to 90.
+- **T6** Equity flows stay out of the income and expense side: owner draws, contributions, distributions paid, loan principal, refundable deposits, taxes withheld but not yet paid. A full chart books them on its balance-sheet accounts.
+- **T7** A full chart lists balance-sheet accounts under `Assets`, `Liabilities` and `Equity`, for an entity that reports a statement of financial position. It lists a system account at its system path: `Equity:Owner contributions`, `Equity:Owner distributions`, `Equity:Opening balances`, `Expenses:FX gain/loss`. The apply then codes and tags the system account and makes no twin. A full chart MUST NOT turn a system account into a placeholder, because transfers between entities post to it.
 
 ## 2. Numbering
 
@@ -54,7 +65,9 @@ One scheme for every template, so a report that groups by code reads the same ac
 
 | Range | Holds |
 |---|---|
-| 1000–3999 | reserved for assets, liabilities and equity, so a full chart can share the scheme later |
+| 1000 | `Assets` root in a full chart; groups on hundreds from `1100` |
+| 2000 | `Liabilities` root in a full chart; groups on hundreds from `2100` |
+| 3000 | `Equity` root in a full chart; groups on hundreds from `3100` |
 | 4000 | `Income` root |
 | 4100–4899 | income groups, one per hundred |
 | 4900–4999 | deductions from gross revenue in the Brazilian templates (deduções da receita: DAS, ISS withheld, cancellations, unconditional discounts). Contra-revenue, debit balance |
@@ -63,19 +76,20 @@ One scheme for every template, so a report that groups by code reads the same ac
 | 6100–7899 | expense groups, one per hundred |
 | 7900 | `Expenses:Miscellaneous` when a template keeps it as a single postable account |
 
-- **N1** Roots are `4000` and `6000`. A group (second segment) is a round hundred: `6100`, `6200`. A postable account (third segment) takes a ten inside its parent's hundred: `6110` to `6190`. A postable account directly under a root, such as `Expenses:Miscellaneous`, takes a round hundred like a group.
+- **N1** Roots are `1000`, `2000`, `3000`, `4000` and `6000`. A group (second segment) is a round hundred: `6100`, `6200`. A postable account (third segment) takes a ten inside its parent's hundred: `6110` to `6190`. A postable account directly under a root, such as `Expenses:Miscellaneous`, takes a round hundred like a group.
 - **N2** Room to insert: the fives (`6115`) and any unused ten. A group holds at most nine postable accounts; a tenth means the group splits.
 - **N3** Codes ascend in file order, parents before children.
-- **N4** A code means the same thing in every entity built from the same template. Across templates, only the fixed slots in the table above align (`4000`, `4900`, `6000`, `7900`). A Brazilian company and a US company compare by account name and type.
+- **N4** A code means the same thing in every entity built from the same template. Across templates, only the fixed slots in the table above align (the roots, `4900`, `7900`). The `statutory_code` compares two entities under the same national chart. A Brazilian company and a US company compare by account name and type.
 - **N5** Taxes. The personal templates give each country its own group: `Taxes Portugal`, `Taxes Brazil`, `Taxes other countries`. The year's total per jurisdiction is then one balance, and a tax that is one line on a return is one account (`docs/data-model.md` §3.4). The business templates keep one tax group, because the entity has one jurisdiction.
 
 ## 3. Applying a template to an entity
 
-- **A1** For each account in file order, find or create the account by path in the entity (`accounts::ensure_account` creates missing parents as placeholders). Set `type`, `code`, `placeholder`, and `description` into `notes`. Income and expense accounts take the entity's functional currency.
+- **A1** For each account in file order, find or create the account by path in the entity (`accounts::ensure_account` creates missing parents as placeholders). Set `type`, `code`, `placeholder`, and `description` into `notes`. All accounts take the entity's functional currency. A postable asset gets the subtype `bank` and a postable liability `card`; change the subtype after applying where it does not fit.
 - **A2** Applying is idempotent: a path that already exists keeps its name, type and children, and its `code` is filled only if empty.
 - **A3** A user edits after applying: delete unused postable accounts, rename `Salary A` to the person, add a country subtree. New accounts follow N1 and N2 so the entity stays comparable.
 - **A4** The engine refuses postings on placeholders (`journal.rs`), so every group listed as a placeholder must keep at least one postable child or be removed.
 - **A5** Bundled payments split by entry template, not by account. The MEI's DAS is one bank line and two or three postings: `DAS-MEI – INSS`, `DAS-MEI – ISS`, `DAS-MEI – ICMS`. An entry template with one line per component drafts it (`docs/data-model.md` §3.4).
+- **A6** Each apply writes the statutory keys that a node gives. A re-apply thus updates `statutory_code`, `tax_treatment` and `intercompany` on existing accounts. A node without a key leaves that value of the account unchanged. An empty string or `false` clears it. These keys do not touch postings, so balances do not change.
 
 ## 4. Templates
 
@@ -117,12 +131,15 @@ Sources:
 
 ### 4.3 `us-llc-single-member` · Business · US single-member LLC
 
-75 accounts. A single-member LLC that has not elected corporate treatment is a disregarded entity: its income and expenses land on the owner's Schedule C. Every expense group names the Schedule C line it feeds. The income side mirrors Part I in order: gross receipts (line 1), returns and allowances (line 2), other income (line 6).
+82 accounts: 75 income and expense accounts and 7 balance-sheet accounts for the member. A single-member LLC that has not elected corporate treatment is a disregarded entity: its income and expenses land on the owner's Schedule C. Every expense group names the Schedule C line it feeds. The income side mirrors Part I in order: gross receipts (line 1), returns and allowances (line 2), other income (line 6).
 
 Judgment calls:
 
 - `Income:Returns and allowances` is a contra-revenue group at `4200`, not in the `4900` slot. Schedule C reads gross receipts, then returns, then other income, and the `4900` slot is for the Brazilian deduções da receita.
-- Owner draws and contributions are equity and absent (T6). Federal income tax and self-employment tax are the owner's, not deductible on Schedule C, and have no account.
+- Owner draws and contributions are equity. They are not on the income and expense side (T6). The chart lists them at the system paths `Equity:Owner contributions` (member capital contributions, `owner_capital`) and `Equity:Owner distributions` (member distributions, `owner_distribution`), so the apply tags the system accounts (T7).
+- `Liabilities:Due to member/parent` holds business costs that the member or a parent paid; `Assets:Due from member/parent` holds personal costs that the LLC paid. Both are `intercompany`. Their `tax_treatment` names the equity account each usually closes to: `owner_capital` and `owner_distribution`.
+- Income leaves carry the Schedule C line as `statutory_code` (`schc:1`, `schc:2`, `schc:6`). Expense groups name their line in the description, because some lines vary by practice.
+- Federal income tax and self-employment tax are the owner's, not deductible on Schedule C, and have no account.
 - `Business meals (50% deductible)` carries the limit in its name. The full cost is booked; the return applies the 50%.
 - The owner's health insurance is a Schedule 1 deduction and is absent from `Insurance`.
 - `Equipment` accounts are expenses, with the $2,500 de minimis safe harbor in the description; assets above it are capitalised outside this chart.
@@ -180,6 +197,54 @@ Sources:
 - Resolução CGSN 140/2018, art. 4º (receita bruta), art. 25 (Anexos III, IV, V and the 28% fator r), art. 27 (ISS retido): http://normas.receita.fazenda.gov.br/sijut2consulta/link.action?idAto=92278; Simples Nacional overview: https://www8.receita.fazenda.gov.br/SimplesNacional/Documentos/Pagina.aspx?id=3
 - RIR/2018 (Decreto 9.580/2018) art. 313, R$ 1.200 or one year of useful life: https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/decreto/D9580.htm
 
+### 4.6 `sg-pte-ltd` · Business · Singapore private limited company
+
+77 accounts, full chart. The groups follow the statement of financial position and the statement of comprehensive income of a small company under the Singapore Financial Reporting Standards (SFRS, or SFRS for Small Entities). Each leaf names its statement line in `statutory_code`, such as `sfrs:TradeAndOtherReceivables` or `sfrs:CostOfSales`. These names are indicative labels for the line, not an official taxonomy code.
+
+Judgment calls:
+
+- `GST input tax receivable` is `input_tax` and `GST output tax payable` is `output_tax`. Only a GST-registered company uses them. GST that the company cannot claim goes to `Non-claimable GST` (`blocked_input_tax`).
+- Group balances are `intercompany`: the investment in and dividends from a subsidiary, amounts due to and from related parties, the shareholder loan and its interest, services to and management fees from group companies. A consolidation or a transfer pricing review filters on the flag.
+- `Owner contributions` and `Owner distributions` are the system accounts (T7). Move contributions to `Share capital` when shares are allotted; close distributions against `Retained earnings`.
+- Exchange differences go to the system `FX gain/loss` account, which the template codes as `7800` (T7).
+- `Income tax payable` and `Income tax expense` are `income_tax`.
+
+Sources:
+
+- Accounting Standards Council, SFRS and SFRS for Small Entities: https://www.asc.gov.sg
+- IRAS, GST registration and input tax claims: https://www.iras.gov.sg/taxes/goods-services-tax-(gst)
+- ACRA, annual filing and the small company audit exemption: https://www.acra.gov.sg
+
+### 4.7 `es-sl-pgc-pymes` · Negocio · sociedad limitada (PGC PYMES)
+
+81 accounts, full chart. Account names are the Spanish names of the Plan General de Contabilidad de PYMES (Real Decreto 1515/2007). The description is the English gloss. Each leaf carries its PGC account number as `statutory_code`, for example `572` Bancos, `4750` HP acreedora por IVA, `705` Prestaciones de servicios. The `code` follows section 2 so the template stays comparable with the others.
+
+Judgment calls:
+
+- VAT: `472` IVA soportado is `input_tax`, `477` IVA repercutido is `output_tax`, `4750` is `vat_payable` and `4700` is `vat_receivable`. Withholding is `withholding_payable` (`4751`) or `withholding_receivable` (`473`). Corporate income tax is `income_tax` (`4752` and `630`).
+- `551` Cuenta corriente con socios sits under assets and is `intercompany`. A credit balance is a debt of the company to the partner.
+- The engine posts exchange differences to the system `FX gain/loss` account. The PGC splits them into `668` and `768`. Reclassify the year's losses and gains to those accounts before the annual accounts.
+- `Owner contributions` carries `118` Aportaciones de socios and `Owner distributions` carries `557` Dividendo activo a cuenta. Both keep their system names (T7).
+
+Sources:
+
+- Real Decreto 1515/2007, Plan General de Contabilidad de Pequeñas y Medianas Empresas, cuadro de cuentas (fourth part), published in the Boletín Oficial del Estado of 21 November 2007: https://www.boe.es
+
+### 4.8 `pt-individual` · Personal · Portugal resident with foreign shareholdings
+
+80 accounts, full chart. It fits an individual who is tax resident in Portugal and holds shares in companies abroad. Assets hold domestic and foreign bank accounts, one account per shareholding (`Shares in Company A`) and loans to those companies. Income follows the IRS income categories: `statutory_code` is `irs:A` (employment), `irs:B` (business and professional), `irs:E` (capital income) or `irs:G` (capital gains). The codes are indicative.
+
+Judgment calls:
+
+- Dividends have one account per source country (`Dividends from Country A`). Dividend and foreign interest accounts are `foreign_capital_income`. Domestic bank interest is `domestic_capital_income`, because tax is usually withheld at source.
+- Foreign tax withheld is an expense under `Taxes other countries` and is `foreign_tax_credit`. The dividend account holds the gross amount.
+- Shareholdings, loans to companies and the interest on those loans are `intercompany`.
+- The template lists `Equity:Opening balances`, the system account (T7). It leaves the system `Investments in entities` account alone, because transfers between entities post to it.
+
+Sources:
+
+- Código do IRS, articles 1 to 10 (income categories A, B, E, F, G, H), on the Portal das Finanças: https://info.portaldasfinancas.gov.pt
+
 ## 5. Validation
 
 ```
@@ -189,16 +254,17 @@ python3 charts/validate_charts.py
 
 The validator checks T1–T5 and N1–N3:
 
-- JSON shape; `Income` and `Expenses` roots with matching types.
+- JSON shape; `Assets`, `Liabilities`, `Equity`, `Income` and `Expenses` roots with matching types.
+- Types of the optional keys: `description`, `statutory_code` and `tax_treatment` are strings, `intercompany` is a boolean.
 - Unique paths and codes; depth of three.
 - Every parent listed as a placeholder before its children; placeholders with children, postable accounts without.
 - Four-digit codes inside the range, roots at `4000` and `6000`, groups on hundreds, postable accounts on tens inside the parent's hundred, ascending order.
-- 45 to 80 accounts.
+- 45 to 80 accounts, or 45 to 90 for a full chart.
 
 ## 6. Contributing a template
 
 - One file per template, `id` equal to the file name, audience prefix first.
 - Account names in the language the entity's owner reads their bank statements in; descriptions in English so a chart from any country can be reviewed.
-- Between 45 and 80 accounts, no assets, liabilities or equity (T4, T6).
+- Between 45 and 80 accounts, no assets, liabilities or equity (T4, T6). A full chart follows T7 and holds up to 90.
 - Cite the sources for the tax lines and the grouping in this page, under a new 4.x section, with the year of any figure quoted.
 - Run section 5 before opening a pull request.
