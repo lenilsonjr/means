@@ -8,6 +8,7 @@ mod email;
 mod enable_banking;
 mod entity_cli;
 mod entry_cli;
+mod export_cli;
 mod filing_cli;
 mod grpc;
 mod inter_pj;
@@ -97,13 +98,24 @@ enum Command {
         #[command(subcommand)]
         command: enable_banking::Command,
     },
-    /// Export booked balances for Beancount and Fava (all entities)
+    /// Export booked balances for Beancount and Fava, or a hashed snapshot of the books
     Export {
-        #[arg(long, value_parser = ["beancount"], default_value = "beancount")]
+        #[command(subcommand)]
+        command: Option<export_cli::Command>,
+        #[arg(long, value_parser = ["beancount", "snapshot"], default_value = "beancount")]
         format: String,
-        /// Write to a new file instead of stdout (refuses to overwrite)
+        /// Write to a new file (beancount) or a new directory (snapshot); refuses to overwrite
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Export only this entity (name, id or uid); repeat for more (default: all)
+        #[arg(long)]
+        entity: Vec<String>,
+        /// Export only the entries dated on or before this day (YYYY-MM-DD)
+        #[arg(long)]
+        as_of: Option<String>,
+        /// Print one JSON object (snapshot)
+        #[arg(long)]
+        json: bool,
     },
     /// Run the local gRPC engine for the terminal UI
     Serve {
@@ -1054,19 +1066,7 @@ async fn main() -> Result<()> {
     }
     match cli.command.unwrap_or(Command::Serve { listen: "127.0.0.1:7770".parse().unwrap(), inbox: None }) {
         Command::Share(args) => sharing::run(db_path, args).await,
-        Command::Export { format: _, output } => {
-            use std::io::Write;
-            let db = Db::open(&db_path)?;
-            let document = means_core::export::beancount(&mut db.conn())?;
-            match output {
-                Some(path) => {
-                    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).with_context(|| format!("create {}", path.display()))?;
-                    file.write_all(document.as_bytes())?;
-                }
-                None => std::io::stdout().lock().write_all(document.as_bytes())?,
-            }
-            Ok(())
-        }
+        Command::Export { command, format, output, entity, as_of, json } => export_cli::run(&db_path, command, &format, output, &entity, as_of.as_deref(), json),
         Command::Serve { listen, inbox } => serve(db_path, listen, inbox).await,
         Command::Tui { server } => means_tui::run(&server).await,
         Command::Import { source, account, entity, file, command } => match command {

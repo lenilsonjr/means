@@ -41,8 +41,10 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means intervault unlink <link uid> --reason R [--json]` | Removes a link of two drafts | No |
 | `means intervault list [--group G \| --entity E] --from D --to D [--status draft\|posted\|void] [--json]` | Nothing | No |
 | `means intervault exceptions --entity E --from D --to D [--json]` | Nothing | No |
+| `means export --format snapshot --output DIR [--entity <e>]... [--as-of D] [--json]` | A new snapshot directory. The ledger does not change. | No |
+| `means export verify DIR [--json]` | Nothing | No |
 
-`--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed.
+`--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed. A snapshot export writes a new directory for external tools. `export verify` exits with code 1 when a check fails. See the [snapshot format](snapshot-format.md).
 
 ## Draft document
 

@@ -600,6 +600,35 @@ fn beancount_export_cli_writes_stdout_or_a_new_file() {
 }
 
 #[test]
+fn snapshot_export_cli_writes_a_new_directory_and_verify_finds_tampering() {
+    let ledger = Ledger::new();
+    let b = seed(&ledger);
+    for (day, amount) in [("2026-03-01", "-10.01"), ("2026-04-01", "-20.02")] {
+        let db = ledger.db();
+        let mut conn = db.conn();
+        let mut input = EntryInput::new(b.entity, date(day));
+        input.payee = "Corner shop".into();
+        input.postings = vec![PostingInput::new(b.n26, d(amount)), PostingInput::balancing(b.food)];
+        journal::create_entry(&mut conn, input).unwrap();
+    }
+    let dir = ledger.path.with_extension("snapshot");
+    let dir_arg = dir.to_str().unwrap();
+    let out: serde_json::Value = serde_json::from_str(&ledger.ok(&["export", "--format", "snapshot", "--output", dir_arg, "--entity", "Personal", "--as-of", "2026-03-31", "--json"])).unwrap();
+    assert_eq!(out["ok"], true);
+    assert_eq!(out["counts"]["entries"], 1);
+    let verified: serde_json::Value = serde_json::from_str(&ledger.ok(&["export", "verify", dir_arg, "--json"])).unwrap();
+    assert_eq!(verified["ok"], true);
+    ledger.refused(&["export", "--format", "snapshot", "--output", dir_arg]);
+    ledger.refused(&["export", "--format", "snapshot"]);
+    std::fs::write(dir.join("rates.json"), "[]\n\n").unwrap();
+    let failed = ledger.run(&["export", "verify", dir_arg, "--json"]);
+    assert_eq!(failed.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&failed.stdout).unwrap();
+    assert_eq!(report["ok"], false);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn entries_json_emits_complete_filtered_objects_with_exact_amounts() {
     let ledger = Ledger::new();
     let books = seed(&ledger);
