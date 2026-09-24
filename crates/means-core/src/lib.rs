@@ -11,12 +11,16 @@ pub mod accounts;
 pub mod audit;
 pub mod budgets;
 pub mod close;
+/// The year-end questionnaire of entity flags.
+pub mod close_questions;
 pub mod connections;
 pub mod cross_source;
 pub mod currency_migration;
 pub mod db;
 pub mod documents;
 pub mod entities;
+/// The address and the dated flags of an entity.
+pub mod entity_flags;
 pub mod export;
 pub mod filings;
 pub mod groups;

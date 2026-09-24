@@ -38,6 +38,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (24, Migration::Sql(include_str!("../migrations/0024_close_and_filings.sql"))),
     (25, Migration::Sql(include_str!("../migrations/0025_intervault_links.sql"))),
     (26, Migration::Sql(include_str!("../migrations/0026_invoices.sql"))),
+    (27, Migration::Sql(include_str!("../migrations/0027_entity_flags.sql"))),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.

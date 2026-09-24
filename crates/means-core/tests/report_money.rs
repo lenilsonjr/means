@@ -212,6 +212,8 @@ fn legacy_reversal_tag_repair_is_audited_atomic_and_preserves_edits() {
     conn.execute_batch(include_str!("../migrations/0021_statutory_codes.sql")).unwrap();
     conn.execute_batch(include_str!("../migrations/0022_tax_events.sql")).unwrap();
     conn.execute_batch(include_str!("../migrations/0025_intervault_links.sql")).unwrap();
+    // The account reader also reads the account identifiers of migration 27.
+    conn.execute_batch(include_str!("../migrations/0027_entity_flags.sql")).unwrap();
     let e = entities::create_entity(&mut conn, "Personal", "person", "PT", "EUR").unwrap();
     let bank = accounts::ensure_account(&conn, e.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
     let expense = accounts::ensure_account(&conn, e.id, AccountType::Expense, &["Food"], "expense", "EUR").unwrap();

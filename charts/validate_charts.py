@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validate chart templates in charts/: shape, uniqueness, placeholder parents,
-code scheme, depth, size and the types of the optional statutory keys.
+code scheme, depth, size and the types of the optional statutory keys and
+account identifiers.
 Exit 1 on any failure."""
 import glob
 import json
@@ -17,7 +18,17 @@ ROOTS = {
 }
 BALANCE_SHEET = ("Assets", "Liabilities", "Equity")
 # Optional per-account keys and their JSON types.
-OPTIONAL_ACC = {"description": str, "statutory_code": str, "tax_treatment": str, "intercompany": bool}
+OPTIONAL_ACC = {
+    "description": str,
+    "statutory_code": str,
+    "tax_treatment": str,
+    "intercompany": bool,
+    "country": str,
+    "iban": str,
+    "bic": str,
+    "institution": str,
+    "location": str,
+}
 REQUIRED_TOP = ("id", "name", "for", "accounts")
 REQUIRED_ACC = ("code", "path", "type", "placeholder")
 

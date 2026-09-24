@@ -20,11 +20,43 @@ Each entity keeps its legal form, fiscal year end (`MM-DD`), incorporation date 
 
 `entity_groups` names a group of entities. `entity_group_members` puts an entity in a group, with an optional parent entity, the ownership that the parent holds in basis points (10000 is 100%) and a control flag. An entity is in one group at a time. A parent must be a member of the same group for the whole period of its child. The group tree shows the effective ownership along the path from the root, rounded down.
 
-Each payee keeps its country (ISO 3166-1 alpha-2), tax ids as a JSON object, and a kind: `person`, `company`, `authority` or `other`. `party_relationships` links a payee to the entity that keeps it, with a kind such as `owner`, `director`, `customer` or `lender`, an optional ownership in basis points and the basis for the record. A related party for reporting is a payee with an open `owner`, `subsidiary`, `director` or `related_party` relationship to the entity on the date.
+Each payee keeps its country (ISO 3166-1 alpha-2), tax ids as a JSON object, a kind (`person`, `company`, `authority` or `other`), a country of tax residence (`residence`) and a country of citizenship (`citizenship`). Residence and citizenship are ISO 3166-1 alpha-2 codes, or empty when unknown. `party_relationships` links a payee to the entity that keeps it, with a kind such as `owner`, `director`, `customer` or `lender`, an optional ownership in basis points and the basis for the record. A related party for reporting is a payee with an open `owner`, `subsidiary`, `director` or `related_party` relationship to the entity on the date.
 
 Classifications, memberships and relationships use dated periods. A period includes its `effective_from` date and excludes its `effective_to` date. An empty `effective_to` keeps the period open. An "as of" query returns the rows whose period includes that date. To close a period, set `effective_to` to the first day that the fact no longer applies. Two periods of the same fact cannot overlap. Every change goes to the audit log with its values before and after.
 
 The commands are `means entity set|classify|facts`, `means group` and `means party`, and `means payee set`. See the [agent interface](agent-interface.md#entity-facts-groups-and-parties).
+
+### Entity address and flags
+
+External tools often ask for facts that belong in the ledger. The ledger stores them once, with an audit event for each change, and the [snapshot](snapshot-format.md) exports them.
+
+`entities.address` is a JSON object with the keys `street`, `street2`, `city`, `region`, `postal_code` and `country`. `country` is an ISO 3166-1 alpha-2 code. The engine refuses other keys.
+
+`entities.flags` is a JSON object of free keys with scalar values: a string, an integer or a boolean. A flag records a yes-or-no fact or a short answer, for example whether the entity is registered for a tax. A flag is undated or dated:
+
+- An undated flag lives only in `entities.flags`. It applies on every date.
+- A dated flag has rows in `entity_flag_history`: `entity_id`, `key`, `value` (a JSON scalar), `effective_from`, `effective_to` and `created_at`. The periods follow the rule of the other dated facts. A new value from a date ends the open value of the same key on that date. Two values of one key cannot overlap.
+- When a key has dated values, a read on a date uses only those values. `entities.flags` then holds the value of the day of the last change. Readers that need another date use `means entity facts --as-of D`.
+
+By convention, a key starts with the jurisdiction code in lowercase and a dot. These keys are examples, not a closed set:
+
+| Key | Meaning |
+| --- | --- |
+| `sg.gst_registered` | The company is registered for GST. |
+| `sg.gst_registration_date` | The first day of the GST registration. |
+| `sg.gst_voluntary` | The GST registration is voluntary. |
+| `sg.gst_period` | The GST accounting period, for example `quarterly`. |
+| `sg.publicly_accountable` | The company is publicly accountable. |
+| `sg.agm_dispensed` | The company has dispensed with the annual general meeting. |
+| `sg.startup_exemption_eligible` | The company is eligible for the start-up tax exemption. |
+| `us.trade_or_business` | The entity carries on a trade or business in the United States. |
+| `us.contractor_payments` | The entity pays contractors for services. |
+| `es.rents_property` | The entity rents out real estate. |
+| `es.has_employees` | The entity has employees. |
+| `pt.special_regime` | The person uses the simplified regime for business income. |
+| `pt.special_regime_first_year` | The year in which the person opened the business activity. |
+
+`means close questions` compares the flags of an entity with a short question list for each jurisdiction in `crates/means-core/src/close_questions.json`. It shows the answered keys and the missing keys. See the [agent interface](agent-interface.md#close-and-filings).
 
 ## Accounts and statutory codes
 
@@ -49,6 +81,16 @@ Three columns map an account to statutory reporting. They never change postings:
 - `intercompany`: 1 when the account holds balances with a related party. Inter-vault links and the close check use it.
 
 A [chart template](../charts/README.md) sets these columns when it creates the accounts.
+
+Five columns identify an account for external tools. They never change postings:
+
+- `country`: the ISO 3166-1 alpha-2 country of the account, for example the country of a foreign bank account.
+- `iban`: the IBAN without spaces. The engine checks the check digits.
+- `bic`: the BIC (SWIFT code) of the institution, 8 or 11 characters.
+- `institution`: the bank, broker or other institution that holds the account.
+- `location`: free text for rules about the place of an asset, for example "assets located in <state>".
+
+`means account set` changes them, and each change goes to the audit log. A chart template can also carry them.
 
 ## Journal entries and postings
 
@@ -383,7 +425,7 @@ These tables hold connection state. They hold no credentials and no accounting d
 | Table | Section |
 | --- | --- |
 | `entities` | [Vaults and entities](#vaults-and-entities) |
-| `entity_classifications`, `entity_groups`, `entity_group_members`, `party_relationships` | [Entity facts, groups and parties](#entity-facts-groups-and-parties) |
+| `entity_classifications`, `entity_flag_history`, `entity_groups`, `entity_group_members`, `party_relationships` | [Entity facts, groups and parties](#entity-facts-groups-and-parties) |
 | `accounts`, `commodities`, `prices` | [Accounts and statutory codes](#accounts-and-statutory-codes) |
 | `journal_entries`, `postings` | [Journal entries and postings](#journal-entries-and-postings) |
 | `payees`, `payee_aliases`, `entry_tags`, `entry_templates`, `rules`, `budgets` | [Payees, tags, templates, rules and budgets](#payees-tags-templates-rules-and-budgets) |

@@ -31,12 +31,20 @@ pub struct PayeeSetArgs {
     /// person | company | authority | other
     #[arg(long)]
     pub kind: Option<String>,
+    /// ISO 3166-1 alpha-2 country of tax residence; an empty value clears it
+    #[arg(long)]
+    pub residence: Option<String>,
+    /// ISO 3166-1 alpha-2 country of citizenship; an empty value clears it
+    #[arg(long)]
+    pub citizenship: Option<String>,
     #[command(flatten)]
     pub output: Output,
 }
 
 #[derive(Subcommand)]
 pub enum PartyCommand {
+    /// Set the country, tax ids, kind, residence and citizenship of a payee (the same as `payee set`)
+    Set(PayeeSetArgs),
     /// Record a dated relationship between a payee and its entity
     Relate {
         /// Payee id, uid or name
@@ -90,6 +98,17 @@ pub enum PartyCommand {
         #[command(flatten)]
         output: Output,
     },
+    /// List the payees with entries or invoices in an entity but without a tax id of one key
+    Missing {
+        /// Entity id, uid or name
+        #[arg(long)]
+        entity: String,
+        /// Tax id key, for example GST, VAT or EIN
+        #[arg(long)]
+        need: String,
+        #[command(flatten)]
+        output: Output,
+    },
 }
 
 fn party_json(conn: &Connection, payee: &Payee, facts: &PartyFacts) -> means_core::Result<Value> {
@@ -102,6 +121,8 @@ fn party_json(conn: &Connection, payee: &Payee, facts: &PartyFacts) -> means_cor
         "country": facts.country,
         "kind": facts.kind,
         "tax_ids": facts.tax_ids,
+        "residence": facts.residence,
+        "citizenship": facts.citizenship,
     }))
 }
 
@@ -131,7 +152,7 @@ pub fn payee_set(path: PathBuf, args: PayeeSetArgs) -> Result<()> {
             let entity = args.entity.as_deref().map(|e| find_entity(&conn, e)).transpose()?;
             let payee = parties::find_payee(&conn, entity.map(|e| e.id), &args.payee)?;
             let tax_ids = args.tax_ids.iter().map(|s| entities::parse_pair(s)).collect::<means_core::Result<Vec<_>>>()?;
-            let facts = parties::set_facts(&mut conn, payee.id, PartyFactsPatch { country: args.country, tax_ids, kind: args.kind })?;
+            let facts = parties::set_facts(&mut conn, payee.id, PartyFactsPatch { country: args.country, tax_ids, kind: args.kind, residence: args.residence, citizenship: args.citizenship })?;
             Ok(fields(json!({"payee": party_json(&conn, &payee, &facts)?})))
         })(),
     )
@@ -139,7 +160,12 @@ pub fn payee_set(path: PathBuf, args: PayeeSetArgs) -> Result<()> {
 
 pub fn run(path: PathBuf, command: PartyCommand) -> Result<()> {
     let output = match &command {
-        PartyCommand::Relate { output, .. } | PartyCommand::Unrelate { output, .. } | PartyCommand::List { output, .. } => *output,
+        PartyCommand::Set(args) => args.output,
+        PartyCommand::Relate { output, .. } | PartyCommand::Unrelate { output, .. } | PartyCommand::List { output, .. } | PartyCommand::Missing { output, .. } => *output,
+    };
+    let command = match command {
+        PartyCommand::Set(args) => return payee_set(path, args),
+        other => other,
     };
     emit(
         output,
@@ -171,6 +197,19 @@ pub fn run(path: PathBuf, command: PartyCommand) -> Result<()> {
                     }
                     fields(json!({"entity": entity_ref(&entity), "as_of": as_of, "related_only": related_only, "parties": rows}))
                 }
+                PartyCommand::Missing { entity, need, .. } => {
+                    let entity = find_entity(&conn, &entity)?;
+                    let mut rows = vec![];
+                    for m in parties::missing_tax_id(&conn, entity.id, &need)? {
+                        let mut v = party_json(&conn, &m.payee, &m.facts)?;
+                        v["entry_count"] = json!(m.entry_count);
+                        v["invoice_count"] = json!(m.invoice_count);
+                        v["last_date"] = json!(m.last_date);
+                        rows.push(v);
+                    }
+                    fields(json!({"entity": entity_ref(&entity), "need": need.trim().to_uppercase(), "parties": rows}))
+                }
+                PartyCommand::Set(_) => unreachable!("party set returns before the ledger opens"),
             })
         })(),
     )

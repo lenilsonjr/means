@@ -32,7 +32,7 @@ fn party_facts_are_validated_and_audited() {
     }
     assert!(matches!(parties::set_facts(&mut c, p, PartyFactsPatch { kind: Some("robot".into()), ..Default::default() }), Err(Error::Invalid(_))));
 
-    let patch = PartyFactsPatch { country: Some("us".into()), tax_ids: vec![entities::parse_pair("ein=00-0000000").unwrap()], kind: Some("Company".into()) };
+    let patch = PartyFactsPatch { country: Some("us".into()), tax_ids: vec![entities::parse_pair("ein=00-0000000").unwrap()], kind: Some("Company".into()), ..Default::default() };
     let facts = parties::set_facts(&mut c, p, patch).unwrap();
     assert_eq!(facts.country, "US");
     assert_eq!(facts.kind, "company");

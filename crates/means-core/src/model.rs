@@ -131,6 +131,21 @@ pub struct Account {
     /// True when the account holds balances with a related party.
     #[serde(default)]
     pub intercompany: bool,
+    /// ISO 3166-1 alpha-2 country of the account, or ''.
+    #[serde(default)]
+    pub country: String,
+    /// IBAN without spaces, or ''.
+    #[serde(default)]
+    pub iban: String,
+    /// BIC (SWIFT code), or ''.
+    #[serde(default)]
+    pub bic: String,
+    /// The bank, broker or other institution that holds the account, or ''.
+    #[serde(default)]
+    pub institution: String,
+    /// Free text for the place of the asset, for example a state, or ''.
+    #[serde(default)]
+    pub location: String,
     // Derived when listing:
     pub balance: Decimal,
     pub balance_functional: Decimal,

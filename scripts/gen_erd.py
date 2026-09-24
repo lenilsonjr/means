@@ -17,7 +17,7 @@ tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='t
 # The order of docs/data-model.md: entities and facts, accounts, journal, evidence, tax, invoices,
 # inter-vault links, close and filings, audit, then operational tables.
 order = [
-    "entities", "entity_classifications", "entity_groups", "entity_group_members",
+    "entities", "entity_classifications", "entity_flag_history", "entity_groups", "entity_group_members",
     "commodities", "prices", "accounts",
     "journal_entries", "postings", "entry_tags", "entry_templates", "rules", "payees", "payee_aliases", "party_relationships", "budgets",
     "imports", "statement_lines", "import_profiles", "documents", "document_links",

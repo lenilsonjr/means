@@ -30,6 +30,12 @@ pub struct PartyFacts {
     pub tax_ids: BTreeMap<String, String>,
     /// person | company | authority | other
     pub kind: String,
+    /// Country of tax residence, ISO 3166-1 alpha-2, or empty when unknown.
+    #[serde(default)]
+    pub residence: String,
+    /// Country of citizenship of a person, ISO 3166-1 alpha-2, or empty when unknown.
+    #[serde(default)]
+    pub citizenship: String,
 }
 
 /// A change to the facts of a payee. `None` keeps the stored value.
@@ -40,6 +46,10 @@ pub struct PartyFactsPatch {
     /// Pairs to merge into the tax ids. An empty value removes its key.
     pub tax_ids: Vec<(String, String)>,
     pub kind: Option<String>,
+    /// An empty string clears the residence.
+    pub residence: Option<String>,
+    /// An empty string clears the citizenship.
+    pub citizenship: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,11 +107,13 @@ pub fn find_payee(conn: &Connection, entity_id: Option<i64>, key: &str) -> Resul
 }
 
 pub fn get_facts(conn: &Connection, payee_id: i64) -> Result<PartyFacts> {
-    let (country, tax_ids, kind) = conn
-        .query_row("SELECT country, tax_ids, kind FROM payees WHERE id = ?1", [payee_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))
+    let (country, tax_ids, kind, residence, citizenship) = conn
+        .query_row("SELECT country, tax_ids, kind, residence, citizenship FROM payees WHERE id = ?1", [payee_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
+        })
         .optional()?
         .ok_or_else(|| Error::NotFound(format!("payee {payee_id}")))?;
-    Ok(PartyFacts { payee_id, country, tax_ids: serde_json::from_str(&tax_ids)?, kind })
+    Ok(PartyFacts { payee_id, country, tax_ids: serde_json::from_str(&tax_ids)?, kind, residence, citizenship })
 }
 
 /// Change the facts of a payee and audit the values before and after.
@@ -110,11 +122,13 @@ pub fn set_facts(conn: &mut Connection, payee_id: i64, patch: PartyFactsPatch) -
     let before = get_facts(&tx, payee_id)?;
     let mut after = before.clone();
     if let Some(country) = patch.country {
-        let country = country.trim().to_ascii_uppercase();
-        if !country.is_empty() && (country.len() != 2 || !country.chars().all(|c| c.is_ascii_alphabetic())) {
-            return Err(Error::Invalid(format!("country must be an ISO 3166-1 alpha-2 code such as SG, got {country:?}")));
-        }
-        after.country = country;
+        after.country = entities::normalize_country(&country, "country")?;
+    }
+    if let Some(residence) = patch.residence {
+        after.residence = entities::normalize_country(&residence, "residence")?;
+    }
+    if let Some(citizenship) = patch.citizenship {
+        after.citizenship = entities::normalize_country(&citizenship, "citizenship")?;
     }
     if let Some(kind) = patch.kind {
         let kind = kind.trim().to_ascii_lowercase();
@@ -125,7 +139,10 @@ pub fn set_facts(conn: &mut Connection, payee_id: i64, patch: PartyFactsPatch) -
     }
     entities::merge_pairs(&mut after.tax_ids, &patch.tax_ids)?;
     if after != before {
-        tx.execute("UPDATE payees SET country = ?2, tax_ids = ?3, kind = ?4 WHERE id = ?1", params![payee_id, after.country, serde_json::to_string(&after.tax_ids)?, after.kind])?;
+        tx.execute(
+            "UPDATE payees SET country = ?2, tax_ids = ?3, kind = ?4, residence = ?5, citizenship = ?6 WHERE id = ?1",
+            params![payee_id, after.country, serde_json::to_string(&after.tax_ids)?, after.kind, after.residence, after.citizenship],
+        )?;
         audit::log(&tx, "payees", payee_id, "set_facts", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
     }
     tx.commit()?;
@@ -227,4 +244,48 @@ pub fn list_parties(conn: &Connection, entity_id: i64, as_of: NaiveDate, related
 /// The related parties of an entity on a date.
 pub fn related_parties(conn: &Connection, entity_id: i64, as_of: NaiveDate) -> Result<Vec<Party>> {
     list_parties(conn, entity_id, as_of, true)
+}
+
+/// A payee with activity in an entity and without a tax id of one key.
+#[derive(Debug, Clone, Serialize)]
+pub struct MissingTaxId {
+    pub payee: Payee,
+    pub facts: PartyFacts,
+    /// Entries of the entity with this payee, except void entries.
+    pub entry_count: i64,
+    /// Invoices of the entity with this payee as the party.
+    pub invoice_count: i64,
+    /// The latest entry date or invoice issue date.
+    pub last_date: Option<String>,
+}
+
+/// The payees of an entity that have entries or invoices but no tax id under `key`, for
+/// example `GST`, `VAT` or `EIN`. The key ignores case.
+pub fn missing_tax_id(conn: &Connection, entity_id: i64, key: &str) -> Result<Vec<MissingTaxId>> {
+    entities::get_entity(conn, entity_id)?;
+    let key = key.trim().to_uppercase();
+    if key.is_empty() {
+        return Err(Error::Invalid("a tax id key such as GST, VAT or EIN is required".into()));
+    }
+    let mut stmt = conn.prepare(
+        "SELECT p.id,
+                (SELECT COUNT(*) FROM journal_entries e WHERE e.payee_id = p.id AND e.entity_id = ?1 AND e.status <> 'void'),
+                (SELECT COUNT(*) FROM invoices i WHERE i.party_id = p.id AND i.entity_id = ?1),
+                (SELECT MAX(d) FROM (SELECT MAX(e.date) AS d FROM journal_entries e WHERE e.payee_id = p.id AND e.entity_id = ?1 AND e.status <> 'void'
+                                     UNION ALL SELECT MAX(i.issue_date) FROM invoices i WHERE i.party_id = p.id AND i.entity_id = ?1))
+         FROM payees p WHERE p.entity_id = ?1 ORDER BY p.name COLLATE NOCASE, p.id",
+    )?;
+    let rows = stmt.query_map([entity_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut out = vec![];
+    for (id, entry_count, invoice_count, last_date) in rows {
+        if entry_count + invoice_count == 0 {
+            continue;
+        }
+        let facts = get_facts(conn, id)?;
+        if facts.tax_ids.get(&key).is_some_and(|v| !v.trim().is_empty()) {
+            continue;
+        }
+        out.push(MissingTaxId { payee: payees::get(conn, id)?, facts, entry_count, invoice_count, last_date });
+    }
+    Ok(out)
 }

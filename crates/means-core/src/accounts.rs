@@ -13,7 +13,7 @@ use crate::{new_uid, now_ts, Error, Result};
 
 const SELECT: &str = "SELECT a.id, a.uid, a.entity_id, a.parent_id, a.code, a.name, a.type, a.subtype, a.commodity_id, c.code, c.precision,
         a.system_role, a.placeholder, a.in_net_worth, a.credit_limit, a.statement_day, a.due_day, a.external_ids, a.notes, a.position, a.closed_at, a.class,
-        a.statutory_code, a.tax_treatment, a.intercompany
+        a.statutory_code, a.tax_treatment, a.intercompany, a.country, a.iban, a.bic, a.institution, a.location
      FROM accounts a JOIN commodities c ON c.id = a.commodity_id";
 
 fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
@@ -48,6 +48,11 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         statutory_code: r.get(22)?,
         tax_treatment: r.get(23)?,
         intercompany: r.get::<_, i64>(24)? != 0,
+        country: r.get(25)?,
+        iban: r.get(26)?,
+        bic: r.get(27)?,
+        institution: r.get(28)?,
+        location: r.get(29)?,
         balance: Decimal::ZERO,
         balance_functional: Decimal::ZERO,
         postings_count: 0,
@@ -360,6 +365,54 @@ pub struct AccountUpdate {
     pub statutory_code: Option<String>,
     pub tax_treatment: Option<String>,
     pub intercompany: Option<bool>,
+    /// ISO 3166-1 alpha-2. An empty string clears the value.
+    pub country: Option<String>,
+    /// An empty string clears the value.
+    pub iban: Option<String>,
+    /// An empty string clears the value.
+    pub bic: Option<String>,
+    pub institution: Option<String>,
+    pub location: Option<String>,
+}
+
+/// Check an IBAN: the country code, the check digits, the length and the mod-97 checksum.
+/// Spaces go away and letters become uppercase. An empty value stays empty.
+pub fn normalize_iban(s: &str) -> Result<String> {
+    let iban: String = s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_uppercase();
+    if iban.is_empty() {
+        return Ok(iban);
+    }
+    let invalid = |why: &str| Error::Invalid(format!("IBAN {iban:?} is not valid: {why}"));
+    if !(15..=34).contains(&iban.len()) || !iban.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(invalid("it must have 15 to 34 letters and digits"));
+    }
+    let b = iban.as_bytes();
+    if !b[0].is_ascii_alphabetic() || !b[1].is_ascii_alphabetic() || !b[2].is_ascii_digit() || !b[3].is_ascii_digit() {
+        return Err(invalid("it must start with a country code and two check digits"));
+    }
+    let mut rem: u32 = 0;
+    for c in iban[4..].chars().chain(iban[..4].chars()) {
+        let v = c.to_digit(36).unwrap_or(0);
+        rem = if v >= 10 { (rem * 100 + v) % 97 } else { (rem * 10 + v) % 97 };
+    }
+    if rem != 1 {
+        return Err(invalid("the check digits do not agree"));
+    }
+    Ok(iban)
+}
+
+/// Check a BIC: 8 or 11 letters and digits, and the first six are letters. Letters become
+/// uppercase. An empty value stays empty.
+pub fn normalize_bic(s: &str) -> Result<String> {
+    let bic = s.trim().to_ascii_uppercase();
+    if bic.is_empty() {
+        return Ok(bic);
+    }
+    let b = bic.as_bytes();
+    if !(bic.len() == 8 || bic.len() == 11) || !bic.chars().all(|c| c.is_ascii_alphanumeric()) || !b[..6].iter().all(u8::is_ascii_alphabetic) {
+        return Err(Error::Invalid(format!("BIC {bic:?} is not valid: it has 8 or 11 characters, and the first six are letters")));
+    }
+    Ok(bic)
 }
 
 pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<Account> {
@@ -435,6 +488,21 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
     if let Some(v) = upd.intercompany {
         a.intercompany = v;
     }
+    if let Some(v) = upd.country {
+        a.country = entities::normalize_country(&v, "account country")?;
+    }
+    if let Some(v) = upd.iban {
+        a.iban = normalize_iban(&v)?;
+    }
+    if let Some(v) = upd.bic {
+        a.bic = normalize_bic(&v)?;
+    }
+    if let Some(v) = upd.institution {
+        a.institution = v.trim().to_string();
+    }
+    if let Some(v) = upd.location {
+        a.location = v.trim().to_string();
+    }
     if let Some(v) = upd.placeholder {
         if v && before.postings_count_db(conn)? > 0 {
             return Err(Error::Invalid("an account with postings cannot become a placeholder".into()));
@@ -454,7 +522,7 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
     conn.execute(
         "UPDATE accounts SET parent_id = ?2, code = ?3, name = ?4, subtype = ?5, in_net_worth = ?6, credit_limit = ?7, statement_day = ?8,
             due_day = ?9, notes = ?10, position = ?11, external_ids = ?12, placeholder = ?13, commodity_id = ?14, updated_at = ?15, class = ?16,
-            statutory_code = ?17, tax_treatment = ?18, intercompany = ?19 WHERE id = ?1",
+            statutory_code = ?17, tax_treatment = ?18, intercompany = ?19, country = ?20, iban = ?21, bic = ?22, institution = ?23, location = ?24 WHERE id = ?1",
         params![
             id,
             a.parent_id,
@@ -474,7 +542,12 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
             a.class,
             a.statutory_code,
             a.tax_treatment,
-            a.intercompany as i64
+            a.intercompany as i64,
+            a.country,
+            a.iban,
+            a.bic,
+            a.institution,
+            a.location
         ],
     )
     .map_err(|e| match e {
@@ -874,6 +947,17 @@ pub struct ChartNode {
     /// Related-party flag. None keeps the value of the account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intercompany: Option<bool>,
+    /// Account identifiers. None keeps the value of the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iban: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bic: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub institution: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
 }
 
 /// Create the accounts of a chart in an entity: existing paths are kept (their code is set when empty), missing ones created.
@@ -938,7 +1022,14 @@ fn apply_chart_in(conn: &Connection, entity_id: i64, nodes: &[ChartNode]) -> Res
         if let Some(v) = n.intercompany.filter(|v| *v != acc.intercompany) {
             upd.intercompany = Some(v);
         }
-        if upd.code.is_some() || upd.placeholder.is_some() || upd.notes.is_some() || upd.statutory_code.is_some() || upd.tax_treatment.is_some() || upd.intercompany.is_some() {
+        let changed = |node: &Option<String>, stored: &str| node.as_deref().map(str::trim).filter(|v| *v != stored).map(str::to_string);
+        upd.country = changed(&n.country, &acc.country);
+        upd.iban = changed(&n.iban, &acc.iban);
+        upd.bic = changed(&n.bic, &acc.bic);
+        upd.institution = changed(&n.institution, &acc.institution);
+        upd.location = changed(&n.location, &acc.location);
+        let identifiers = upd.country.is_some() || upd.iban.is_some() || upd.bic.is_some() || upd.institution.is_some() || upd.location.is_some();
+        if identifiers || upd.code.is_some() || upd.placeholder.is_some() || upd.notes.is_some() || upd.statutory_code.is_some() || upd.tax_treatment.is_some() || upd.intercompany.is_some() {
             update_account(conn, acc.id, upd)?;
         }
     }
