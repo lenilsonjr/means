@@ -256,7 +256,7 @@ pub fn update_filing_status(conn: &mut Connection, filing_id: i64, change: Statu
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let before = get_filing(&tx, filing_id)?;
     if !before.status.next().contains(&change.status) {
-        return Err(AgentError::new("invalid_transition", format!("a filing in status {} cannot become {}", before.status.as_str(), change.status.as_str())));
+        return Err(AgentError::new("invalid_input", format!("a filing in status {} cannot become {}", before.status.as_str(), change.status.as_str())));
     }
     let receipt = change.receipt_ref.map(|r| r.trim().to_string()).unwrap_or_else(|| before.receipt_ref.clone());
     if change.status == FilingStatus::Submitted && receipt.is_empty() {

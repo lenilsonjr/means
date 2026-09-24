@@ -30,17 +30,62 @@ impl AgentError {
     }
 }
 
+/// The one vocabulary of error codes that every CLI group prints.
+pub const ERROR_CODES: &[&str] = &[
+    "invalid_input",
+    "not_found",
+    "unbalanced",
+    "missing_rate",
+    "locked_period",
+    "unknown_account",
+    "not_leaf_account",
+    "stale_proposal",
+    "agent_not_allowed",
+    "duplicate",
+    "over_settlement",
+    "settled",
+    "close_blocked",
+    "filed_period",
+    "invalid_path",
+    "hash_mismatch",
+    "io_error",
+    "internal",
+];
+
+/// Map a code to the vocabulary. A code of the vocabulary stays as it is. Older codes map to
+/// their replacement, and an unknown code becomes `internal`.
+pub fn normalize_code(code: &str) -> &'static str {
+    if let Some(known) = ERROR_CODES.iter().find(|c| **c == code) {
+        return known;
+    }
+    match code {
+        "invalid_argument" | "conflict" | "parse_error" | "json_error" | "lock_not_forward" | "invalid_transition" => "invalid_input",
+        "locked" => "locked_period",
+        _ => "internal",
+    }
+}
+
+/// The code of a core error in the vocabulary.
+pub fn error_code(e: &Error) -> &'static str {
+    match e {
+        Error::NotFound(_) => "not_found",
+        Error::Invalid(_) | Error::Parse(_) | Error::Conflict(_) | Error::Json(_) => "invalid_input",
+        Error::Locked(_) => "locked_period",
+        Error::Unbalanced(_) => "unbalanced",
+        Error::Db(_) | Error::Other(_) => "internal",
+    }
+}
+
 impl From<Error> for AgentError {
     fn from(e: Error) -> AgentError {
-        match e {
-            Error::NotFound(m) => AgentError::new("not_found", m),
-            Error::Invalid(m) | Error::Parse(m) | Error::Conflict(m) => AgentError::new("invalid_input", m),
-            Error::Locked(m) => AgentError::new("locked_period", m),
-            Error::Unbalanced(m) => AgentError::new("unbalanced", m),
-            Error::Json(e) => AgentError::new("invalid_input", e.to_string()),
-            Error::Db(e) => AgentError::new("internal", format!("database: {e}")),
-            Error::Other(e) => AgentError::new("internal", e.to_string()),
-        }
+        let code = error_code(&e);
+        let message = match e {
+            Error::NotFound(m) | Error::Invalid(m) | Error::Parse(m) | Error::Conflict(m) | Error::Locked(m) | Error::Unbalanced(m) => m,
+            Error::Json(e) => e.to_string(),
+            Error::Db(e) => format!("database: {e}"),
+            Error::Other(e) => e.to_string(),
+        };
+        AgentError::new(code, message)
     }
 }
 

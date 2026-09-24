@@ -25,6 +25,9 @@ pub struct Args {
 }
 
 pub fn run(path: PathBuf, args: Args) -> Result<()> {
+    if args.yes {
+        crate::entry_cli::guard("void --yes");
+    }
     let db = Db::open(path)?;
     let result = journal::review_void(&mut db.conn(), args.id, args.date, &args.reason, args.yes)?;
     if args.json {

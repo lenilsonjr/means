@@ -166,17 +166,7 @@ pub fn emit(output: Output, result: Result<Map<String, Value>>) -> Result<()> {
 }
 
 fn error_code(e: &anyhow::Error) -> &'static str {
-    match e.downcast_ref::<Error>() {
-        Some(Error::NotFound(_)) => "not_found",
-        Some(Error::Invalid(_)) => "invalid_argument",
-        Some(Error::Locked(_)) => "locked",
-        Some(Error::Unbalanced(_)) => "unbalanced",
-        Some(Error::Conflict(_)) => "conflict",
-        Some(Error::Parse(_)) => "parse_error",
-        Some(Error::Db(_)) => "database_error",
-        Some(Error::Json(_)) => "json_error",
-        Some(Error::Other(_)) | None => "internal",
-    }
+    e.downcast_ref::<Error>().map(means_core::proposal::error_code).unwrap_or("internal")
 }
 
 /// Turn a `json!({..})` object into the fields of a reply.

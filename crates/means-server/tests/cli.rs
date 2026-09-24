@@ -1018,9 +1018,9 @@ fn entity_group_and_party_commands_print_versioned_json() {
     assert!(related["parties"].as_array().unwrap().is_empty());
 
     for (args, code) in [
-        (vec!["entity", "set", "Blue Harbor LLC", "--fye", "13-01", "--json"], "invalid_argument"),
+        (vec!["entity", "set", "Blue Harbor LLC", "--fye", "13-01", "--json"], "invalid_input"),
         (vec!["entity", "facts", "Nobody Ltd", "--json"], "not_found"),
-        (vec!["group", "add", "Northwind Group", "--json"], "conflict"),
+        (vec!["group", "add", "Northwind Group", "--json"], "invalid_input"),
     ] {
         let out = ledger.run(&args);
         assert_eq!(out.status.code(), Some(1), "means {args:?}");
@@ -1165,4 +1165,56 @@ fn generic_csv_import_takes_a_column_map() {
 
     let bad = ledger.refused(&["import", "--account", &books.n26.to_string(), "--map", "day=Booked,amount=Value", fixture]);
     assert!(bad.contains("unknown column map key"), "{bad}");
+}
+
+/// The error object of a refused command: exit code 1 and one JSON object on stdout.
+fn error_object(out: &std::process::Output) -> serde_json::Value {
+    assert_eq!(out.status.code(), Some(1), "stdout: {} stderr: {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    assert_eq!((v["schema_version"].as_i64(), v["ok"].as_bool()), (Some(1), Some(false)), "{v}");
+    assert!(v["error"]["message"].is_string(), "{v}");
+    v
+}
+
+#[test]
+fn agent_sessions_refuse_the_older_write_commands() {
+    let ledger = Ledger::new();
+    let b = seed(&ledger);
+    let open = draft(&ledger, &b, "2026-03-02", "Corner shop", "-12.00");
+    let booked = posted(&ledger, &b, "2026-03-03", "Corner shop", "-8.00");
+    let (open_id, booked_id) = (open.id.to_string(), booked.id.to_string());
+    let agent = |args: &[&str]| Command::new(env!("CARGO_BIN_EXE_means")).env("MEANS_AGENT", "1").arg("--db").arg(&ledger.path).args(args).output().unwrap();
+    for args in [
+        vec!["post", open_id.as_str(), "--to", "Food"],
+        vec!["void", booked_id.as_str(), "--yes", "--reason", "duplicate"],
+        vec!["draft", "delete", open_id.as_str()],
+        vec!["rollback", "1"],
+        vec!["refund", "link", "1", "--original", booked_id.as_str()],
+    ] {
+        let v = error_object(&agent(&args));
+        assert_eq!(v["error"]["code"], "agent_not_allowed", "means {args:?}: {v}");
+    }
+    assert_eq!(entry(&ledger, open.id).status, EntryStatus::Draft);
+    assert_eq!(entry(&ledger, booked.id).status, EntryStatus::Posted);
+    // A void preview writes nothing, so an agent can run it.
+    let preview = agent(&["void", booked_id.as_str()]);
+    assert!(preview.status.success(), "{}", String::from_utf8_lossy(&preview.stderr));
+    // Without MEANS_AGENT the same command runs.
+    ledger.ok(&["draft", "delete", open_id.as_str()]);
+}
+
+#[test]
+fn a_failed_snapshot_export_prints_the_error_object() {
+    let ledger = Ledger::new();
+    seed(&ledger);
+    let v = error_object(&ledger.run(&["export", "--format", "snapshot", "--json"]));
+    assert_eq!(v["error"]["code"], "invalid_input", "{v}");
+    let dir = ledger.path.with_extension("taken");
+    std::fs::create_dir_all(&dir).unwrap();
+    let v = error_object(&ledger.run(&["export", "--format", "snapshot", "--output", dir.to_str().unwrap(), "--json"]));
+    assert_eq!(v["error"]["code"], "invalid_path", "{v}");
+    std::fs::remove_dir_all(&dir).unwrap();
+    let v = error_object(&ledger.run(&["export", "--format", "snapshot", "--output", dir.to_str().unwrap(), "--entity", "Nobody Ltd", "--json"]));
+    assert_eq!(v["error"]["code"], "not_found", "{v}");
+    assert!(!dir.exists());
 }

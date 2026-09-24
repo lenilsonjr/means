@@ -250,7 +250,7 @@ fn lock_checks_only_the_days_it_closes() {
     let out = close::close_lock(&mut b.db.conn(), b.entity, day("2026-03-31"), "Avery Stone", "March close", false).unwrap();
     assert_eq!(out.previous_lock, Some(day("2026-02-28")));
     assert_eq!(out.report.period_start, day("2026-03-01"));
-    assert_eq!(code_of(close::close_lock(&mut b.db.conn(), b.entity, day("2026-03-15"), "Avery Stone", "again", false)), "lock_not_forward");
+    assert_eq!(code_of(close::close_lock(&mut b.db.conn(), b.entity, day("2026-03-15"), "Avery Stone", "again", false)), "invalid_input");
     assert_eq!(code_of(close::close_lock(&mut b.db.conn(), b.entity, day("2026-05-31"), " ", "May close", false)), "invalid_input");
     assert_eq!(code_of(close::close_lock(&mut b.db.conn(), b.entity, day("2026-05-31"), "Avery Stone", "", false)), "invalid_input");
 }

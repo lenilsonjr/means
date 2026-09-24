@@ -107,19 +107,32 @@ pub(crate) fn emit(outcome: AgentResult<Output>) -> anyhow::Result<()> {
             print!("{text}");
             Ok(())
         }
-        Err(e) => {
-            println!("{}", json!({"schema_version": SCHEMA_VERSION, "ok": false, "error": {"code": e.code, "message": e.message}}));
-            std::process::exit(1);
-        }
+        Err(e) => fail(e.code, &e.message),
     }
 }
 
+/// Print the error object with a code of the vocabulary and exit with code 1.
+pub(crate) fn fail(code: &str, message: &str) -> ! {
+    println!("{}", json!({"schema_version": SCHEMA_VERSION, "ok": false, "error": {"code": proposal::normalize_code(code), "message": message}}));
+    std::process::exit(1);
+}
+
 /// `MEANS_AGENT=1` marks an agent session. It is a workflow aid, not an access control.
+/// This is the one check. Every command that posts, voids, deletes or reverts calls it,
+/// directly or through `guard`.
 pub(crate) fn refuse_agent(action: &str) -> AgentResult<()> {
     if std::env::var("MEANS_AGENT").is_ok_and(|v| v.trim() == "1") {
         return Err(AgentError::new("agent_not_allowed", format!("{action} is a human action; it is refused while MEANS_AGENT=1")));
     }
     Ok(())
+}
+
+/// `refuse_agent` for the older text commands: a refusal prints the error object and exits
+/// with code 1 before the command opens the ledger.
+pub(crate) fn guard(action: &str) {
+    if let Err(e) = refuse_agent(action) {
+        fail(e.code, &e.message);
+    }
 }
 
 pub(crate) fn open(db_path: &Path) -> AgentResult<Db> {

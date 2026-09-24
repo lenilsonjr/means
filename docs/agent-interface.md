@@ -23,11 +23,11 @@ The commands have three output styles:
 | --- | --- | --- | --- |
 | Compact | `entry`, `policy`, `rates set\|list\|import`, `close`, `filing`, `invoice`, `intervault`, `report` (except `expenses`) | One line of JSON with `--json`. Text without it. `entry draft`, `entry propose`, `entry confirm` and `entry void` always print JSON. | Always one line of JSON with an error object. |
 | Indented | `entity set\|classify\|facts`, `group`, `party`, `payee set`, `tax` | Always JSON. Indented by default, one line with `--json`. | Always JSON with an error object. |
-| Evidence | `doc`, `export --format snapshot`, `export verify` | JSON with `--json`, text without it. | `doc` prints the error object with `--json`. `export` prints a text error on stderr. |
+| Evidence | `doc`, `export --format snapshot`, `export verify` | JSON with `--json`, text without it. | The error object with `--json`. A text error on stderr without it. |
 
 A refusal exits with code 1. See [Errors](#errors). Command-line usage errors, such as a missing argument, come from the argument parser. They print text and exit with code 2.
 
-`accounts`, `entity list`, `status`, `entries`, `report expenses`, `budget list`, `import lines` and `refund` are older commands. Their JSON has no `schema_version`. `import`, `post`, `void`, `rule`, `chart` and the bank pull commands print text. They are not part of this contract.
+`accounts`, `entity list`, `status`, `entries`, `report expenses`, `budget list`, `import lines` and `refund` are older commands. Their JSON has no `schema_version`. `import`, `post`, `void`, `rule`, `chart` and the bank pull commands print text. They are not part of this contract, except for their `MEANS_AGENT=1` refusal, which is the JSON error object.
 
 In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses the command in an agent session. See [Agent sessions](#agent-sessions).
 
@@ -348,7 +348,7 @@ Each report object has `report`, `entity` (`uid`, `name` and `currency`), `funct
 | `means export verify DIR [--json]` | Nothing | Allowed |
 | `means export [--format beancount] [--output FILE] [--entity <e>]... [--as-of D]` | A new Beancount file, or stdout | Allowed |
 
-`export --format snapshot --json` returns `output` and `counts`. `export verify --json` returns `ok`, `files_checked` and `problems`. `export verify` exits with code 1 when a check fails. A failed export prints a text error and exits with code 1. See the [snapshot format](snapshot-format.md) and [Beancount export](export.md).
+`export --format snapshot --json` returns `output` and `counts`. `export verify --json` returns `ok`, `files_checked` and `problems`. `export verify` exits with code 1 when a check fails. A failed snapshot export with `--json` prints the error object and exits with code 1. A failed export without `--json` prints a text error on stderr and exits with code 1. See the [snapshot format](snapshot-format.md) and [Beancount export](export.md).
 
 ## Posting policy
 
@@ -388,42 +388,51 @@ A refusal writes one JSON object to stdout and exits with code 1:
 {"schema_version": 1, "ok": false, "error": {"code": "stale_proposal", "message": "…"}}
 ```
 
-The compact commands (`entry`, `policy`, `rates`, `close`, `filing`, `invoice`, `intervault` and `report`) use these codes:
+Every command group uses the same codes: the compact commands, the indented commands, `doc`, `export --format snapshot --json` and the `MEANS_AGENT=1` refusal of the older commands. A command prints no other code.
 
 | Code | Meaning |
 | --- | --- |
+| `invalid_input` | The input is not valid. The message tells you why. This code includes a lock that does not move the lock date forward, a filing status change that the steps do not permit, and a record that exists already outside invoices and documents. |
+| `not_found` | The entry, the entity or another record does not exist. |
 | `unbalanced` | The postings do not sum to zero in the functional currency. |
-| `missing_rate` | A posting needs an exchange rate that the ledger does not have. Add the rate, then revalue the draft. |
+| `missing_rate` | A posting needs an exchange rate that the ledger does not have, or `rates list --derive` finds no rate. Add the rate, then revalue the draft. |
 | `locked_period` | The date is on or before the lock date of the entity. A void of a linked entry also gives this code when the period of the other entity is locked. The message names that entity. |
 | `unknown_account` | The account does not exist in the entity. |
 | `not_leaf_account` | The account groups other accounts. |
-| `not_found` | The entry, the entity or another record does not exist. |
 | `stale_proposal` | The draft changed after the proposal, or the digest is wrong. |
-| `agent_not_allowed` | The command is a human action and `MEANS_AGENT=1` is set. |
-| `close_blocked` | The close check found errors. Resolve them, or lock with `--force`. |
-| `lock_not_forward` | A lock must move the lock date forward. Use `close unlock` to move it back. |
-| `filed_period` | A submitted or accepted filing covers a day that the unlock reopens. Unlock with `--amend`. |
-| `invalid_transition` | The filing cannot move from its status to the requested status. |
-| `duplicate` | The entity already has an invoice with this direction, series and number, or the entry already settles the invoice. |
+| `agent_not_allowed` | The command is a human action and `MEANS_AGENT=1` is set. See [Agent sessions](#agent-sessions). |
+| `duplicate` | The entity already has an invoice with this direction, series and number, the entry already settles the invoice, or the document already has this link. |
 | `over_settlement` | The settlement or the credit note is larger than the open balance, or the withholding is larger than the withheld amount. |
 | `settled` | The invoice has settlements, so it cannot be cancelled. |
-| `invalid_input` | The input is not valid. The message tells you why. |
+| `close_blocked` | The close check found errors. Resolve them, or lock with `--force`. |
+| `filed_period` | A submitted or accepted filing covers a day that the unlock reopens. Unlock with `--amend`. |
+| `invalid_path` | A file name is not safe for the document store, or the snapshot directory exists already. |
+| `hash_mismatch` | A stored file does not have the hash that the ledger records. |
+| `io_error` | A file could not be read or written. |
 | `internal` | The engine failed for an unexpected reason, such as a database error. |
 
-The indented commands (`entity set`, `entity classify`, `entity facts`, `group`, `party`, `payee set` and `tax`) use other codes: `not_found`, `invalid_argument`, `locked`, `unbalanced`, `conflict`, `parse_error`, `database_error`, `json_error` and `internal`.
-
-`doc` uses `not_found`, `invalid_path`, `hash_mismatch`, `duplicate`, `invalid_input` and `io_error`.
+Older versions printed other codes. They map to this table: `invalid_argument`, `conflict`, `parse_error`, `json_error`, `lock_not_forward` and `invalid_transition` are now `invalid_input`. `locked` is now `locked_period`. `database_error` is now `internal`. The messages did not change.
 
 ## Agent sessions
 
-Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses these commands with `agent_not_allowed`:
+Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses each command that posts, voids, deletes or reverts, with `agent_not_allowed`. The refusal comes before the command opens the ledger. One check in the engine does this for every command:
 
 - `entry confirm` and `entry void`
+- `post`
+- `void --yes` (a preview without `--yes` is allowed)
+- `draft delete`
+- `rollback`
+- `rematch` and `rematch --cross-source --apply` (a cross-source preview is allowed)
+- `refund link`
+- `chart remap` without `--dry-run`, and `chart merge`
+- `entity migrate-currency --apply` (a preview is allowed)
 - `policy set`
 - `close lock` and `close unlock`
 - `invoice cancel`
 - `filing record` and `filing status` with the status `submitted` or `accepted`
 
-The engine does not refuse other commands. This includes the older commands `post`, `void --yes`, `draft delete`, `rollback` and `chart`.
+The older commands print text on success. Their `MEANS_AGENT=1` refusal is the JSON error object. `entity set` has no lock date option, so the lock date moves only through `close lock` and `close unlock`.
+
+The engine does not refuse other commands. `import` can post through rules. Set the posting policy to `draft-only` to hold those entries as drafts.
 
 `MEANS_AGENT=1` is a workflow aid. It is not an access control. A restricted client needs a separate service boundary.

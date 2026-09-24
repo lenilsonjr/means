@@ -1152,12 +1152,20 @@ async fn main() -> Result<()> {
             }
         },
         Command::Draft { command: DraftCommand::Delete { id } } => {
+            entry_cli::guard("draft delete");
             let db = Db::open(&db_path)?;
             means_core::journal::delete_entry(&mut db.conn(), id)?;
             println!("deleted draft #{id}; any statement evidence remains unmatched");
             Ok(())
         }
         Command::Rematch { import_id, cross_source, preview: _, apply } => {
+            // A cross-source preview only reads. An apply voids or deletes duplicates, and a
+            // plain rematch merges them.
+            if !cross_source {
+                entry_cli::guard("rematch");
+            } else if apply.is_some() {
+                entry_cli::guard("rematch --apply");
+            }
             let db = Db::open(&db_path)?;
             let mut conn = db.conn();
             if cross_source {
@@ -1192,6 +1200,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Rollback { import_id, force } => {
+            entry_cli::guard("rollback");
             let db = Db::open(&db_path)?;
             let mut conn = db.conn();
             means_core::imports::delete_import(&mut conn, import_id, force)?;
@@ -1242,6 +1251,9 @@ async fn main() -> Result<()> {
         Command::Rates { command: RatesCommand::List(args) } => rates_cli::list(db_path, args),
         Command::Rates { command: RatesCommand::Import(args) } => rates_cli::import(db_path, args),
         Command::Entity { command: EntityCommand::MigrateCurrency { entity, to, apply, backup, include_locked } } => {
+            if apply.is_some() {
+                entry_cli::guard("entity migrate-currency --apply");
+            }
             let mut conn = means_core::currency_migration::open_existing(&db_path, false)?;
             let entity = resolve_entity(&conn, &entity)?;
             let applying = apply.is_some();
@@ -1294,7 +1306,14 @@ async fn main() -> Result<()> {
         Command::Entity { command: EntityCommand::Facts(args) } => entity_cli::facts(db_path, args),
         Command::Group { command } => entity_cli::group(db_path, command),
         Command::Party { command } => party_cli::run(db_path, command),
-        Command::Chart { command } => chart(db_path, command),
+        Command::Chart { command } => {
+            match &command {
+                ChartCommand::Remap { dry_run: false, .. } => entry_cli::guard("chart remap"),
+                ChartCommand::Merge { .. } => entry_cli::guard("chart merge"),
+                _ => {}
+            }
+            chart(db_path, command)
+        }
         Command::Accounts { entity, json } => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
@@ -1315,7 +1334,10 @@ async fn main() -> Result<()> {
         }
         Command::Reconcile { account, entity } => reconcile(db_path, &account, entity.as_deref()),
         Command::Entries(args) => entries(db_path, args),
-        Command::Post { id, to, payee } => post(db_path, id, &to, payee),
+        Command::Post { id, to, payee } => {
+            entry_cli::guard("post");
+            post(db_path, id, &to, payee)
+        }
         Command::Void(args) => void::run(db_path, args),
         Command::Rule { command } => rule(db_path, command),
         Command::Profiles { command } => profiles(db_path, command),

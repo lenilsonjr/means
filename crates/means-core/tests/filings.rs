@@ -111,7 +111,7 @@ fn status_changes_follow_the_lifecycle_and_are_audited() {
     let no_receipt = StatusChange { status: FilingStatus::Submitted, receipt_ref: None, submitted_at: None, actor: "Morgan Hale".into(), reason: String::new() };
     assert_eq!(code_of(filings::update_filing_status(&mut b.db.conn(), vat.id, no_receipt)), "invalid_input");
     let early = StatusChange { status: FilingStatus::Accepted, receipt_ref: None, submitted_at: None, actor: "Morgan Hale".into(), reason: String::new() };
-    assert_eq!(code_of(filings::update_filing_status(&mut b.db.conn(), vat.id, early)), "invalid_transition");
+    assert_eq!(code_of(filings::update_filing_status(&mut b.db.conn(), vat.id, early)), "invalid_input");
 
     let submitted = b.submit(&vat);
     assert_eq!(submitted.status, FilingStatus::Submitted);

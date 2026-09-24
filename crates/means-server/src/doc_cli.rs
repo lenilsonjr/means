@@ -130,7 +130,7 @@ pub fn run(db_path: PathBuf, command: Command) -> anyhow::Result<()> {
                     target.extend(fields);
                 }
                 if let Some(error) = &out.error {
-                    body["error"] = json!({ "code": error.code, "message": error.message });
+                    body["error"] = json!({ "code": means_core::proposal::normalize_code(error.code), "message": error.message });
                 }
                 println!("{}", serde_json::to_string_pretty(&body)?);
             } else {
@@ -143,7 +143,7 @@ pub fn run(db_path: PathBuf, command: Command) -> anyhow::Result<()> {
         }
         Err(failure) => {
             if json {
-                println!("{}", json!({ "schema_version": SCHEMA_VERSION, "ok": false, "error": { "code": failure.code, "message": failure.message } }));
+                println!("{}", json!({ "schema_version": SCHEMA_VERSION, "ok": false, "error": { "code": means_core::proposal::normalize_code(failure.code), "message": failure.message } }));
             } else {
                 eprintln!("error ({}): {}", failure.code, failure.message);
             }

@@ -24,6 +24,31 @@ pub fn run(db_path: &Path, command: Option<Command>, format: &str, output: Optio
     if let Some(Command::Verify { dir, json }) = command {
         return verify(&dir, json);
     }
+    let outcome = export(db_path, format, output, entity, as_of, json);
+    match outcome {
+        // A snapshot with --json prints the error object, like every other JSON command.
+        Err(e) if json && format == "snapshot" => crate::entry_cli::fail(error_code(&e), &e.to_string()),
+        other => other,
+    }
+}
+
+/// The code of a failed export in the error vocabulary.
+fn error_code(e: &anyhow::Error) -> &'static str {
+    if let Some(core) = e.downcast_ref::<means_core::Error>() {
+        return match core {
+            means_core::Error::Conflict(m) if m.starts_with("hash mismatch") => "hash_mismatch",
+            means_core::Error::Conflict(m) if m.contains("a snapshot needs a new directory") => "invalid_path",
+            means_core::Error::Other(_) => "io_error",
+            other => means_core::proposal::error_code(other),
+        };
+    }
+    if e.downcast_ref::<std::io::Error>().is_some() {
+        return "io_error";
+    }
+    "invalid_input"
+}
+
+fn export(db_path: &Path, format: &str, output: Option<PathBuf>, entity: &[String], as_of: Option<&str>, json: bool) -> Result<()> {
     let as_of = as_of.map(means_core::parse_date).transpose()?;
     let db = Db::open(db_path)?;
     let mut conn = db.conn();

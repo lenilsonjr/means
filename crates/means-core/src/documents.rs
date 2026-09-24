@@ -101,7 +101,9 @@ pub fn error_code(e: &Error) -> &'static str {
         Error::Invalid(m) if m.starts_with(PATH_PREFIX) => "invalid_path",
         Error::Conflict(m) if m.starts_with(HASH_PREFIX) => "hash_mismatch",
         Error::Conflict(_) => "duplicate",
-        Error::Invalid(_) | Error::Parse(_) | Error::Json(_) | Error::Unbalanced(_) | Error::Locked(_) => "invalid_input",
+        Error::Invalid(_) | Error::Parse(_) | Error::Json(_) => "invalid_input",
+        Error::Unbalanced(_) => "unbalanced",
+        Error::Locked(_) => "locked_period",
         Error::Db(_) | Error::Other(_) => "io_error",
     }
 }

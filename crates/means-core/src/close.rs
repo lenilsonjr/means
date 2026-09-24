@@ -407,7 +407,7 @@ pub fn close_lock(conn: &mut Connection, entity_id: i64, through: NaiveDate, act
     let entity = entities::get_entity(&tx, entity_id)?;
     if let Some(lock) = entity.lock_date {
         if through <= lock {
-            return Err(AgentError::new("lock_not_forward", format!("{} is locked through {lock}; a close must move the lock date forward. Use unlock to move it back", entity.name)));
+            return Err(AgentError::new("invalid_input", format!("{} is locked through {lock}; a close must move the lock date forward. Use unlock to move it back", entity.name)));
         }
     }
     let start = first_open_day(&tx, entity_id, entity.lock_date, through)?;
