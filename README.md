@@ -213,6 +213,7 @@ Run `cd website && npm ci && npm run dev` with Node.js 24 LTS for a local previe
 - [Expense reports](docs/expense-reports.md)
 - [TUI bank connections](docs/connections.md)
 - [Beancount export](docs/export.md)
+- [Agent interface and posting policy](docs/agent-interface.md)
 
 ## Where this goes
 

@@ -4,11 +4,13 @@ mod budgets;
 mod connections;
 mod email;
 mod enable_banking;
+mod entry_cli;
 mod grpc;
 mod inter_pj;
 mod local_api;
 mod mercury;
 mod payees;
+mod policy_cli;
 mod refunds;
 mod reports;
 mod sharing;
@@ -212,6 +214,16 @@ enum Command {
     Status,
     /// Verify the hash chain of every entity
     Verify,
+    /// Machine write interface: drafts, proposals and confirmation, as JSON
+    Entry {
+        #[command(subcommand)]
+        command: entry_cli::Command,
+    },
+    /// Show or set the ledger-wide posting policy
+    Policy {
+        #[command(subcommand)]
+        command: policy_cli::Command,
+    },
 }
 
 #[derive(Args)]
@@ -1172,6 +1184,8 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Entry { command } => entry_cli::run(db_path, command),
+        Command::Policy { command } => policy_cli::run(db_path, command),
     }
 }
 

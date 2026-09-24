@@ -815,6 +815,8 @@ impl Means for MeansService {
         self.writable()?;
         let e = req.into_inner().entry.ok_or_else(|| Status::invalid_argument("entry is required"))?;
         let input = entry_input_from_pb(&e)?;
+        // Under the draft_only posting policy, the core stores a posted request as a draft.
+        // The status of the returned entry tells the client which status the engine stored.
         let out = self.run(move |c| journal::create_entry(c, input)).await?;
         Ok(Response::new(pb::JournalEntryResponse { entry: Some(entry_pb(&out)), counterpart: None }))
     }
@@ -1184,7 +1186,7 @@ impl Means for MeansService {
             .iter()
             .map(|m| imports::account_tracker::Mapping { external_id: m.external_id.clone(), entity_id: m.entity_id, r#type: m.r#type.clone(), subtype: m.subtype.clone(), skip: m.skip })
             .collect();
-        let expand = r.expand_recurring || r.mapping.is_empty() && !r.expand_recurring && true;
+        let expand = r.expand_recurring || r.mapping.is_empty();
         let out = self.run(move |c| imports::account_tracker::import(c, &r.content, &r.filename, &mappings, r.default_entity_id, expand, r.schedules)).await?;
         Ok(Response::new(pb::ImportAccountTrackerResponse {
             import: Some(import_pb(&out.import)),

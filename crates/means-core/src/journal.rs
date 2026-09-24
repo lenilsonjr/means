@@ -262,7 +262,9 @@ pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, inpu
     if input.status == EntryStatus::Void {
         return Err(Error::Invalid("cannot create a void entry".into()));
     }
-    if input.status == EntryStatus::Posted {
+    // A reversal corrects a posted entry and stays posted. Every other route obeys the policy.
+    let status = if input.reverses_id.is_some() { input.status } else { crate::policy::admit(conn, input.status)? };
+    if status == EntryStatus::Posted {
         check_lock(&entity, input.date)?;
     }
     let prepared = prepare(conn, &entity, input.date, &input.postings, input.absorb_fx, &std::collections::HashSet::new())?;
@@ -277,27 +279,32 @@ pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, inpu
             input.payee.trim(),
             input.description.trim(),
             input.notes.trim(),
-            input.status.as_str(),
+            status.as_str(),
             input.reverses_id,
             input.counterpart_id,
             input.template_id,
             input.template_version,
             if input.origin.is_empty() { "capture" } else { input.origin.as_str() },
-            if input.status == EntryStatus::Posted { Some(ts.clone()) } else { None },
+            if status == EntryStatus::Posted { Some(ts.clone()) } else { None },
             ts,
             // A machine's decision waits for a human; a human's own entry is reviewed by making it.
-            if matches!(input.origin.as_str(), "rule" | "import" | "schedule") { None } else { Some(ts.clone()) }
+            if matches!(input.origin.as_str(), "rule" | "import" | "schedule" | "agent") { None } else { Some(ts.clone()) }
         ],
     )?;
     let id = conn.last_insert_rowid();
     insert_postings(conn, id, &prepared)?;
     let canonical = if let Some(original) = input.reverses_id { get_entry(conn, original)?.payee_id } else { crate::payees::explicit(conn, input.entity_id, &input.payee)?.map(|p| p.id) };
     crate::payees::link(conn, id, canonical)?;
-    if input.status == EntryStatus::Posted {
+    if status == EntryStatus::Posted {
         let entry = get_entry(conn, id)?;
         hashchain::append(conn, &entry)?;
     }
-    crate::audit::log(conn, "journal_entries", id, "create", None, Some(serde_json::json!({"status": input.status.as_str(), "origin": input.origin, "date": input.date.to_string()})))?;
+    let mut after = serde_json::json!({"status": status.as_str(), "origin": input.origin, "date": input.date.to_string()});
+    if status != input.status {
+        after["requested_status"] = serde_json::json!(input.status.as_str());
+        after["posting_policy"] = serde_json::json!(crate::policy::PostingPolicy::DraftOnly.as_str());
+    }
+    crate::audit::log(conn, "journal_entries", id, "create", None, Some(after))?;
     get_entry(conn, id)
 }
 
@@ -326,8 +333,9 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
         let replacement = identity.or_else(|| {
             candidates.iter().copied().find(|i| {
                 let p = &rows[*i];
-                !(old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id)
-                    && !(old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint)
+                // Two known references that differ identify different bank movements.
+                let differ = |a: &Option<String>, b: &Option<String>| a.is_some() && b.is_some() && a != b;
+                !differ(&old.external_id, &p.external_id) && !differ(&old.fingerprint, &p.fingerprint)
             })
         });
         let Some(index) = replacement else {
@@ -389,7 +397,8 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
     }
     let new_status = match (before.status, input.status) {
         (EntryStatus::Posted, _) => EntryStatus::Posted,
-        (EntryStatus::Draft, EntryStatus::Posted) => EntryStatus::Posted,
+        // Under draft_only an edit never posts a draft. A human posts it with post_entry.
+        (EntryStatus::Draft, EntryStatus::Posted) => crate::policy::admit(conn, EntryStatus::Posted)?,
         (EntryStatus::Draft, _) => EntryStatus::Draft,
         (EntryStatus::Void, _) => EntryStatus::Void,
     };
@@ -1153,18 +1162,15 @@ pub fn create_transfer(conn: &mut Connection, t: Transfer) -> Result<(JournalEnt
     b.origin = origin;
     b.postings.push(PostingInput::new(to.id, to_q));
     b.postings.push(PostingInput::balancing(to_contra.id));
-    let first = create_entry(conn, a)?;
+    // One transaction: both halves exist or neither does, and both read the same posting policy.
+    let tx = conn.transaction()?;
+    let first = create_entry_in_transaction(&tx, a)?;
     b.counterpart_id = Some(first.id);
-    let second = match create_entry(conn, b) {
-        Ok(e) => e,
-        Err(e) => {
-            // Roll back the first half so the books do not keep a one-sided transfer.
-            let _ = conn.execute("DELETE FROM journal_entries WHERE id = ?1", [first.id]);
-            return Err(e);
-        }
-    };
-    conn.execute("UPDATE journal_entries SET counterpart_id = ?2 WHERE id = ?1", params![first.id, second.id])?;
-    Ok((get_entry(conn, first.id)?, Some(second)))
+    let second = create_entry_in_transaction(&tx, b)?;
+    tx.execute("UPDATE journal_entries SET counterpart_id = ?2 WHERE id = ?1", params![first.id, second.id])?;
+    let first = get_entry(&tx, first.id)?;
+    tx.commit()?;
+    Ok((first, Some(second)))
 }
 
 /// A human confirmed these entries (or touched them): stamp the review mark. Outside the chain.
