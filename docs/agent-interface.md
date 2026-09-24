@@ -31,6 +31,12 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means filing record --entity <e> --jurisdiction J --code C --from D --to D [--status prepared] [--snapshot-digest X] [--artifact-digest Y] [--notes T] [--json]` | A filing | Only for `submitted` and `accepted` |
 | `means filing status <uid> --status S [--receipt R] [--at D] [--actor A] [--reason T] [--json]` | The filing status | Only for `submitted` and `accepted` |
 | `means filing list --entity <e> [--jurisdiction J] [--code C] [--json]` | Nothing | No |
+| `means invoice add --entity <e> (--json-file <path> \| --stdin) [--recognize] [--json]` | An invoice and a draft recognition entry | No |
+| `means invoice list --entity <e> [--open] [--direction sales\|purchase] [--as-of D] [--json]` | Nothing | No |
+| `means invoice show <uid> [--json]` | Nothing | No |
+| `means invoice settle <uid> --entry <uid> [--posting <uid>] --date D --amount X [--kind K] [--fx-account <path>] [--control-account <path>] [--json]` | A settlement, an entry conversion and a draft FX entry | No |
+| `means invoice credit-note --entity <e> --credits <uid> (--json-file <path> \| --stdin) [--recognize] [--json]` | A credit note and its settlement | No |
+| `means invoice cancel <uid> --reason R [--actor A] [--json]` | The invoice status and an audit event | Yes |
 
 `--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed.
 
@@ -86,6 +92,46 @@ Each command writes exactly one JSON object to stdout. Each object has `"schema_
 
 `list --json` returns `entity_uid`, `count`, `total` and `entries`. `show --json` returns `entry`. Each entry has its postings, `evidence`, `review` (`state` and `reviewed_at`), `hash`, and the uids of linked entries. Without `--json`, `list` and `show` print text.
 
+## Invoice document
+
+`means invoice add` and `means invoice credit-note` read one JSON object. See [invoices, open items and settlements](data-model.md#invoices-open-items-and-settlements) for the accounting rules.
+
+```json
+{
+  "direction": "purchase",
+  "party": "Sample Supplier Ltd",
+  "series": "A",
+  "number": "2026-017",
+  "issue_date": "2026-03-02",
+  "tax_point": "2026-03-02",
+  "due_date": "2026-04-01",
+  "commodity": "EUR",
+  "net": "1000.00",
+  "tax": "210.00",
+  "gross": "1210.00",
+  "withheld": "0.00",
+  "lines": [
+    { "description": "Annual licence", "quantity": "1", "unit_price": "1000.00", "tax_code": "VAT21", "tax": "210.00", "account": "Expenses:Software" }
+  ],
+  "payable_account": "Liabilities:Accounts Payable",
+  "tax_account": "Assets:Tax:Input VAT",
+  "document": "<document uid>",
+  "external_ref": "",
+  "metadata": {},
+  "recognize": true
+}
+```
+
+- `party` is a payee uid or a payee name in the entity.
+- Write every amount as a decimal string in the invoice commodity. An amount with more decimals than the commodity allows fails.
+- `tax_point` defaults to the issue date. The recognition entry uses it as its date.
+- A line needs `net` or `unit_price`. `quantity` defaults to 1.
+- `account`, `receivable_account` and `rate` are optional. `rate` is the functional currency per unit of the invoice commodity.
+- A credit note can omit `direction` and `commodity`. It takes them from the invoice that it credits.
+- The engine refuses unknown fields.
+
+`add` returns `invoice`, `lines`, `recognition_entry` and `audit_event_id`. An invoice has `uid`, `entity_uid`, `direction`, `party_uid`, `party_name`, `number`, `series`, `issue_date`, `tax_point`, `due_date`, `commodity`, `net`, `tax`, `gross`, `withheld`, `settled`, `open`, `status`, `kind`, `credits_invoice_uid`, `recognition_entry_uid`, `document_uid`, `external_ref`, `metadata`, `created_at` and `updated_at`. `list` returns `entity_uid`, `as_of`, `count` and `invoices`; each invoice also has `days_overdue`. `show` returns `invoice`, `lines`, `settlements`, `credit_notes`, `linked_entries`, `documents` and `possible_duplicates`. `settle` returns `invoice`, `settlement`, `converted`, `fx_difference`, `fx_difference_entry` and `audit_event_id`. `credit-note` returns `credit_note`, `lines`, `recognition_entry`, `settlement`, `invoice` and `audit_event_id`. `cancel` returns `invoice`, `actor` and `reason`.
+
 ## Errors
 
 A refusal writes one JSON object to stdout and exits with code 1:
@@ -108,6 +154,9 @@ A refusal writes one JSON object to stdout and exits with code 1:
 | `lock_not_forward` | A lock must move the lock date forward. Use `close unlock` to move it back. |
 | `filed_period` | A submitted or accepted filing covers a day that the unlock reopens. Unlock with `--amend`. |
 | `invalid_transition` | The filing cannot move from its status to the requested status. |
+| `duplicate` | The entity already has an invoice with this direction, series and number, or the entry already settles the invoice. |
+| `over_settlement` | The settlement or the credit note is larger than the open balance, or the withholding is larger than the withheld amount. |
+| `settled` | The invoice has settlements, so it cannot be cancelled. |
 | `invalid_input` | The input is not valid. The message tells you why. |
 | `internal` | The engine failed for an unexpected reason, such as a database error. |
 
@@ -115,7 +164,7 @@ Command-line usage errors, such as a missing argument, come from the argument pa
 
 ## Agent sessions
 
-Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses `entry confirm`, `entry void`, `policy set`, `close lock` and `close unlock` with `agent_not_allowed`. It also refuses `filing record` and `filing status` when the status is `submitted` or `accepted`.
+Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses `entry confirm`, `entry void`, `policy set`, `close lock`, `close unlock` and `invoice cancel` with `agent_not_allowed`. It also refuses `filing record` and `filing status` when the status is `submitted` or `accepted`.
 
 `MEANS_AGENT=1` is a workflow aid. It is not an access control. A restricted client needs a separate service boundary.
 

@@ -288,7 +288,7 @@ pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, inpu
             if status == EntryStatus::Posted { Some(ts.clone()) } else { None },
             ts,
             // A machine's decision waits for a human; a human's own entry is reviewed by making it.
-            if matches!(input.origin.as_str(), "rule" | "import" | "schedule" | "agent") { None } else { Some(ts.clone()) }
+            if matches!(input.origin.as_str(), "rule" | "import" | "schedule" | "agent" | "invoice") { None } else { Some(ts.clone()) }
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -362,6 +362,7 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
 
 fn replace_postings(conn: &Connection, id: i64, prepared: &[Prepared], links: Vec<ReplacementLink>) -> Result<()> {
     let documents = crate::documents::detach_posting_links(conn, id)?;
+    let settlements = crate::invoices::detach_posting_settlements(conn, id)?;
     conn.execute("DELETE FROM postings WHERE journal_entry_id = ?1", [id])?;
     insert_postings(conn, id, prepared)?;
     let mut replaced = std::collections::HashMap::new();
@@ -373,6 +374,7 @@ fn replace_postings(conn: &Connection, id: i64, prepared: &[Prepared], links: Ve
             conn.execute("UPDATE statement_lines SET posting_id = ?2 WHERE id = ?1", params![line_id, new_id])?;
         }
     }
+    crate::invoices::reattach_posting_settlements(conn, settlements, &replaced)?;
     crate::documents::reattach_posting_links(conn, id, documents, &replaced)
 }
 
