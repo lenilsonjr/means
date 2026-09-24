@@ -19,6 +19,7 @@ mod mercury;
 mod party_cli;
 mod payees;
 mod policy_cli;
+mod rates_cli;
 mod refunds;
 mod reports;
 mod sharing;
@@ -143,6 +144,15 @@ enum Command {
         /// Default entity id (Account Tracker backups)
         #[arg(long)]
         entity: Option<i64>,
+        /// CSV column map: date=<col>,amount=<col>,description=<col>[,counterparty=<col>][,external_id=<col>]; a column is a header name or a 1-based number
+        #[arg(long)]
+        map: Option<String>,
+        /// strftime pattern of the date column, for example %d/%m/%Y (default: detected)
+        #[arg(long, requires = "map")]
+        date_format: Option<String>,
+        /// Amounts use a decimal comma, for example 1.234,56
+        #[arg(long, requires = "map")]
+        decimal_comma: bool,
         #[arg(required = true)]
         file: Option<PathBuf>,
         #[command(subcommand)]
@@ -201,7 +211,7 @@ enum Command {
     Accounts {
         #[arg(long)]
         entity: Option<i64>,
-        /// Emit a JSON array: path, type, statutory keys and balance of each account
+        /// Emit a JSON array: id, uid, path, type, statutory keys and balance of each account
         #[arg(long)]
         json: bool,
     },
@@ -233,8 +243,12 @@ enum Command {
         #[command(subcommand)]
         command: RuleCommand,
     },
-    /// Counts and health of the ledger
-    Status,
+    /// Counts and health of the ledger, as JSON
+    Status {
+        /// Print JSON; this is the default output, and the flag exists for consistency
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify the hash chain of every entity
     Verify,
     /// Machine write interface: drafts, proposals and confirmation, as JSON
@@ -383,7 +397,11 @@ enum EntityCommand {
         country: String,
     },
     /// List entities
-    List,
+    List {
+        /// Emit a JSON array: id, uid, name, kind, country, currency, fiscal year end and lock date of each entity
+        #[arg(long)]
+        json: bool,
+    },
     /// Set the legal form, fiscal year end, incorporation date and registrations
     Set(entity_cli::SetArgs),
     /// Record a tax classification in a jurisdiction from a date
@@ -431,6 +449,12 @@ enum RatesCommand {
         #[arg(long)]
         no_revalue: bool,
     },
+    /// Store one rate entered by hand: 1 base = rate quote on a date
+    Set(rates_cli::SetArgs),
+    /// List stored rates, newest first
+    List(rates_cli::ListArgs),
+    /// Load rates from a CSV file with the columns date,base,quote,rate
+    Import(rates_cli::ImportArgs),
 }
 
 #[derive(Subcommand)]
@@ -606,8 +630,11 @@ struct PlanMove {
 }
 
 /// One row of `accounts --json`. The balance is a money string in the account's commodity.
+/// `id` is the integer that `means import --account` takes.
 fn account_json(a: &means_core::model::Account) -> serde_json::Value {
     serde_json::json!({
+        "id": a.id,
+        "uid": a.uid,
         "entity_id": a.entity_id,
         "path": a.path,
         "code": a.code,
@@ -1069,7 +1096,7 @@ async fn main() -> Result<()> {
         Command::Export { command, format, output, entity, as_of, json } => export_cli::run(&db_path, command, &format, output, &entity, as_of.as_deref(), json),
         Command::Serve { listen, inbox } => serve(db_path, listen, inbox).await,
         Command::Tui { server } => means_tui::run(&server).await,
-        Command::Import { source, account, entity, file, command } => match command {
+        Command::Import { source, account, entity, map, date_format, decimal_comma, file, command } => match command {
             Some(ImportCommand::Lines { id, status, json }) => {
                 let conn = means_core::rusqlite::Connection::open_with_flags(&db_path, means_core::rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let (_, lines) = means_core::imports::get_import(&conn, id)?;
@@ -1112,7 +1139,10 @@ async fn main() -> Result<()> {
                 }
                 Ok(())
             }
-            None => import(db_path, &source, account, entity, &file.context("an import file is required")?),
+            None => {
+                let mapping = map.as_deref().map(|spec| means_core::imports::CsvMapping::from_column_map(spec, date_format.as_deref().unwrap_or(""), decimal_comma)).transpose()?;
+                import(db_path, &source, account, entity, mapping.as_ref(), &file.context("an import file is required")?)
+            }
         },
         Command::Draft { command: DraftCommand::Delete { id } } => {
             let db = Db::open(&db_path)?;
@@ -1192,6 +1222,9 @@ async fn main() -> Result<()> {
             println!("rates: {inserted} written, {revalued} entries revalued, latest {latest}");
             Ok(())
         }
+        Command::Rates { command: RatesCommand::Set(args) } => rates_cli::set(db_path, args),
+        Command::Rates { command: RatesCommand::List(args) } => rates_cli::list(db_path, args),
+        Command::Rates { command: RatesCommand::Import(args) } => rates_cli::import(db_path, args),
         Command::Entity { command: EntityCommand::MigrateCurrency { entity, to, apply, backup, include_locked } } => {
             let mut conn = means_core::currency_migration::open_existing(&db_path, false)?;
             let entity = resolve_entity(&conn, &entity)?;
@@ -1213,9 +1246,28 @@ async fn main() -> Result<()> {
             println!("entity #{} {} ({}, {})", e.id, e.name, e.kind, e.currency);
             Ok(())
         }
-        Command::Entity { command: EntityCommand::List } => {
+        Command::Entity { command: EntityCommand::List { json } } => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
+            if json {
+                let mut rows = Vec::new();
+                for e in means_core::entities::list_entities(&conn, true)? {
+                    let facts = means_core::entities::get_facts(&conn, e.id)?;
+                    rows.push(serde_json::json!({
+                        "id": e.id,
+                        "uid": e.uid,
+                        "name": e.name,
+                        "kind": e.kind,
+                        "country": e.country,
+                        "currency": e.currency,
+                        "fiscal_year_end": facts.fiscal_year_end,
+                        "lock_date": e.lock_date.map(|d| d.to_string()),
+                        "archived": e.archived_at.is_some(),
+                    }));
+                }
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
             for e in means_core::entities::list_entities(&conn, true)? {
                 println!("#{:<3} {:<24} {:<8} {}{}", e.id, e.name, e.kind, e.currency, if e.archived_at.is_some() { " (archived)" } else { "" });
             }
@@ -1251,7 +1303,7 @@ async fn main() -> Result<()> {
         Command::Void(args) => void::run(db_path, args),
         Command::Rule { command } => rule(db_path, command),
         Command::Profiles { command } => profiles(db_path, command),
-        Command::Status => {
+        Command::Status { json: _ } => {
             let db = Db::open(&db_path)?;
             let s = grpc::status_of(&db)?;
             println!("{}", serde_json::to_string_pretty(&s)?);
@@ -1331,12 +1383,18 @@ fn watch_inbox(db: Arc<Db>, dir: PathBuf) {
     });
 }
 
-fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i64>, file: &PathBuf) -> Result<()> {
+fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i64>, mapping: Option<&means_core::imports::CsvMapping>, file: &PathBuf) -> Result<()> {
     let db = Db::open(&db_path)?;
     let content = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let filename = file.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let mut conn = db.conn();
-    let source = if source == "auto" { means_core::imports::detect_source(&filename, &content) } else { source.to_string() };
+    // A column map reads the file as a generic CSV, as the terminal UI does.
+    let source = match (source, mapping) {
+        ("auto", Some(_)) => "generic_csv".to_string(),
+        ("auto", None) => means_core::imports::detect_source(&filename, &content),
+        (s, _) => s.to_string(),
+    };
+    anyhow::ensure!(mapping.is_none() || source.ends_with("_csv"), "--map reads a CSV file; use it with --source generic_csv");
     if source == "account_tracker" {
         let entity = entity.context("--entity is required for Account Tracker backups")?;
         let r = means_core::imports::account_tracker::import(&mut conn, &content, &filename, &[], entity, true, true)?;
@@ -1349,7 +1407,7 @@ fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i
         }
         return Ok(());
     }
-    let out = means_core::imports::run_import(&mut conn, means_core::imports::ImportRequest::new(&source, account, &filename, &content))?;
+    let out = means_core::imports::run_import(&mut conn, means_core::imports::ImportRequest::new(&source, account, &filename, &content).mapping(mapping))?;
     let i = &out.import;
     println!(
         "import #{} ({}): {} lines, {} created, {} matched, {} duplicates, {} skipped, {} unmatched, {} errors",

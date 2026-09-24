@@ -5,5 +5,7 @@ tests. They are public test keys, not credentials for any bank or deployed servi
 The Inter certificates identify the synthetic test CA and loopback test endpoints.
 The Enable Banking key signs requests verified by the local mock server.
 
+`generic-mapped.csv` is a synthetic bank export for the `means import --map` test.
+
 Use these files only in tests. Production integrations need their own credentials
 and certificates. New fixtures must use synthetic identities and endpoints.

@@ -1030,3 +1030,127 @@ fn entity_group_and_party_commands_print_versioned_json() {
         assert!(v["error"]["message"].is_string());
     }
 }
+
+#[test]
+fn accounts_and_entities_list_identifiers_as_json() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    let accounts: serde_json::Value = serde_json::from_str(&ledger.ok(&["accounts", "--entity", &books.entity.to_string(), "--json"])).unwrap();
+    let n26 = accounts.as_array().unwrap().iter().find(|a| a["path"] == "Assets:Bank:N26").unwrap();
+    assert_eq!(n26["id"].as_i64(), Some(books.n26));
+    assert!(n26["uid"].as_str().is_some_and(|u| !u.is_empty()));
+
+    ledger.ok(&["entity", "set", "Personal", "--fye", "12-31"]);
+    let listed: serde_json::Value = serde_json::from_str(&ledger.ok(&["entity", "list", "--json"])).unwrap();
+    let e = &listed.as_array().unwrap()[0];
+    assert_eq!(e["id"].as_i64(), Some(books.entity));
+    assert_eq!((e["name"].as_str(), e["kind"].as_str(), e["country"].as_str(), e["currency"].as_str()), (Some("Personal"), Some("person"), Some("PT"), Some("EUR")));
+    assert_eq!(e["fiscal_year_end"], "12-31");
+    assert!(e["uid"].is_string() && e["lock_date"].is_null());
+
+    // `status --json` prints the same object as `status`.
+    let plain: serde_json::Value = serde_json::from_str(&ledger.ok(&["status"])).unwrap();
+    let flagged: serde_json::Value = serde_json::from_str(&ledger.ok(&["status", "--json"])).unwrap();
+    assert_eq!(plain, flagged);
+}
+
+#[test]
+fn entry_list_all_returns_every_entry() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    {
+        let db = ledger.db();
+        let mut conn = db.conn();
+        for i in 0..3 {
+            let mut input = EntryInput::new(books.entity, date("2026-02-01") + chrono::Days::new(i));
+            input.postings = vec![PostingInput::new(books.n26, d("-5")), PostingInput::balancing(books.food)];
+            journal::create_entry(&mut conn, input).unwrap();
+        }
+    }
+    let list = |args: &[&str]| -> serde_json::Value { serde_json::from_str(&ledger.ok(&[["entry", "list", "--entity", "Personal", "--json"].as_slice(), args].concat())).unwrap() };
+    assert_eq!(list(&["--limit", "2"])["count"], 2);
+    let all = list(&["--all"]);
+    assert_eq!((all["count"].as_i64(), all["total"].as_i64()), (Some(3), Some(3)));
+    let out = ledger.run(&["entry", "list", "--entity", "Personal", "--limit", "2001", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("--all"));
+}
+
+#[test]
+fn rates_set_list_and_import_work_offline_and_value_drafts() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    let usd = {
+        let db = ledger.db();
+        let conn = db.conn();
+        accounts::ensure_account(&conn, books.entity, AccountType::Asset, &["Bank", "Dollar"], "bank", "USD").unwrap().id
+    };
+    let json = |args: &[&str]| -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_str(&ledger.ok(args)).unwrap();
+        assert_eq!((v["schema_version"].as_i64(), v["ok"].as_bool()), (Some(1), Some(true)), "{v}");
+        v
+    };
+    let set = json(&["rates", "set", "--date", "2026-03-02", "--base", "EUR", "--quote", "USD", "--rate", "1.2500", "--json"]);
+    assert_eq!((set["rate"]["base"].as_str(), set["rate"]["quote"].as_str(), set["rate"]["rate"].as_str(), set["rate"]["source"].as_str()), (Some("EUR"), Some("USD"), Some("1.25"), Some("manual")));
+
+    let file = ledger.path.with_extension("rates.csv");
+    std::fs::write(&file, "date,base,quote,rate\n2026-03-03,EUR,USD,1.2600\n2026-03-03,EUR,GBP,0.8400\n").unwrap();
+    let imported = json(&["rates", "import", file.to_str().unwrap(), "--source", "bank-sheet", "--json"]);
+    std::fs::remove_file(&file).unwrap();
+    assert_eq!(imported["written"], 2);
+
+    let listed = json(&["rates", "list", "--base", "EUR", "--quote", "USD", "--from", "2026-03-01", "--to", "2026-03-31", "--json"]);
+    assert_eq!(listed["count"], 2);
+    assert_eq!(listed["rates"][0]["date"], "2026-03-03");
+    assert_eq!(listed["rates"][0]["source"], "bank-sheet");
+
+    // A draft in USD takes its EUR value from the manual rate.
+    let doc = r#"{"date": "2026-03-02", "payee": "Sample Cafe", "postings": [{"account": "Assets:Bank:Dollar", "quantity": "-25.00"}, {"account": "Expenses:Food"}]}"#;
+    let doc_file = ledger.path.with_extension("draft.json");
+    std::fs::write(&doc_file, doc).unwrap();
+    let draft = json(&["entry", "draft", "--entity", "Personal", "--json-file", doc_file.to_str().unwrap()]);
+    std::fs::remove_file(&doc_file).unwrap();
+    let entry = journal::get_entry(&ledger.db().conn(), means_core::proposal::entry_id_by_uid(&ledger.db().conn(), draft["entry"]["uid"].as_str().unwrap()).unwrap()).unwrap();
+    let dollar = entry.postings.iter().find(|p| p.account_id == usd).unwrap();
+    assert_eq!((dollar.amount.minor(), dollar.rate_source.as_str()), (-2000, "inverse"));
+
+    let out = ledger.run(&["rates", "set", "--date", "2026-03-02", "--base", "EUR", "--quote", "EUR", "--rate", "1", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn generic_csv_import_takes_a_column_map() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/generic-mapped.csv");
+    let file = ledger.path.with_extension("csv");
+    std::fs::copy(fixture, &file).unwrap();
+    let out = ledger.ok(&[
+        "import",
+        "--source",
+        "generic_csv",
+        "--account",
+        &books.n26.to_string(),
+        "--map",
+        "date=Booked,amount=Value,description=Text,counterparty=Counterparty,external_id=Ref",
+        "--date-format",
+        "%d/%m/%Y",
+        "--decimal-comma",
+        file.to_str().unwrap(),
+    ]);
+    std::fs::remove_file(&file).unwrap();
+    assert!(out.contains("2 lines") && out.contains("0 errors"), "{out}");
+    let id: String = out.trim_start_matches("import #").chars().take_while(char::is_ascii_digit).collect();
+    let lines: serde_json::Value = serde_json::from_str(&ledger.ok(&["import", "lines", &id, "--json"])).unwrap();
+    let lines = lines.as_array().unwrap();
+    assert_eq!(lines.len(), 2);
+    let first = lines.iter().find(|l| l["reference"] == "ref-001").unwrap();
+    assert_eq!(first["date"], "2026-03-02");
+    assert_eq!(first["description"], "Card payment Sample Cafe");
+    let second = lines.iter().find(|l| l["reference"] == "ref-002").unwrap();
+    assert_eq!(second["date"], "2026-03-05");
+    assert!(second["amount"].to_string().contains("123456"), "{second}");
+
+    let bad = ledger.refused(&["import", "--account", &books.n26.to_string(), "--map", "day=Booked,amount=Value", fixture]);
+    assert!(bad.contains("unknown column map key"), "{bad}");
+}

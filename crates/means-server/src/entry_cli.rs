@@ -65,8 +65,12 @@ pub enum Command {
         /// Latest date, YYYY-MM-DD
         #[arg(long)]
         until: Option<String>,
-        #[arg(long, default_value_t = 50)]
+        /// Most entries to return, from 1 to 2000
+        #[arg(long, default_value_t = 50, conflicts_with = "all")]
         limit: i64,
+        /// Return every matching entry (no limit). The snapshot export is the complete read of the books.
+        #[arg(long)]
+        all: bool,
         #[arg(long)]
         json: bool,
     },
@@ -128,7 +132,7 @@ fn execute(db_path: &Path, command: Command) -> AgentResult<Output> {
         Command::Propose { uid } => propose(db_path, &uid),
         Command::Confirm { uid, digest, actor } => confirm(db_path, &uid, &digest, actor),
         Command::Void { uid, reason, date } => void(db_path, &uid, &reason, date.as_deref()),
-        Command::List { entity, status, since, until, limit, json } => list(db_path, &entity, status.as_deref(), since.as_deref(), until.as_deref(), limit, json),
+        Command::List { entity, status, since, until, limit, all, json } => list(db_path, &entity, status.as_deref(), since.as_deref(), until.as_deref(), (!all).then_some(limit), json),
         Command::Show { uid, json } => show(db_path, &uid, json),
     }
 }
@@ -276,9 +280,13 @@ fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>) -> AgentRes
     })))
 }
 
-fn list(db_path: &Path, entity: &str, status: Option<&str>, since: Option<&str>, until: Option<&str>, limit: i64, json: bool) -> AgentResult<Output> {
-    if !(1..=2000).contains(&limit) {
-        return Err(AgentError::new("invalid_input", "limit must be from 1 to 2000"));
+/// The largest page that `journal::list_entries` returns.
+const PAGE: i64 = 2000;
+
+/// `limit` is `None` for `--all`. The engine then reads every matching entry, page by page.
+fn list(db_path: &Path, entity: &str, status: Option<&str>, since: Option<&str>, until: Option<&str>, limit: Option<i64>, json: bool) -> AgentResult<Output> {
+    if limit.is_some_and(|l| !(1..=PAGE).contains(&l)) {
+        return Err(AgentError::new("invalid_input", "limit must be from 1 to 2000; use --all for every entry"));
     }
     let (status, only_unreviewed) = match status.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
         None => (None, false),
@@ -291,8 +299,18 @@ fn list(db_path: &Path, entity: &str, status: Option<&str>, since: Option<&str>,
     let db = open(db_path)?;
     let conn = db.conn();
     let entity = resolve_entity(&conn, entity)?;
-    let filter = EntryFilter { entity_id: Some(entity.id), status, from, to, only_unreviewed, limit, ..Default::default() };
-    let (entries, total) = journal::list_entries(&conn, &filter)?;
+    let mut filter = EntryFilter { entity_id: Some(entity.id), status, from, to, only_unreviewed, limit: limit.unwrap_or(PAGE), ..Default::default() };
+    let (mut entries, total) = journal::list_entries(&conn, &filter)?;
+    if limit.is_none() {
+        while (entries.len() as i64) < total {
+            filter.offset = entries.len() as i64;
+            let (page, _) = journal::list_entries(&conn, &filter)?;
+            if page.is_empty() {
+                break;
+            }
+            entries.extend(page);
+        }
+    }
     if !json {
         let mut text: String = entries.iter().map(entry_text).collect();
         text.push_str(&format!("{} of {} entries\n", entries.len(), total));

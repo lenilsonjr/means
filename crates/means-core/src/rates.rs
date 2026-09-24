@@ -113,6 +113,55 @@ pub fn set_price(conn: &Connection, commodity: &str, currency: &str, on: NaiveDa
     Ok(())
 }
 
+/// Store one exchange rate entered by hand: one unit of `base` costs `rate` units of `quote` on `on`.
+/// The row goes in `prices` with the base as the commodity and the quote as the currency, so
+/// `rate_for` finds it directly, as the inverse, or through a cross rate.
+pub fn set_rate(conn: &Connection, on: NaiveDate, base: &str, quote: &str, rate: Decimal, source: &str) -> Result<()> {
+    let base = currency_code("base", base)?;
+    let quote = currency_code("quote", quote)?;
+    if base == quote {
+        return Err(Error::Invalid(format!("base and quote are the same currency ({base})")));
+    }
+    let source = source.trim();
+    if source.is_empty() {
+        return Err(Error::Invalid("the source must not be empty".into()));
+    }
+    set_price(conn, &base, &quote, on, rate, source)
+}
+
+fn currency_code(field: &str, code: &str) -> Result<String> {
+    let code = code.trim().to_ascii_uppercase();
+    if code.is_empty() || !code.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(Error::Invalid(format!("{field} must be a currency code such as EUR, got {code:?}")));
+    }
+    Ok(code)
+}
+
+/// Import exchange rates from CSV text with the header `date,base,quote,rate`. The columns can
+/// come in any order. Each row is one `set_rate`. The import writes all rows or none.
+/// Returns the number of rows written.
+pub fn import_rates_csv(conn: &mut Connection, text: &str, source: &str) -> Result<usize> {
+    let mut reader = csv::ReaderBuilder::new().trim(csv::Trim::All).flexible(false).from_reader(text.as_bytes());
+    let headers: Vec<String> = reader.headers().map_err(|e| Error::Parse(format!("rates CSV header: {e}")))?.iter().map(|h| h.trim().to_ascii_lowercase()).collect();
+    let column = |name: &str| headers.iter().position(|h| h == name).ok_or_else(|| Error::Invalid(format!("rates CSV needs the columns date,base,quote,rate; {name} is missing")));
+    let (date_i, base_i, quote_i, rate_i) = (column("date")?, column("base")?, column("quote")?, column("rate")?);
+    let tx = conn.transaction()?;
+    let mut count = 0usize;
+    for (i, record) in reader.records().enumerate() {
+        let line = i + 2;
+        let record = record.map_err(|e| Error::Parse(format!("rates CSV line {line}: {e}")))?;
+        if record.iter().all(|f| f.is_empty()) {
+            continue;
+        }
+        let on = crate::parse_date(&record[date_i]).map_err(|_| Error::Invalid(format!("rates CSV line {line}: date must be YYYY-MM-DD, got {:?}", &record[date_i])))?;
+        let rate = money::parse(&record[rate_i]).map_err(|_| Error::Invalid(format!("rates CSV line {line}: rate must be a decimal number, got {:?}", &record[rate_i])))?;
+        set_rate(&tx, on, &record[base_i], &record[quote_i], rate, source).map_err(|e| Error::Invalid(format!("rates CSV line {line}: {e}")))?;
+        count += 1;
+    }
+    tx.commit()?;
+    Ok(count)
+}
+
 pub fn list_prices(conn: &Connection, commodity: &str, currency: &str, from: Option<NaiveDate>, to: Option<NaiveDate>, limit: i64) -> Result<Vec<Price>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, c.code, cur.code, p.on_date, p.price, p.source FROM prices p
@@ -254,5 +303,31 @@ mod tests {
         let later = rate_for(&conn, "USD", "EUR", NaiveDate::from_ymd_opt(2026, 9, 10).unwrap()).unwrap().unwrap();
         assert_eq!(later.source, "nearest");
         assert!(rate_for(&conn, "USD", "EUR", NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()).unwrap().is_none());
+    }
+
+    #[test]
+    fn manual_rates_and_csv_import() {
+        let db = Db::open_memory().unwrap();
+        let mut conn = db.conn();
+        let d = NaiveDate::from_ymd_opt(2026, 3, 2).unwrap();
+        set_rate(&conn, d, "eur", "usd", Decimal::from_str("1.0850").unwrap(), "manual").unwrap();
+        let direct = rate_for(&conn, "EUR", "USD", d).unwrap().unwrap();
+        assert_eq!((direct.rate, direct.source.as_str()), (Decimal::from_str("1.0850").unwrap(), "exact"));
+        let inverse = rate_for(&conn, "USD", "EUR", d).unwrap().unwrap();
+        assert_eq!(inverse.source, "inverse");
+        assert!(set_rate(&conn, d, "EUR", "EUR", Decimal::ONE, "manual").is_err());
+        assert!(set_rate(&conn, d, "EUR", "USD", Decimal::ZERO, "manual").is_err());
+
+        let csv = "date,base,quote,rate\n2026-03-03,EUR,USD,1.0900\n2026-03-03,EUR,GBP,0.8400\n\n";
+        assert_eq!(import_rates_csv(&mut conn, csv, "csv").unwrap(), 2);
+        let listed = list_prices(&conn, "EUR", "", None, None, 0).unwrap();
+        assert_eq!(listed.len(), 3);
+        assert_eq!(listed[0].source, "csv");
+        // A bad row stops the import, and the import writes nothing.
+        let bad = "date,base,quote,rate\n2026-03-04,EUR,USD,1.1\n2026-03-05,EUR,USD,abc\n";
+        let err = import_rates_csv(&mut conn, bad, "csv").unwrap_err().to_string();
+        assert!(err.contains("line 3"), "{err}");
+        assert_eq!(list_prices(&conn, "EUR", "USD", None, None, 0).unwrap().len(), 2);
+        assert!(import_rates_csv(&mut conn, "day,base,quote,rate\n", "csv").is_err());
     }
 }

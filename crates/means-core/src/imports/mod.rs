@@ -78,6 +78,52 @@ pub struct CsvMapping {
 }
 
 impl CsvMapping {
+    /// Build a mapping from a command-line column map such as
+    /// `date=Booked,amount=Amount,description=Text,counterparty=Name,external_id=Id`.
+    /// A column is a header name or a 1-based column number. `counterparty` adds its column to the
+    /// description. `external_id` (or `reference`) fills the statement line reference. The keys
+    /// `debit`, `credit`, `balance` and `currency` are also accepted. `date_format` is a strftime
+    /// pattern; an empty one lets the parser detect it. `decimal_comma` reads 1.234,56 numbers.
+    pub fn from_column_map(spec: &str, date_format: &str, decimal_comma: bool) -> Result<CsvMapping> {
+        let mut m = CsvMapping { date_format: date_format.trim().to_string(), decimal_separator: if decimal_comma { ",".into() } else { String::new() }, ..Default::default() };
+        let mut seen = std::collections::HashSet::new();
+        for pair in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (key, column) = pair.split_once('=').ok_or_else(|| Error::Invalid(format!("column map entry {pair:?} must be key=column")))?;
+            let (key, column) = (key.trim().to_ascii_lowercase(), column.trim().to_string());
+            if column.is_empty() {
+                return Err(Error::Invalid(format!("column map entry {pair:?} names no column")));
+            }
+            if !seen.insert(key.clone()) {
+                return Err(Error::Invalid(format!("column map names {key} twice")));
+            }
+            match key.as_str() {
+                "date" => m.date_column = column,
+                "amount" => m.amount_column = column,
+                "debit" => m.debit_column = column,
+                "credit" => m.credit_column = column,
+                "description" => m.description_column = column,
+                "counterparty" => m.extra_description_columns.push(column),
+                "external_id" | "reference" => m.reference_column = column,
+                "balance" => m.balance_column = column,
+                "currency" => m.currency_column = column,
+                other => return Err(Error::Invalid(format!("unknown column map key {other:?}; use date, amount, debit, credit, description, counterparty, external_id, balance or currency"))),
+            }
+        }
+        if seen.contains("external_id") && seen.contains("reference") {
+            return Err(Error::Invalid("column map names external_id and reference; they are the same column".into()));
+        }
+        if m.date_column.is_empty() {
+            return Err(Error::Invalid("column map needs date=<column>".into()));
+        }
+        if m.amount_column.is_empty() && m.debit_column.is_empty() && m.credit_column.is_empty() {
+            return Err(Error::Invalid("column map needs amount=<column>, or debit and credit columns".into()));
+        }
+        if !m.amount_column.is_empty() && !(m.debit_column.is_empty() && m.credit_column.is_empty()) {
+            return Err(Error::Invalid("column map takes amount OR debit and credit columns".into()));
+        }
+        Ok(m)
+    }
+
     fn is_empty(&self) -> bool {
         self.date_column.is_empty() && self.amount_column.is_empty() && self.debit_column.is_empty()
     }
