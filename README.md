@@ -6,9 +6,10 @@ Books that survive an audit. Local double-entry accounting across entities and c
 
 *Captured from the running TUI with fictional demo data.*
 
-- **Engine**: Rust, SQLite file, double-entry journal per entity, functional-currency valuation, immutable statement lines as evidence, hash-chained entries.
+- **Engine**: Rust, SQLite file, double-entry journal per entity, functional-currency valuation, immutable statement lines and hashed documents as evidence, hash-chained entries.
+- **Books for an audit**: entity facts, groups and related parties; tax codes with a tax event for each taxed posting; invoices with open items and settlements; typed links between entities; period close with lock dates and a filings register; management reports; and a hashed snapshot of the books.
 - **Imports**: Account Tracker Pro backups and bank exports, plus Pluggy, Enable Banking, Mercury, Wise business and Banco Inter PJ API pulls, and email attachments through IMAP. Rules draft or post entries; matching links captured entries to bank evidence.
-- **Terminal workflows**: capture, review, accounts, imports, bank connections, reconciliation, and reports. The CLI also supports chart maintenance, import retries, and Beancount export.
+- **Terminal workflows**: capture, review, accounts, imports, bank connections, reconciliation, and reports. The CLI also supports chart maintenance, import retries, Beancount and snapshot export, and a JSON interface for agents and scripts.
 
 The TUI connects to a local gRPC server. CLI commands use the accounting core directly and do not require a running server. There is no web interface.
 
@@ -165,6 +166,17 @@ means status                                      # JSON; --json gives the same 
 means verify                                      # recompute every entity's hash chain
 means chart apply --entity "Personal" charts/personal-nomad.json          # create a chart template's accounts (existing ones kept, coded)
 means chart remap --dry-run charts/remap/example.json            # preview a remap plan; drop --dry-run to apply it atomically
+means entity set LLC --fye 12-31 --registration EIN=00-0000000   # legal facts; entity classify, group and party record the rest
+means doc add receipt.pdf --entity LLC --link-entry <entry uid> --role receipt   # store a hashed file as evidence
+means tax code add --entity LLC --code SR --kind output --rate-bp 900 --tax-account "Liabilities:GST output" --from 2026-01-01
+means tax summary --entity LLC --from 2026-01-01 --to 2026-03-31 --json
+means invoice add --entity LLC --json-file invoice.json --recognize   # record an invoice; its recognition entry is a draft
+means invoice list --entity LLC --open --json
+means intervault exceptions --entity LLC --from 2026-01-01 --to 2026-03-31 --json   # intercompany postings without a link
+means entry draft --entity LLC --json-file draft.json            # an agent drafts; a human confirms with means entry confirm
+means close check --entity LLC --from 2026-01-01 --to 2026-03-31
+means export --format snapshot --output books-2026-q1 --as-of 2026-03-31 --json
+means export verify books-2026-q1
 ```
 
 `means rates set` stores one row in the prices table: one unit of the base costs `rate` units of the quote on that day. The default source is `manual`; `--source` changes it. The rate lookup uses the row directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. For example, the ECB stores USD in EUR, so a USD posting in a EUR entity uses a recent ECB row before a manual `--base EUR --quote USD` row. To override the ECB for that posting, enter `--base USD --quote EUR`. `set` and `import` then revalue postings booked without a rate, as `fetch` does; `--no-revalue` skips this step.
@@ -202,9 +214,17 @@ The reports read posted and void entries at their booked values in the functiona
 
 Budgets set one limit for a chosen date range, defaulting to a calendar month, with no rollover. Target an expense category (including subcategories), an expense class, or an exact tag. In TUI Reports, press `u` for budgets, `n` to create, Enter to edit, and `v` to group by class or tag. Press `c`/`g` for expense reports by class/tag.
 
+### Close and filings
+
+`means close check --entity LLC --from 2026-01-01 --to 2026-03-31` lists what blocks a close: drafts, unreviewed entries, missing rates, suspense balances and an unbalanced period. It writes nothing. `means close lock --entity LLC --through 2026-03-31 --actor "Ana Lima" --reason "Q1 close"` moves the lock date forward after a clean check. `means close unlock` moves it back, with an actor and a reason in the audit log. `means filing record` and `means filing status` keep the register of returns and reports, with the snapshot digest and the receipt. A submitted or accepted filing freezes its period; `means close unlock --amend` then creates an amendment. See [close, lock and filings](docs/data-model.md#close-lock-and-filings).
+
 `means reconcile --account ID` is read-only. For an account path, use `--entity Personal --account Assets:Bank:N26`. Balances use the statement closing date when available; missing statement balances remain unknown. The report shows up to 500 unmatched lines and unreconciled postings from up to 5,000 ledger rows, matching the existing reconciliation report.
 
 Export booked balances to Beancount/Fava with `means export --format beancount --output books.beancount`. See [export semantics and validation](docs/export.md).
+
+## For agents
+
+An agent or a script uses the same `means` binary. Commands such as `means entry draft`, `means entry propose`, `means report` and `means export --format snapshot` print one JSON object with `"schema_version": 1`. The agent drafts; a human confirms with `means entry confirm`. `means policy set draft-only` stops rules, schedules, the matcher and imports from posting. Set `MEANS_AGENT=1` in an agent session to refuse human actions; it is a workflow aid, not an access control. See the [agent interface](docs/agent-interface.md) for every command, its output and its error codes.
 
 ## Development
 
@@ -240,7 +260,10 @@ Run `cd website && npm ci && npm run dev` with Node.js 24 LTS for a local previe
 - [Expense reports](docs/expense-reports.md)
 - [TUI bank connections](docs/connections.md)
 - [Beancount export](docs/export.md)
+- [Snapshot format](docs/snapshot-format.md)
 - [Agent interface and posting policy](docs/agent-interface.md)
+- [Chart templates](charts/README.md)
+- [Ledger readiness review](docs/ledger-readiness.md)
 
 ## Where this goes
 

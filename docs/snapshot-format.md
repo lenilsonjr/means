@@ -1,6 +1,6 @@
 # Snapshot format
 
-A snapshot is a complete, hashed and atomic read of the books for external tools. Use it to give an auditor, an accountant or a script the full ledger with its evidence.
+A snapshot is a complete, hashed and atomic read of the books for external tools. Use it to give an auditor, an accountant or a script the full ledger with its evidence. `crates/means-core/src/snapshot.rs` writes and checks it.
 
 ```sh
 means export --format snapshot --output DIR [--entity E]... [--as-of YYYY-MM-DD] [--json]
@@ -9,35 +9,41 @@ means export verify DIR [--json]
 
 `--entity` takes a name, an id or a uid. Repeat it to select more entities. Without it, the snapshot holds every entity. `DIR` must not exist.
 
+With `--json`, the export prints one object: `{"schema_version":1,"ok":true,"output":"DIR","counts":{...}}`. `counts` is the `counts` object of the manifest. Without `--json`, it prints one line with the entry, draft and document counts. A failed export prints a text error and exits with code 1. It leaves no `DIR`.
+
 ## Files in the output directory
 
 | File | Content |
 |---|---|
-| `manifest.json` | `{"schema_version":1,"generator":{"name":"means","version":"<crate version>","commit":"<git hash if available via env or "unknown">"},"exported_at":"<RFC3339 UTC>","scope":{"entity_uids":[...],"as_of":null\|"YYYY-MM-DD"},"posting_policy":"normal\|draft_only","files":{"<name>":{"sha256":"...","bytes":N}, ... including every document file},"counts":{"entities","accounts","entries","postings","drafts","parties","documents","statement_lines","tax_codes","tax_events","invoices","settlements","filings","intervault_links"},"chain_heads":{"<entity_uid>":{"seq":N,"hash":"..."}},"control_totals":{"<entity_uid>":{"debits":Money,"credits":Money}}}` |
-| `entities.json` | array of `{"uid","name","kind","legal_form","country","currency","fiscal_year_end","lock_date","incorporated_on","registrations":{},"archived_at","classifications":[{"jurisdiction","classification","effective_from","effective_to","note"}],"group":{"group_uid","group_name","parent_entity_uid","ownership_bp","control","effective_from","effective_to"}\|null}` |
-| `accounts.json` | array of `{"uid","entity_uid","parent_uid","path","name","type","subtype","class","commodity","precision","placeholder","closed_at","statutory_code","tax_treatment","intercompany","external_ids":{}}` |
-| `entries.jsonl` | one object per line, status `posted` or `void` only: `{"uid","entity_uid","date","payee","payee_uid","description","notes","status","origin","reverses_uid","counterpart_uid","reviewed_at","reviewed_by","seq","prev_hash","hash","tags":[],"metadata":{},"postings":[{"uid","account_uid","quantity":Money,"amount":Money,"rate","rate_source","memo","metadata":{},"external_id","fingerprint","reconciled_at","statement_line_ids":[],"document_uids":[],"tax_event_uids":[]}],"document_uids":[]}` — `amount` is the functional book value, `quantity` the native quantity; `reviewed_by` from the audit event of the confirmation when available, else null |
-| `drafts.jsonl` | same shape, status `draft` |
-| `parties.json` | array of `{"uid","name","kind","country","tax_ids":{},"aliases":[],"relationships":[{"entity_uid","kind","ownership_bp","effective_from","effective_to","basis"}]}` (payees; if payees have no uid column, use `"uid": "payee-<id>"` and say so in the doc) |
-| `documents.json` + `documents/<ab>/<sha256>` | array of `{"uid","entity_uid","sha256","filename","mime","size","source","received_at","metadata":{},"path","links":[{"entry_uid","posting_uid","statement_line_id","role"}]}`; copy each stored file into the snapshot |
-| `statement_lines.json` | array of `{"id","import_uid","account_uid","entity_uid","date","amount":Money,"description","counterparty","external_id","fingerprint","posting_uids":[]}` |
-| `rates.json` | array of `{"date","base","quote","rate","source"}` from the prices table |
-| `tax_codes.json` | array of the tax code rows with uids and account uids |
-| `tax_events.jsonl` | one per line with `uid, entity_uid, entry_uid, posting_uid, tax_code_uid, code, kind, tax_point, base:Money, tax:Money, recoverable:Money, withheld:Money, native_base, native_tax, native_commodity, party_uid, document_ref, rule_version, corrects_event_uid, metadata` |
-| `invoices.json` | array of invoices with lines and settlements (uids, Money values, dates, status, party_uid, document_uid, recognition_entry_uid) |
-| `filings.json` | array of filing rows with uids and `amends_uid` |
-| `intervault_links.json` | array of links `{"uid","entry_a_uid","entry_b_uid","kind","amount_a":Money,"amount_b":Money,"rate","note","status"}` — only if a table `intervault_links` exists in the database (check `sqlite_master`); otherwise omit the file and set the count to 0 |
-| `books.beancount` | the existing Beancount export of the same scope |
+| `manifest.json` | `{"schema_version":1,"generator":{"name":"means","version":"<crate version>","commit":"<MEANS_GIT_COMMIT or unknown>"},"exported_at":"<RFC 3339 UTC>","scope":{"entity_uids":[...],"as_of":null\|"YYYY-MM-DD"},"posting_policy":"normal\|draft_only","files":{"<path>":{"sha256":"...","bytes":N},...},"counts":{"entities","accounts","entries","postings","drafts","parties","documents","statement_lines","tax_codes","tax_events","invoices","settlements","filings","intervault_links"},"chain_heads":{"<entity_uid>":{"seq":N,"hash":"..."}},"control_totals":{"<entity_uid>":{"debits":Money,"credits":Money}}}` |
+| `entities.json` | Array of `{"uid","name","kind","legal_form","country","currency","fiscal_year_end","lock_date","incorporated_on","registrations":{},"archived_at","classifications":[{"jurisdiction","classification","effective_from","effective_to","note"}],"group":{"group_uid","group_name","parent_entity_uid","ownership_bp","control","effective_from","effective_to"}\|null}` |
+| `accounts.json` | Array of `{"uid","entity_uid","parent_uid","path","name","type","subtype","class","commodity","precision","placeholder","closed_at","statutory_code","tax_treatment","intercompany","external_ids":{}}` |
+| `entries.jsonl` | One object per line, status `posted` or `void` only: `{"uid","entity_uid","date","payee","payee_uid","description","notes","status","origin","reverses_uid","counterpart_uid","reviewed_at","reviewed_by","seq","prev_hash","hash","tags":[],"metadata":{},"postings":[{"uid","account_uid","quantity":Money,"amount":Money,"rate","rate_source","memo","metadata":{},"external_id","fingerprint","reconciled_at","statement_line_ids":[],"document_uids":[],"tax_event_uids":[]}],"document_uids":[]}`. `amount` is the functional book value. `quantity` is the native quantity. |
+| `drafts.jsonl` | The same shape, status `draft` only. |
+| `parties.json` | Array of payees: `{"uid","name","kind","country","tax_ids":{},"aliases":[],"relationships":[{"entity_uid","kind","ownership_bp","effective_from","effective_to","basis"}]}` |
+| `documents.json` and `documents/<ab>/<sha256>` | Array of `{"uid","entity_uid","sha256","filename","mime","size","source","received_at","metadata":{},"path","links":[{"entry_uid","posting_uid","statement_line_id","role"}]}`, and a copy of each stored file. |
+| `statement_lines.json` | Array of `{"id","import_uid","account_uid","entity_uid","date","amount":Money,"description","counterparty","external_id","fingerprint","posting_uids":[]}` |
+| `rates.json` | Array of `{"date","base","quote","rate","source"}` from the prices table. |
+| `tax_codes.json` | Array of tax code versions. See [tax codes and tax events](#tax-codes-and-tax-events). |
+| `tax_events.jsonl` | One object per line: `{"uid","entity_uid","entry_uid","posting_uid","tax_code_uid","code","kind","tax_point","base":Money,"tax":Money,"recoverable":Money,"withheld":Money,"native_base","native_tax","native_commodity","party_uid","document_ref","rule_version","corrects_event_uid","metadata":{}}` |
+| `invoices.json` | Array of invoices with their lines and settlements. See [invoices, filings and links](#invoices-filings-and-links). |
+| `filings.json` | Array of filings. See [invoices, filings and links](#invoices-filings-and-links). |
+| `intervault_links.json` | Array of `{"uid","entry_a_uid","entry_b_uid","kind","amount_a":Money,"amount_b":Money,"rate","note","status"}` |
+| `books.beancount` | The [Beancount export](export.md) of the same scope. |
 
-Money is `{"minor":"<integer string>","commodity":"<code>","precision":N}`. This is the existing `Money` JSON form of the engine. Rates are decimal strings. No floats anywhere.
+Money is `{"minor":"<integer string>","commodity":"<code>","precision":N}`. This is the `Money` JSON form of the engine. Rates are decimal strings. The snapshot has no floating-point numbers.
+
+The export writes `intervault_links.json` when the ledger has the `intervault_links` table. Migration 25 creates it, so every ledger that the current engine opens has the file. Without the table, the file is absent and its count is 0.
+
+The manifest has no `evidence_policy` field. That field was planned, but it is not built.
 
 ## Rules
 
-- One read transaction (`BEGIN` deferred read; `rusqlite` transaction) for everything, including counts and totals; no pagination limits (read every row).
-- Scope: all entities by default, or `--entity` repeated; `--as-of DATE` limits entries, drafts, tax events, statement lines and documents to that date and marks it in the manifest. Archived entities and closed accounts are included when in scope.
-- Write into `DIR.tmp-<random>`, fsync files, then rename to `DIR` (refuse if `DIR` exists). Compute sha256 of every written file for the manifest; write the manifest last.
-- `control_totals` per entity: sum of positive functional amounts (debits) and sum of negative (credits, as a positive number) over booked entries in scope; `chain_heads` from the entity's last chained entry.
-- A `--verify` subcommand `means export verify DIR --json` rehashes every file and checks the manifest, counts and that debits equal credits per entity; exit 1 on any mismatch.
+- One read transaction gives every record, the counts and the totals. The export reads every row. It has no page limit.
+- The scope is every entity, or the entities of the repeated `--entity`. `--as-of DATE` limits entries, drafts, tax events, statement lines and documents to that date. The manifest records the date in `scope.as_of`. Archived entities and closed accounts are in the snapshot when their entity is in scope.
+- The export writes the files into `DIR.tmp-<uid>` and syncs each file. It writes the manifest last. Then it renames the directory to `DIR`. It refuses an existing `DIR`. A failure removes the temporary directory.
+- `control_totals` has, for each entity, the sum of the positive functional amounts (debits) and the sum of the negative functional amounts as a positive number (credits). It reads the booked entries in scope. `chain_heads` comes from the last chained entry of each entity.
+- `means export verify DIR` hashes every file again and checks the manifest, the counts and the control totals. See [Verify](#verify).
 
 ## Field notes
 
@@ -64,7 +70,7 @@ These notes make the contract exact where the table is short.
 - `metadata` of an entry holds the fields of the entry that the contract does not name: `refund_of_uid`, `template_uid`, `template_version`, `posted_at` and `created_at`. A field without a value is absent.
 - `tags` are `key:value` strings, or `key` for a tag without a value.
 - `rate` is the stored decimal string, or `null`.
-- `reviewed_by` is the actor of the last `confirm` audit event of the entry. It is `null` when no such event exists.
+- `reviewed_by` is the actor of the last `confirm` audit event of the entry that names an actor. It is `null` when no such event exists.
 - `document_uids` of an entry lists the documents linked to the entry. `document_uids` of a posting lists the documents linked to the posting.
 - `statement_line_ids` and `tax_event_uids` list only records that are in the snapshot.
 

@@ -8,7 +8,7 @@ Spending categories are expense accounts. Templates define the income and expens
 |---|---|
 | `personal-nomad.json` | one person living across countries, several currencies, remote income |
 | `personal-family.json` | a household with children: two earners, a home, a car, school and childcare |
-| `us-llc-single-member.json` | a freelancer or consultant billing through a US single-member LLC (Schedule C), with the bank, receivables, payables and the member's equity and balances |
+| `us-llc-single-member.json` | full chart: a freelancer or consultant billing through a US single-member LLC (Schedule C), with the bank, receivables, payables and the member's equity and balances |
 | `br-mei-servicos.json` | a Brazilian MEI providing services |
 | `br-empresa-servicos.json` | a small Brazilian services company in the Simples Nacional (ITG 1000 model chart) |
 | `company-services.json` | generic services-company operating accounts; examples include a Singapore Pte. Ltd., US C-corporation, and Estonian OÜ |
@@ -80,15 +80,15 @@ One scheme for every template, so a report that groups by code reads the same ac
 - **N2** Room to insert: the fives (`6115`) and any unused ten. A group holds at most nine postable accounts; a tenth means the group splits.
 - **N3** Codes ascend in file order, parents before children.
 - **N4** A code means the same thing in every entity built from the same template. Across templates, only the fixed slots in the table above align (the roots, `4900`, `7900`). The `statutory_code` compares two entities under the same national chart. A Brazilian company and a US company compare by account name and type.
-- **N5** Taxes. The personal templates give each country its own group: `Taxes Portugal`, `Taxes Brazil`, `Taxes other countries`. The year's total per jurisdiction is then one balance, and a tax that is one line on a return is one account (`docs/data-model.md` §3.4). The business templates keep one tax group, because the entity has one jurisdiction.
+- **N5** Taxes. The personal templates give each country its own group: `Taxes Portugal`, `Taxes Brazil`, `Taxes other countries`. The year's total per jurisdiction is then one balance, and a tax that is one line on a return is one account. The business templates keep one tax group, because the entity has one jurisdiction.
 
 ## 3. Applying a template to an entity
 
-- **A1** For each account in file order, find or create the account by path in the entity (`accounts::ensure_account` creates missing parents as placeholders). Set `type`, `code`, `placeholder`, and `description` into `notes`. All accounts take the entity's functional currency. A postable asset gets the subtype `bank` and a postable liability `card`; change the subtype after applying where it does not fit.
+- **A1** For each account, parents before children, find or create the account by path in the entity (`accounts::ensure_account` creates missing parents as placeholders). Set `type` and `code`, and `description` into `notes` when the account has no notes. `placeholder: true` makes an account a placeholder only when it has no postings. All accounts take the entity's functional currency. A postable asset gets the subtype `bank` and a postable liability `card`; change the subtype after applying where it does not fit.
 - **A2** Applying is idempotent: a path that already exists keeps its name, type and children, and its `code` is filled only if empty.
 - **A3** A user edits after applying: delete unused postable accounts, rename `Salary A` to the person, add a country subtree. New accounts follow N1 and N2 so the entity stays comparable.
 - **A4** The engine refuses postings on placeholders (`journal.rs`), so every group listed as a placeholder must keep at least one postable child or be removed.
-- **A5** Bundled payments split by entry template, not by account. The MEI's DAS is one bank line and two or three postings: `DAS-MEI – INSS`, `DAS-MEI – ISS`, `DAS-MEI – ICMS`. An entry template with one line per component drafts it (`docs/data-model.md` §3.4).
+- **A5** Bundled payments split by entry template, not by account. The MEI's DAS is one bank line and two or three postings: `DAS-MEI – INSS`, `DAS-MEI – ISS`, `DAS-MEI – ICMS`. An entry template with one line per component drafts it (see [templates](../docs/data-model.md#payees-tags-templates-rules-and-budgets)).
 - **A6** Each apply writes the statutory keys that a node gives. A re-apply thus updates `statutory_code`, `tax_treatment` and `intercompany` on existing accounts. A node without a key leaves that value of the account unchanged. An empty string or `false` clears it. These keys do not touch postings, so balances do not change.
 
 ## 4. Templates
@@ -100,9 +100,9 @@ One scheme for every template, so a report that groups by code reads the same ac
 Judgment calls:
 
 - Portugal's income tax is named `IRS` (Imposto sobre o Rendimento das Pessoas Singulares), spelled out in the description.
-- `IOF` sits under `Taxes Brazil`, one balance for the year's IOF (`docs/data-model.md` §3.4). In the two Brazilian business templates IOF sits under financial expenses, where ITG 1000 puts it.
+- `IOF` sits under `Taxes Brazil`, one balance for the year's IOF. In the two Brazilian business templates IOF sits under financial expenses, where ITG 1000 puts it.
 - Exchange-rate differences are not an account here: the engine posts them to the system `FX gain/loss` account. Only explicit conversion fees are.
-- `Income:Work:Owner distributions received` mirrors the LLC template's equity side of the same transfer (`docs/data-model.md` §3.1).
+- `Income:Work:Owner distributions received` mirrors the LLC template's equity side of the same transfer (see [transfers between entities](../docs/data-model.md#journal-entries-and-postings)).
 
 Sources:
 

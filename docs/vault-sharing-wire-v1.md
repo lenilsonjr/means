@@ -86,9 +86,11 @@ manual removal; no automatic retention deletion is performed in version 1.
 
 Replicas carry a marker and deny-write triggers on all tables. `Db::open` refuses
 them before migrations. The replica reader uses SQLite read-only mode, no
-migrations and query-only enforcement. The version-1 replica schema is fixed at
-16 independently of future owned-book migrations; future core changes must keep
-its read queries compatible (or add a versioned reader). Replica mutations fail even through direct core calls. The server disables side-effecting integration/inbox jobs for replica
+migrations and query-only enforcement. The version-1 wire format carries the
+tables of schema version 16 (`REPLICA_SCHEMA_VERSION`). The receiver installs them
+into a staging database that migrates to the current schema; newer columns take
+their defaults. The reader opens a replica only at the current schema. A replica
+that an older build installed needs a new snapshot. Replica mutations fail even through direct core calls. The server disables side-effecting integration/inbox jobs for replica
 sessions. Replica views remain separate and never join owned-vault totals.
 Recovery rechecks the installed file digest and pinned manifest before serving it.
 

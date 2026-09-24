@@ -28,6 +28,36 @@ Conventions shared by every source:
 official page or by an open-source importer whose tests carry real-looking samples. "Assumed" means
 the parser accepts it, but nobody has held a file that proves it.
 
+## Column maps for other CSV files
+
+A CSV file that no preset recognises needs a column map. The TUI builds the map on the Imports
+screen. The CLI takes it with `--map`:
+
+```sh
+means import --account 12 --map date=Booked,amount=Value,description=Text,counterparty=Name,external_id=Ref \
+  --date-format %d/%m/%Y --decimal-comma export.csv
+```
+
+`CsvMapping::from_column_map` in `crates/means-core/src/imports/mod.rs` reads the map:
+
+- The map is a list of `key=column` pairs, separated by commas. A column is a header name or a
+  1-based column number.
+- `date` is necessary. Give `amount`, or `debit` and `credit`. `amount` and `debit` or `credit`
+  cannot occur together.
+- `description` names the description column. Each `counterparty` column adds its text to the
+  description.
+- `external_id` fills the reference of the statement line, which detects duplicates. `reference` is
+  the same key. Give only one of the two.
+- `balance` and `currency` are also accepted. An unknown key or a key that occurs twice is refused.
+- `--date-format` takes a strftime pattern, for example `%d/%m/%Y`. Without it, the parser detects
+  the format.
+- `--decimal-comma` reads amounts such as `1.234,56`.
+- The parser detects the delimiter and the header row.
+
+With `--source auto` (the default), `--map` reads the file as `generic_csv`. A map with another CSV
+source applies to that source. A map with a source that is not CSV is refused. `--date-format` and
+`--decimal-comma` need `--map`.
+
 ## N26 (`n26_csv`)
 
 Two layouts, both comma-separated, all fields double-quoted, `YYYY-MM-DD` dates, `.` decimals,

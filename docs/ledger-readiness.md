@@ -109,3 +109,22 @@ Those changes need separate contracts and migration tests.
 
 Validation passed with `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace`.
 The workspace result was 353 passed, zero failed, and four ignored tests that require private input.
+
+## Status
+
+Date: 2026-09-24, branch `dogfood`. This table shows which findings the code now addresses. The findings and the scope above stay as the review wrote them.
+
+| Finding | Status | Source |
+|---|---|---|
+| Transfer between entities in two commits | Addressed. Both entries, their counterpart links, the inter-vault link and the audit events are written in one transaction. | `create_transfer` in [journal.rs](../crates/means-core/src/journal.rs) |
+| Automatic routes can post | Addressed. The `draft_only` policy holds rules, schedules, the matcher, imports, gRPC writes, transfers and refunds as drafts. The engine reads the policy in the write transaction. | `admit` and `allows_auto_post` in [policy.rs](../crates/means-core/src/policy.rs), called from [journal.rs](../crates/means-core/src/journal.rs) and [matcher.rs](../crates/means-core/src/matcher.rs) |
+| External readers need both booked statuses; the export needs hashed files | Addressed. The snapshot export writes `posted` and `void` entries, drafts in a separate file, every document file and a manifest with the SHA-256 of each file, the counts and the control totals. `means export verify` checks it. | [snapshot.rs](../crates/means-core/src/snapshot.rs) |
+| Missing rates and other close conditions | Addressed. The close check reports drafts, unreviewed entries, missing rates, suspense balances, a lock moved back and an unbalanced period as errors. An error blocks the lock. | `close_check` in [close.rs](../crates/means-core/src/close.rs) |
+| Lock dates can move back without a record | Addressed. A lock and an unlock need an actor and a reason, and the audit log records both. `UpdateEntity` can only move the lock date forward. | `close_lock` and `unlock` in [close.rs](../crates/means-core/src/close.rs), `update_entity` in [entities.rs](../crates/means-core/src/entities.rs) |
+| Filed revisions and later corrections | Addressed. The filings register keeps each return with its snapshot digest and chain head. A submitted or accepted filing freezes its period, and an unlock creates an amendment. | [filings.rs](../crates/means-core/src/filings.rs) |
+| Transfer links have no lifecycle | Addressed. Inter-vault links follow the pair from draft to posted to void. | [intervault.rs](../crates/means-core/src/intervault.rs) |
+| Replica schema has a fixed version | Addressed. A received replica installs into a database that migrates to the current schema. | `open_replica_staging` in [db.rs](../crates/means-core/src/db.rs) |
+| Restricted service boundary | Open. `MEANS_AGENT=1` refuses some human actions in the CLI only. It is a workflow aid. A local client with database or gRPC access can still post. | `refuse_agent` in [entry_cli.rs](../crates/means-server/src/entry_cli.rs), [grpc.rs](../crates/means-server/src/grpc.rs) |
+| Import rollback retention policy | Open. `means rollback --force` still deletes the entries and the statement lines of an import. | `delete_import` in [imports/mod.rs](../crates/means-core/src/imports/mod.rs) |
+| Rechaining of edited posted entries | Open. A permitted edit recomputes the hashes of the later entries. The chain covers the entry date, payee, description and postings only. | `rechain` and `canonical` in [hashchain.rs](../crates/means-core/src/hashchain.rs) |
+| gRPC coverage | Open. The gRPC contract has no calls for documents, tax, invoices, inter-vault links, close, filings, the posting policy or the snapshot export. The TUI cannot use these features. | [means.proto](../proto/means/v1/means.proto) |
