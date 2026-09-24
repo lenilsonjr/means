@@ -188,21 +188,35 @@ fn void_dates_and_category_merge_preserve_budget_reference() {
 fn migration_adds_plans_without_changing_existing_books() {
     let mut c = means_core::rusqlite::Connection::open_in_memory().unwrap();
     means_core::db::migrate_to(&c, 13).unwrap();
-    let e = entities::create_entity(&mut c, "Personal", "person", "PT", "EUR").unwrap();
-    let bank = accounts::ensure_account(&c, e.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
-    let food = accounts::ensure_account(&c, e.id, AccountType::Expense, &["Food"], "expense", "EUR").unwrap();
-    // Seed version-13 rows directly: today's journal API expects today's schema.
+    // Seed version-13 rows directly: today's entity, account and journal API expects today's schema.
+    c.execute_batch(
+        "INSERT INTO commodities (code, kind, name, precision) VALUES ('EUR', 'currency', 'Euro', 2);
+         INSERT INTO entities (uid, name, kind, country, currency, created_at, updated_at) VALUES ('entity-fixture', 'Personal', 'person', 'PT', 'EUR', 'test', 'test');",
+    )
+    .unwrap();
+    let e_id = c.last_insert_rowid();
+    let seed_account = |uid: &str, name: &str, kind: &str, subtype: &str| {
+        c.execute(
+            "INSERT INTO accounts (uid, entity_id, name, type, subtype, commodity_id, created_at, updated_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, id, 'test', 'test' FROM commodities WHERE code = 'EUR'",
+            means_core::rusqlite::params![uid, e_id, name, kind, subtype],
+        )
+        .unwrap();
+        (c.last_insert_rowid(), uid.to_string())
+    };
+    let (bank_id, bank_uid) = seed_account("bank-fixture", "Bank", "asset", "bank");
+    let (food_id, food_uid) = seed_account("food-fixture", "Food", "expense", "expense");
     let mut postings =
-        vec![serde_json::json!({"account":bank.uid,"quantity":"-10","amount":"-10","commodity":"EUR"}), serde_json::json!({"account":food.uid,"quantity":"10","amount":"10","commodity":"EUR"})];
+        vec![serde_json::json!({"account":bank_uid,"quantity":"-10","amount":"-10","commodity":"EUR"}), serde_json::json!({"account":food_uid,"quantity":"10","amount":"10","commodity":"EUR"})];
     postings.sort_by_key(|v| v.to_string());
     let canonical = serde_json::json!({"uid":"budget-fixture","date":"2026-09-01","payee":"","description":"","postings":postings}).to_string();
     let hash = means_core::hashchain::digest("", &canonical);
     c.execute(
         "INSERT INTO journal_entries(id,uid,entity_id,date,created_at,updated_at,seq,prev_hash,hash) VALUES(1,'budget-fixture',?1,'2026-09-01','test','test',1,'',?2)",
-        means_core::rusqlite::params![e.id, hash],
+        means_core::rusqlite::params![e_id, hash],
     )
     .unwrap();
-    for (uid, account, amount) in [("bank-leg", bank.id, -1000), ("food-leg", food.id, 1000)] {
+    for (uid, account, amount) in [("bank-leg", bank_id, -1000), ("food-leg", food_id, 1000)] {
         c.execute("INSERT INTO postings(uid,journal_entry_id,account_id,quantity,amount) VALUES(?1,1,?2,?3,?3)", means_core::rusqlite::params![uid, account, amount]).unwrap();
     }
     let snapshot = |c: &means_core::rusqlite::Connection| {
@@ -212,11 +226,12 @@ fn migration_adds_plans_without_changing_existing_books() {
     means_core::db::migrate_to(&c, 14).unwrap();
     means_core::db::migrate_to(&c, 14).unwrap();
     assert_eq!(before, snapshot(&c));
-    assert!(budgets::list(&c, e.id, None, None).unwrap().is_empty());
-    let b = budgets::save(&mut c, None, input(e.id, food.id)).unwrap();
-    budgets::delete(&mut c, b.id).unwrap();
-    let newer = budgets::save(&mut c, None, input(e.id, food.id)).unwrap();
-    assert!(newer.id > b.id, "audit row IDs must not be recycled");
+    assert!(budgets::list(&c, e_id, None, None).unwrap().is_empty());
+    // Saving a budget reads accounts through today's API, so it runs on today's schema.
     means_core::db::migrate_to(&c, i64::MAX).unwrap();
-    assert!(means_core::hashchain::verify(&c, e.id).unwrap().first_bad_seq.is_none());
+    let b = budgets::save(&mut c, None, input(e_id, food_id)).unwrap();
+    budgets::delete(&mut c, b.id).unwrap();
+    let newer = budgets::save(&mut c, None, input(e_id, food_id)).unwrap();
+    assert!(newer.id > b.id, "audit row IDs must not be recycled");
+    assert!(means_core::hashchain::verify(&c, e_id).unwrap().first_bad_seq.is_none());
 }

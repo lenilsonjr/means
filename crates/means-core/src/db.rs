@@ -30,9 +30,11 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (14, Migration::Sql(include_str!("../migrations/0014_budgets.sql"))),
     (15, Migration::Sql(include_str!("../migrations/0015_connections_ui.sql"))),
     (16, Migration::Sql(include_str!("../migrations/0016_payees.sql"))),
+    (21, Migration::Sql(include_str!("../migrations/0021_statutory_codes.sql"))),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.
+/// Snapshot records hold the columns of this schema. Newer columns take their defaults on install.
 pub const REPLICA_SCHEMA_VERSION: i64 = 16;
 
 pub struct Db {
@@ -75,7 +77,9 @@ impl Db {
             return Err(crate::Error::Invalid("not a shared vault snapshot".into()));
         }
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != REPLICA_SCHEMA_VERSION {
+        // A replica installs into a freshly migrated book, and reads use the columns of today's schema.
+        // A replica that an older build installed has an older schema and needs a new snapshot.
+        if version != latest_version() {
             return Err(crate::Error::Invalid("unsupported replica schema; obtain a new snapshot".into()));
         }
         conn.execute_batch("PRAGMA query_only=ON; PRAGMA foreign_keys=ON;")?;
@@ -109,8 +113,13 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The schema version that `Db::open` migrates a ledger to.
+pub fn latest_version() -> i64 {
+    MIGRATIONS.last().map(|(v, _)| *v).unwrap_or(0)
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
-    migrate_to(conn, MIGRATIONS.last().map(|(v, _)| *v).unwrap_or(0))
+    migrate_to(conn, latest_version())
 }
 
 /// Apply pending migrations up to and including `target`. A migration that fails is rolled back

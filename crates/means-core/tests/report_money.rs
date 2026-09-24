@@ -205,9 +205,10 @@ fn void_preserves_tagged_totals_and_rolls_back_the_whole_operation_on_failure() 
 fn legacy_reversal_tag_repair_is_audited_atomic_and_preserves_edits() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     means_core::db::migrate_to(&conn, 11).unwrap();
-    // Seed legacy tag contents using current journal helpers. Payee metadata is
+    // Seed legacy tag contents using current journal helpers. Payee and statutory metadata are
     // independent of the tag repairs under test; do not advance their migration version.
     conn.execute_batch(include_str!("../migrations/0016_payees.sql")).unwrap();
+    conn.execute_batch(include_str!("../migrations/0021_statutory_codes.sql")).unwrap();
     let e = entities::create_entity(&mut conn, "Personal", "person", "PT", "EUR").unwrap();
     let bank = accounts::ensure_account(&conn, e.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
     let expense = accounts::ensure_account(&conn, e.id, AccountType::Expense, &["Food"], "expense", "EUR").unwrap();

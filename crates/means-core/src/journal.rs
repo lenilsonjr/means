@@ -325,9 +325,12 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
             .or_else(|| candidates.iter().copied().find(|i| old.fingerprint.is_some() && rows[*i].fingerprint == old.fingerprint));
         let replacement = identity.or_else(|| {
             candidates.iter().copied().find(|i| {
+                // Two identities clash when both are set and differ.
+                fn clash<T: PartialEq>(a: &Option<T>, b: &Option<T>) -> bool {
+                    a.is_some() && b.is_some() && a != b
+                }
                 let p = &rows[*i];
-                !(old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id)
-                    && !(old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint)
+                !clash(&old.external_id, &p.external_id) && !clash(&old.fingerprint, &p.fingerprint)
             })
         });
         let Some(index) = replacement else {
