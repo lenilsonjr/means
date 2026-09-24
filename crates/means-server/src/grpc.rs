@@ -815,6 +815,8 @@ impl Means for MeansService {
         self.writable()?;
         let e = req.into_inner().entry.ok_or_else(|| Status::invalid_argument("entry is required"))?;
         let input = entry_input_from_pb(&e)?;
+        // Under the draft_only posting policy, the core stores a posted request as a draft.
+        // The status of the returned entry tells the client which status the engine stored.
         let out = self.run(move |c| journal::create_entry(c, input)).await?;
         Ok(Response::new(pb::JournalEntryResponse { entry: Some(entry_pb(&out)), counterpart: None }))
     }

@@ -40,6 +40,8 @@ Historical changes to a vault’s functional currency use the [currency migratio
 
 Draft entries wait for a booking decision. Posting confirms their accounting structure. Human review is a separate state, so a rule can post an entry that still waits for review.
 
+The `draft_only` posting policy stops rules, schedules, the matcher and imports from posting. An agent can create drafts through `means entry`, and a human confirms them. See the [agent interface](agent-interface.md).
+
 A split distributes a movement across several accounts. For an imported expense, the bank posting and its statement link stay intact while the expense postings change. Preview the complete transaction before confirming it in the TUI.
 
 A void retains the original postings and creates a linked reversal. The reversal negates native quantities and book values. The original entry’s evidence returns to the unmatched queue. Lock dates apply to the correction date.

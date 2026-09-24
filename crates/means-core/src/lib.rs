@@ -24,6 +24,8 @@ mod minor_units;
 pub mod model;
 pub mod money;
 pub mod payees;
+pub mod policy;
+pub mod proposal;
 pub mod rates;
 pub mod refunds;
 pub mod reports;
