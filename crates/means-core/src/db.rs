@@ -30,6 +30,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (14, Migration::Sql(include_str!("../migrations/0014_budgets.sql"))),
     (15, Migration::Sql(include_str!("../migrations/0015_connections_ui.sql"))),
     (16, Migration::Sql(include_str!("../migrations/0016_payees.sql"))),
+    (20, Migration::Sql(include_str!("../migrations/0020_documents.sql"))),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.
@@ -65,6 +66,16 @@ impl Db {
         configure(&conn)?;
         migrate(&conn)?;
         Ok(Db { conn: Mutex::new(conn), path: PathBuf::from(":memory:"), replica: false })
+    }
+
+    /// A new, empty staging file for a shared vault snapshot. It migrates only to
+    /// `REPLICA_SCHEMA_VERSION`, so owned-book migrations do not change the replica schema.
+    pub fn open_replica_staging(path: impl AsRef<Path>) -> Result<Db> {
+        let path = path.as_ref().to_path_buf();
+        let conn = Connection::open(&path)?;
+        configure(&conn)?;
+        migrate_to(&conn, REPLICA_SCHEMA_VERSION)?;
+        Ok(Db { conn: Mutex::new(conn), path, replica: false })
     }
 
     /// A trusted snapshot path selected by the sharing trust store. Never migrates.
@@ -109,8 +120,13 @@ fn configure(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The schema version that `Db::open` migrates an owned ledger to.
+pub fn schema_version() -> i64 {
+    MIGRATIONS.last().map(|(v, _)| *v).unwrap_or(0)
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
-    migrate_to(conn, MIGRATIONS.last().map(|(v, _)| *v).unwrap_or(0))
+    migrate_to(conn, schema_version())
 }
 
 /// Apply pending migrations up to and including `target`. A migration that fails is rolled back

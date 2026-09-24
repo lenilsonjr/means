@@ -56,6 +56,44 @@ Deduplication uses the source’s identity rules. Enable Banking lines with a st
 
 Rules choose categories, payees, tags, or templates from statement data. Refund candidates and ambiguous cross-source matches require review. See [import formats and recovery](import-formats.md) for each source’s behavior and confirmation steps.
 
+## Documents
+
+A document is evidence that is not a bank line: an invoice, a receipt, a contract, a statement, or a filed form. Each document belongs to one entity. Its row records the SHA-256 hash, the original file name, the MIME type, the size, the source, the received date, and free metadata. The source is `email`, `upload`, `api`, `filing`, `import`, or `other`.
+
+The file content lives in a content-addressed store next to the ledger file:
+
+```
+<ledger directory>/documents/<first two hex digits of the hash>/<sha256>
+```
+
+The row keeps this path relative to the ledger directory. The original file name is metadata only. The store rejects a file name that contains a path separator or `..`. The MIME type comes from the file extension; an unknown extension gives `application/octet-stream`.
+
+The store writes a file in this order:
+
+1. Write the bytes to a temporary file in the target directory.
+2. Flush and sync the temporary file.
+3. Read the file back and compare its hash with the expected hash.
+4. Rename the file into place.
+5. Insert the row and its audit record in one transaction.
+
+If the insert fails, the store removes the file, unless the file existed before. The store never overwrites a stored file. One entity keeps one row per hash: a second add of the same bytes returns the first row and reports `created: false`. Two entities can share one stored file.
+
+A document link attaches a document to a journal entry, a posting, or a statement line of the same entity. A link has an optional role, for example `invoice` or `receipt`. The same document, target, and role can occur only once. The evidence of an entry includes links to the entry, to its postings, and to the statement lines that match it. The audit log records every new document and every new link.
+
+A link follows its target. An entry edit moves a posting link to the replacement posting. If the posting has no replacement, the link moves to the entry. A deleted draft, a rolled-back import, or a merged duplicate removes its links. The document stays, and `means doc list --unlinked` shows it again.
+
+No command deletes a document. `means doc verify` reads every stored file again and reports missing files and hash mismatches. Include the `documents/` directory in every backup of the ledger file.
+
+| Command | Result |
+| --- | --- |
+| `means doc add <file> --entity <e>` | Stores the file and optionally links it (`--link-entry`, `--link-line`, `--role`, `--meta KEY=VALUE`). |
+| `means doc list --entity <e>` | Lists documents, newest received first (`--unlinked`, `--since`). |
+| `means doc link <uid> --entry <uid>` or `--line <id>` | Adds a link. |
+| `means doc show <uid>` | Shows the row, its links, and the stored path. |
+| `means doc verify` | Checks every stored file against its hash. |
+
+With `--json`, each command prints one JSON object with `"schema_version": 1`. A failure prints `"ok": false` and an error code: `not_found`, `invalid_path`, `hash_mismatch`, `duplicate`, `io_error`, or `invalid_input`. The exit code is then 1.
+
 ## Payees, tags, templates, and budgets
 
 A canonical payee gives related entries a shared display name. The original booked payee text stays in the journal. [Payee aliases](payee-aliases.md) describe matching, conflicts, merges, and history previews.

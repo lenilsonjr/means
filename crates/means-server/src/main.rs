@@ -2,6 +2,7 @@
 
 mod budgets;
 mod connections;
+mod doc_cli;
 mod email;
 mod enable_banking;
 mod grpc;
@@ -212,6 +213,11 @@ enum Command {
     Status,
     /// Verify the hash chain of every entity
     Verify,
+    /// Documents as evidence: store, link, show and verify invoices, receipts and statements
+    Doc {
+        #[command(subcommand)]
+        command: doc_cli::Command,
+    },
 }
 
 #[derive(Args)]
@@ -1160,6 +1166,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&s)?);
             Ok(())
         }
+        Command::Doc { command } => doc_cli::run(db_path, command),
         Command::Verify => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();

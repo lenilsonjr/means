@@ -302,6 +302,7 @@ pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, inpu
 }
 
 struct ReplacementLink {
+    old_posting_id: i64,
     position: usize,
     reconciled_at: Option<String>,
     line_ids: Vec<i64>,
@@ -326,8 +327,9 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
         let replacement = identity.or_else(|| {
             candidates.iter().copied().find(|i| {
                 let p = &rows[*i];
-                !(old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id)
-                    && !(old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint)
+                let external_conflict = old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id;
+                let fingerprint_conflict = old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint;
+                !external_conflict && !fingerprint_conflict
             })
         });
         let Some(index) = replacement else {
@@ -346,22 +348,25 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
         }
         let mut stmt = conn.prepare("SELECT id FROM statement_lines WHERE posting_id = ?1")?;
         let line_ids: Vec<i64> = stmt.query_map([old.id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
-        links.push(ReplacementLink { position: index, reconciled_at: old.reconciled_at.clone(), line_ids });
+        links.push(ReplacementLink { old_posting_id: old.id, position: index, reconciled_at: old.reconciled_at.clone(), line_ids });
     }
     Ok(links)
 }
 
 fn replace_postings(conn: &Connection, id: i64, prepared: &[Prepared], links: Vec<ReplacementLink>) -> Result<()> {
+    let documents = crate::documents::detach_posting_links(conn, id)?;
     conn.execute("DELETE FROM postings WHERE journal_entry_id = ?1", [id])?;
     insert_postings(conn, id, prepared)?;
+    let mut replaced = std::collections::HashMap::new();
     for link in links {
         let new_id: i64 = conn.query_row("SELECT id FROM postings WHERE journal_entry_id = ?1 AND position = ?2", params![id, link.position as i64], |r| r.get(0))?;
+        replaced.insert(link.old_posting_id, new_id);
         conn.execute("UPDATE postings SET reconciled_at = ?2 WHERE id = ?1", params![new_id, link.reconciled_at])?;
         for line_id in link.line_ids {
             conn.execute("UPDATE statement_lines SET posting_id = ?2 WHERE id = ?1", params![line_id, new_id])?;
         }
     }
-    Ok(())
+    crate::documents::reattach_posting_links(conn, id, documents, &replaced)
 }
 
 /// Replace the content of an entry. Drafts change freely; posted entries only while unlocked and unreconciled.
