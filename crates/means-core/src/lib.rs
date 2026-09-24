@@ -36,6 +36,7 @@ pub mod refunds;
 pub mod reports;
 pub mod rules;
 pub mod tags;
+pub mod tax;
 pub mod templates;
 
 pub use db::Db;

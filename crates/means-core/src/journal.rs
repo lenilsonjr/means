@@ -31,8 +31,32 @@ struct Prepared {
     fingerprint: Option<String>,
 }
 
+/// Prepared postings and the tax events to record after the postings exist.
+struct PreparedEntry {
+    rows: Vec<Prepared>,
+    taxes: Vec<crate::tax::PlannedEvent>,
+}
+
 /// Validate and value the postings of an entry. Returns prepared postings, balanced.
+/// Tax blocks on the inputs are an error here: only the create and edit routes accept them.
 fn prepare(conn: &Connection, entity: &Entity, date: NaiveDate, inputs: &[PostingInput], absorb_fx: bool, keep_closed: &std::collections::HashSet<i64>) -> Result<Vec<Prepared>> {
+    if inputs.iter().any(|p| p.tax.is_some()) {
+        return Err(Error::Invalid("this operation does not accept tax blocks".into()));
+    }
+    Ok(prepare_taxed(conn, entity, date, inputs, None, absorb_fx, keep_closed)?.rows)
+}
+
+/// Validate and value the postings of an entry, add the tax lines of its tax blocks, then balance.
+/// The tax lines come after the given postings, so the balancing posting absorbs them.
+fn prepare_taxed(
+    conn: &Connection,
+    entity: &Entity,
+    date: NaiveDate,
+    inputs: &[PostingInput],
+    default_tax: Option<&TaxInput>,
+    absorb_fx: bool,
+    keep_closed: &std::collections::HashSet<i64>,
+) -> Result<PreparedEntry> {
     if inputs.len() < 2 {
         return Err(Error::Invalid("a journal entry needs at least two postings".into()));
     }
@@ -128,6 +152,35 @@ fn prepare(conn: &Connection, entity: &Entity, date: NaiveDate, inputs: &[Postin
         prepared.push(pp);
     }
 
+    // Tax blocks: compute the events and append the tax lines before the balance step.
+    let mut taxes = Vec::new();
+    for (i, p) in inputs.iter().enumerate() {
+        let block = match (&p.tax, default_tax) {
+            (Some(block), _) => block,
+            (None, Some(block)) if !p.balance && crate::tax::takes_default_block(&prepared[i].account) => block,
+            _ => continue,
+        };
+        if p.balance {
+            return Err(Error::Invalid(format!("the posting on {} balances the entry, so it cannot carry a tax block; give its quantity", prepared[i].account.path)));
+        }
+        let (event, lines) = crate::tax::plan(conn, entity, date, fprec, i, &prepared[i].account, prepared[i].quantity, prepared[i].amount, block)?;
+        for line in lines {
+            let (rate, rate_source) = if line.on_taxed_account { (prepared[i].rate, prepared[i].rate_source.clone()) } else { (None, String::new()) };
+            prepared.push(Prepared {
+                quantity: Money::from_minor(line.quantity, &line.account.commodity, line.account.precision)?,
+                amount: Money::from_minor(line.amount, &entity.currency, fprec)?,
+                account: line.account,
+                rate,
+                rate_source,
+                memo: line.memo,
+                metadata: line.metadata,
+                external_id: None,
+                fingerprint: None,
+            });
+        }
+        taxes.push(event);
+    }
+
     // A1 is exact: the amounts are counted in minor units of the functional currency and must sum to zero (D14).
     let total_money = Money::from_minor(0, &entity.currency, fprec)?.checked_sum(prepared.iter().enumerate().filter(|(i, _)| Some(*i) != balance_index).map(|(_, p)| p.amount))?;
     let total_minor = total_money.minor();
@@ -173,7 +226,12 @@ fn prepare(conn: &Connection, entity: &Entity, date: NaiveDate, inputs: &[Postin
     if prepared.iter().all(|p| p.quantity.is_zero()) {
         return Err(Error::Invalid("all postings are zero".into()));
     }
-    Ok(prepared)
+    Ok(PreparedEntry { rows: prepared, taxes })
+}
+
+/// True when the entry input carries a tax block.
+fn has_tax_blocks(input: &EntryInput) -> bool {
+    input.tax.is_some() || input.postings.iter().any(|p| p.tax.is_some())
 }
 
 /// Value `quantity` of `commodity` in `functional` at `date`. Returns (amount, rate, source).
@@ -267,7 +325,7 @@ pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, inpu
     if status == EntryStatus::Posted {
         check_lock(&entity, input.date)?;
     }
-    let prepared = prepare(conn, &entity, input.date, &input.postings, input.absorb_fx, &std::collections::HashSet::new())?;
+    let PreparedEntry { rows: prepared, taxes } = prepare_taxed(conn, &entity, input.date, &input.postings, input.tax.as_ref(), input.absorb_fx, &std::collections::HashSet::new())?;
     let ts = now_ts();
     conn.execute(
         "INSERT INTO journal_entries (uid, entity_id, date, payee, description, notes, status, reverses_id, counterpart_id, template_id, template_version, origin, posted_at, created_at, updated_at, reviewed_at)
@@ -295,6 +353,7 @@ pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, inpu
     insert_postings(conn, id, &prepared)?;
     let canonical = if let Some(original) = input.reverses_id { get_entry(conn, original)?.payee_id } else { crate::payees::explicit(conn, input.entity_id, &input.payee)?.map(|p| p.id) };
     crate::payees::link(conn, id, canonical)?;
+    crate::tax::insert_planned(conn, &entity, id, &taxes)?;
     if status == EntryStatus::Posted {
         let entry = get_entry(conn, id)?;
         hashchain::append(conn, &entry)?;
@@ -362,6 +421,7 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
 
 fn replace_postings(conn: &Connection, id: i64, prepared: &[Prepared], links: Vec<ReplacementLink>) -> Result<()> {
     let documents = crate::documents::detach_posting_links(conn, id)?;
+    let tax_links = crate::tax::posting_links(conn, id)?;
     conn.execute("DELETE FROM postings WHERE journal_entry_id = ?1", [id])?;
     insert_postings(conn, id, prepared)?;
     let mut replaced = std::collections::HashMap::new();
@@ -373,6 +433,7 @@ fn replace_postings(conn: &Connection, id: i64, prepared: &[Prepared], links: Ve
             conn.execute("UPDATE statement_lines SET posting_id = ?2 WHERE id = ?1", params![line_id, new_id])?;
         }
     }
+    crate::tax::relink_postings(conn, &tax_links, &replaced)?;
     crate::documents::reattach_posting_links(conn, id, documents, &replaced)
 }
 
@@ -385,7 +446,7 @@ pub fn update_entry(conn: &mut Connection, id: i64, input: EntryInput) -> Result
 }
 
 /// Replace an entry as part of a larger atomic workflow, with the same validation as an ordinary edit.
-pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i64, input: EntryInput) -> Result<JournalEntry> {
+pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i64, mut input: EntryInput) -> Result<JournalEntry> {
     let before = get_entry(conn, id)?;
     let entity = entities::get_entity(conn, before.entity_id)?;
     if input.entity_id != before.entity_id {
@@ -394,7 +455,13 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
     if before.status == EntryStatus::Void {
         return Err(Error::Locked("a void entry cannot change".into()));
     }
-    let content_changed = before.date != input.date || before.payee != input.payee.trim() || before.description != input.description.trim() || postings_differ(&before, &input);
+    // An edit with tax blocks replaces the tax events. The engine drops the old tax lines and adds new ones.
+    // An edit without tax blocks keeps the events and moves them to the replacement postings.
+    let taxed = has_tax_blocks(&input);
+    if taxed {
+        input.postings.retain(|p| !crate::tax::is_tax_line(&p.metadata));
+    }
+    let content_changed = taxed || before.date != input.date || before.payee != input.payee.trim() || before.description != input.description.trim() || postings_differ(&before, &input);
     if before.status == EntryStatus::Posted && content_changed {
         check_lock(&entity, before.date)?;
         check_lock(&entity, input.date)?;
@@ -410,7 +477,12 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
         check_lock(&entity, input.date)?;
     }
     let keep_closed: std::collections::HashSet<i64> = before.postings.iter().map(|p| p.account_id).collect();
-    let mut prepared = if content_changed || before.status == EntryStatus::Draft { Some(prepare(conn, &entity, input.date, &input.postings, input.absorb_fx, &keep_closed)?) } else { None };
+    let (mut prepared, taxes) = if content_changed || before.status == EntryStatus::Draft {
+        let entry = prepare_taxed(conn, &entity, input.date, &input.postings, input.tax.as_ref(), input.absorb_fx, &keep_closed)?;
+        (Some(entry.rows), entry.taxes)
+    } else {
+        (None, Vec::new())
+    };
     let links = match prepared.as_mut() {
         Some(rows) => replacement_links(conn, &before, rows, Some(input.date))?,
         None => Vec::new(),
@@ -424,8 +496,14 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
     if before.payee != input.payee.trim() {
         crate::payees::link(conn, id, crate::payees::explicit(conn, input.entity_id, &input.payee)?.map(|p| p.id))?;
     }
+    if taxed {
+        crate::tax::delete_for_entry(conn, id)?;
+    }
     if let Some(prepared) = prepared {
         replace_postings(conn, id, &prepared, links)?;
+    }
+    if taxed {
+        crate::tax::insert_planned(conn, &entity, id, &taxes)?;
     }
 
     if new_status == EntryStatus::Posted {
@@ -697,6 +775,7 @@ pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64,
         })
         .collect::<Result<Vec<_>>>()?;
     let reversal = create_entry_in_transaction(tx, input)?;
+    crate::tax::mirror_for_reversal(tx, id, reversal.id)?;
     tx.execute("INSERT INTO entry_tags (entry_id, key, value) SELECT ?1, key, value FROM entry_tags WHERE entry_id = ?2", params![reversal.id, id])?;
     tx.execute("UPDATE journal_entries SET status = 'void', updated_at = ?2 WHERE id = ?1", params![id, now_ts()])?;
     // Statement lines that evidenced the voided entry go back to the queue.
@@ -713,6 +792,7 @@ pub fn delete_entry(conn: &mut Connection, id: i64) -> Result<()> {
     }
     let tx = conn.transaction()?;
     tx.execute("UPDATE statement_lines SET status = 'unmatched', posting_id = NULL, journal_entry_id = NULL WHERE journal_entry_id = ?1", [id])?;
+    crate::tax::delete_for_entry(&tx, id)?;
     tx.execute("DELETE FROM journal_entries WHERE id = ?1", [id])?;
     crate::audit::log(&tx, "journal_entries", id, "delete", Some(serde_json::to_value(&entry)?), None)?;
     tx.commit()?;

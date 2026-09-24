@@ -62,6 +62,38 @@ A change to the draft after the proposal changes the digest. The confirmation th
 
 The draft has the origin `agent`. It waits for review.
 
+### Tax block
+
+A posting can carry a `tax` block. The document can also carry a `tax` block at the top level. That block applies to each income or expense posting without its own block.
+
+```json
+{
+  "date": "2026-03-10",
+  "payee": "Rio Verde SL",
+  "postings": [
+    { "account": "Assets:Bank:Operating" },
+    { "account": "Income:Sales", "quantity": "-100.00",
+      "tax": { "code": "SR", "document_ref": "INV-0001", "party": "Rio Verde SL" } }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `code` | Yes | A tax code of the entity. It must be in effect on the tax point. |
+| `base_amount` | No | The taxable base. Default: the functional amount of the posting. |
+| `tax_amount` | No | The tax. Default: base × rate / 10000, rounded half-even to the currency precision. |
+| `tax_point` | No | `YYYY-MM-DD`. Default: the entry date. |
+| `party` | No | A payee id, uid or name of the entity. Default: the payee of the entry. |
+| `document_ref` | No | The invoice or document number. |
+
+- Give net amounts. The engine adds the tax lines, and the balancing posting absorbs them. In the example, the bank takes 109.00 and `Liabilities:GST output` takes -9.00.
+- `base_amount` and `tax_amount` are unsigned decimal strings in the functional currency. The engine gives them the sign of the posting.
+- A posting without `quantity` cannot carry a tax block.
+- See [tax codes and tax events](data-model.md#tax-codes-and-tax-events) for the lines of each kind.
+
+`propose` then also returns `tax_events`. Each event has `tax_code_uid`, `code`, `kind`, `rate_bp`, `tax_point`, `posting_index` (an index into `postings`), `base`, `tax`, `recoverable`, `withheld`, `native_base`, `native_tax`, `party_uid`, `document_ref` and `rule_version`. The tax lines are in `postings`. Their metadata has `tax_line`. The digest covers the tax lines and the events. `show --json` returns the events of the entry in `tax_events`.
+
 ## Output
 
 Each command writes exactly one JSON object to stdout. Each object has `"schema_version": 1` and `"ok"`. Records use `uid` strings. Money uses the `Money` form: `{"minor": "-2340", "commodity": "USD", "precision": 2}`. Rates are decimal strings. Statement lines have no uid, so evidence uses `statement_line_id`.
@@ -72,7 +104,7 @@ Each command writes exactly one JSON object to stdout. Each object has `"schema_
 {"schema_version": 1, "ok": true, "entry": {"uid": "…", "status": "draft", "date": "2026-04-02", "entity_uid": "…", "hash": null}, "audit_event_id": 41}
 ```
 
-`propose` returns the preview at the top level: `entry_uid`, `entity_uid`, `date`, `status`, `payee`, `description`, `notes`, `tags`, `functional_currency`, `postings`, `totals`, `warnings` and `proposal_digest`. Each posting has `account_uid`, `account_path`, `quantity`, `amount`, `rate`, `rate_source`, `memo` and `metadata`. `totals` has `debit`, `credit` and `balance` in the functional currency.
+`propose` returns the preview at the top level: `entry_uid`, `entity_uid`, `date`, `status`, `payee`, `description`, `notes`, `tags`, `functional_currency`, `postings`, `tax_events`, `totals`, `warnings` and `proposal_digest`. Each posting has `account_uid`, `account_path`, `quantity`, `amount`, `rate`, `rate_source`, `memo` and `metadata`. `totals` has `debit`, `credit` and `balance` in the functional currency.
 
 `proposal_digest` is the SHA-256 of the canonical JSON of the preview without the digest. Canonical JSON has sorted object keys and no whitespace.
 

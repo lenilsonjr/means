@@ -68,6 +68,29 @@ pub struct DraftDocument {
     pub postings: Vec<DraftPosting>,
     #[serde(default)]
     pub metadata: serde_json::Value,
+    /// A default tax block for each income or expense posting without a block of its own.
+    #[serde(default)]
+    pub tax: Option<DraftTax>,
+}
+
+/// The tax block of a draft posting. Amounts are unsigned decimal strings in the functional
+/// currency. The engine gives them the sign of the posting and adds the tax lines.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DraftTax {
+    pub code: String,
+    #[serde(default)]
+    pub base_amount: Option<String>,
+    #[serde(default)]
+    pub tax_amount: Option<String>,
+    /// YYYY-MM-DD. Default: the entry date.
+    #[serde(default)]
+    pub tax_point: Option<String>,
+    /// A payee id, uid or name of the entity. Default: the payee of the entry.
+    #[serde(default)]
+    pub party: Option<String>,
+    #[serde(default)]
+    pub document_ref: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -90,6 +113,8 @@ pub struct DraftPosting {
     pub memo: String,
     #[serde(default)]
     pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub tax: Option<DraftTax>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +132,7 @@ pub fn entry_id_by_uid(conn: &Connection, uid: &str) -> AgentResult<i64> {
 pub fn uid_of(conn: &Connection, table: &str, id: Option<i64>) -> AgentResult<Option<String>> {
     let Some(id) = id else { return Ok(None) };
     let table = match table {
-        "journal_entries" | "entities" | "accounts" | "postings" => table,
+        "journal_entries" | "entities" | "accounts" | "postings" | "payees" | "tax_codes" | "tax_events" => table,
         other => return Err(AgentError::invalid(format!("no uid column on {other}"))),
     };
     Ok(conn.query_row(&format!("SELECT uid FROM {table} WHERE id = ?1"), [id], |r| r.get(0)).optional()?)
@@ -146,7 +171,38 @@ fn decimal(field: &str, value: &str) -> AgentResult<Decimal> {
     money::parse(value).map_err(|_| AgentError::invalid(format!("{field} must be a decimal string, got {value:?}")))
 }
 
+/// Turn a draft tax block into the engine form. `place` names the block in messages.
+pub fn tax_input(conn: &Connection, entity: &Entity, place: &str, t: &DraftTax) -> AgentResult<TaxInput> {
+    if t.code.trim().is_empty() {
+        return Err(AgentError::invalid(format!("the tax block of {place} has no code")));
+    }
+    let amount = |field: &str, value: &Option<String>| -> AgentResult<Option<Decimal>> {
+        let Some(v) = value.as_deref() else { return Ok(None) };
+        let d = decimal(field, v)?;
+        if d.is_sign_negative() && !d.is_zero() {
+            return Err(AgentError::invalid(format!("the tax {field} of {place} is a magnitude; give it without a sign")));
+        }
+        Ok(Some(d))
+    };
+    let tax_point = t.tax_point.as_deref().map(|d| crate::parse_date(d).map_err(|_| AgentError::invalid(format!("the tax_point of {place} must be YYYY-MM-DD, got {d:?}")))).transpose()?;
+    let party_id = t.party.as_deref().map(|key| crate::parties::find_payee(conn, Some(entity.id), key).map(|p| p.id)).transpose()?;
+    Ok(TaxInput {
+        code: t.code.trim().to_string(),
+        base_amount: amount("base_amount", &t.base_amount)?,
+        tax_amount: amount("tax_amount", &t.tax_amount)?,
+        tax_point,
+        party_id,
+        document_ref: t.document_ref.trim().to_string(),
+    })
+}
+
 fn posting_input(conn: &Connection, entity: &Entity, fprec: u32, index: usize, p: &DraftPosting) -> AgentResult<PostingInput> {
+    let mut input = posting_input_untaxed(conn, entity, fprec, index, p)?;
+    input.tax = p.tax.as_ref().map(|t| tax_input(conn, entity, &format!("posting {}", index + 1), t)).transpose()?;
+    Ok(input)
+}
+
+fn posting_input_untaxed(conn: &Connection, entity: &Entity, fprec: u32, index: usize, p: &DraftPosting) -> AgentResult<PostingInput> {
     let account = resolve_account(conn, entity, &p.account)?;
     let metadata = match &p.metadata {
         serde_json::Value::Null => serde_json::json!({}),
@@ -222,6 +278,7 @@ pub fn create_draft(conn: &mut Connection, entity_id: i64, doc: &DraftDocument) 
     input.notes = doc.notes.clone();
     input.status = EntryStatus::Draft;
     input.origin = "agent".into();
+    input.tax = doc.tax.as_ref().map(|t| tax_input(&tx, &entity, "the entry", t)).transpose()?;
     for (i, p) in doc.postings.iter().enumerate() {
         input.postings.push(posting_input(&tx, &entity, fprec, i, p)?);
     }
@@ -248,6 +305,27 @@ pub struct PreviewPosting {
     pub metadata: serde_json::Value,
 }
 
+/// A tax event of a draft. `posting_index` points into the preview postings. The engine tax
+/// lines are postings too: their metadata carries `tax_line` with the code.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PreviewTaxEvent {
+    pub tax_code_uid: String,
+    pub code: String,
+    pub kind: String,
+    pub rate_bp: i64,
+    pub tax_point: NaiveDate,
+    pub posting_index: Option<usize>,
+    pub base: Money,
+    pub tax: Money,
+    pub recoverable: Money,
+    pub withheld: Money,
+    pub native_base: Option<Money>,
+    pub native_tax: Option<Money>,
+    pub party_uid: Option<String>,
+    pub document_ref: String,
+    pub rule_version: String,
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PreviewTotals {
     pub debit: Money,
@@ -268,6 +346,7 @@ pub struct Proposal {
     pub tags: Vec<String>,
     pub functional_currency: String,
     pub postings: Vec<PreviewPosting>,
+    pub tax_events: Vec<PreviewTaxEvent>,
     pub totals: PreviewTotals,
     pub warnings: Vec<String>,
     pub proposal_digest: String,
@@ -329,6 +408,30 @@ pub fn propose(conn: &Connection, entry_id: i64) -> AgentResult<Proposal> {
     if entry.payee.trim().is_empty() {
         warnings.push("the entry has no payee".into());
     }
+    let mut tax_events = Vec::new();
+    for e in crate::tax::tax_events_for_entry(conn, entry.id)? {
+        let code = crate::tax::get_tax_code_by_id(conn, e.tax_code_id)?;
+        if crate::tax::get_tax_code(conn, entity.id, &code.code, e.tax_point).map(|c| c.id != code.id).unwrap_or(true) {
+            warnings.push(format!("tax code {} version {} does not apply on the tax point {}; draft the entry again", code.code, code.rule_version(), e.tax_point));
+        }
+        tax_events.push(PreviewTaxEvent {
+            tax_code_uid: code.uid,
+            code: e.code,
+            kind: e.kind,
+            rate_bp: e.rate_bp,
+            tax_point: e.tax_point,
+            posting_index: e.posting_id.and_then(|pid| entry.postings.iter().position(|p| p.id == pid)),
+            base: e.base,
+            tax: e.tax,
+            recoverable: e.recoverable,
+            withheld: e.withheld,
+            native_base: e.native_base,
+            native_tax: e.native_tax,
+            party_uid: uid_of(conn, "payees", e.party_id)?,
+            document_ref: e.document_ref,
+            rule_version: e.rule_version,
+        });
+    }
     let mut proposal = Proposal {
         entry_uid: entry.uid.clone(),
         entity_uid: entity.uid.clone(),
@@ -340,6 +443,7 @@ pub fn propose(conn: &Connection, entry_id: i64) -> AgentResult<Proposal> {
         tags: entry.tags.clone(),
         functional_currency: entity.currency.clone(),
         postings,
+        tax_events,
         totals: PreviewTotals { debit, credit, balance },
         warnings,
         proposal_digest: String::new(),
