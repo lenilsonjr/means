@@ -220,6 +220,59 @@ Block amounts are magnitudes. The engine gives them the sign of the posting. A b
 
 Each command prints one JSON object with `"schema_version": 1`. Money uses the `Money` form. A failure prints `"ok": false` with an error code and exits with code 1.
 
+## Invoices, open items and settlements
+
+The engine does not issue invoices. It records an invoice that the entity received or issued elsewhere as a fact, and links it to the ledger. The cash date, the tax date and the accrual date can differ, so the invoice keeps its own dates.
+
+An invoice belongs to one entity. Its row has the direction (`sales` or `purchase`), the party (a payee of the same entity), the series and the number, the issue date, the tax point, the due date, the commodity, and the net, tax, gross and withheld amounts in minor units of that commodity. The net plus the tax equals the gross. The withheld amount is the part of the gross that the payer keeps back and pays to an authority. It is from zero to the gross. One entity has one invoice per direction, series and number. Invoice lines keep the description, the quantity as a decimal string, the unit price, the net, the tax code, the tax and an optional account. The lines add up to the net and the tax of the invoice. An invoice can point to a stored document.
+
+The recognition entry books the invoice on its tax point. The engine creates it as a draft with the origin `invoice`. A human posts it.
+
+| Direction | Debit | Credit |
+| --- | --- | --- |
+| `purchase` | Each line account, and the tax account | The payable control account (gross) |
+| `sales` | The receivable control account (gross) | Each line account, and the tax account |
+
+The input names the control account (`payable_account` or `receivable_account`). The invoice keeps it for later settlements. A line without an account uses the `account` of the invoice. The engine makes one tax posting for each tax code. The tax account is the `tax_account` of the input. Without it, the engine uses the one open leaf account of the entity with the tax treatment `input_tax` (purchase) or `output_tax` (sales). An invoice in a foreign commodity uses the `rate` of the input, or the rate on the tax point. The control posting takes the rounding difference, so the entry always balances.
+
+A settlement links an entry, or one posting of it, to an invoice. Its amount is in the invoice commodity. A positive amount reduces the open balance. The kind is `payment`, `credit_note`, `withholding`, `fee`, `fx_difference`, `write_off` or `refund`. A `payment` and a `refund` need an entry. Only a `refund` and an `fx_difference` can be negative.
+
+- The settled amount is the sum of the settlements whose entry is not void. The open balance is the gross less the settled amount.
+- The status follows: `open` with nothing settled, `partially_settled` with part settled, `settled` when the settled amount reaches the gross. A cancelled invoice stays `cancelled`.
+- A settlement that takes the settled amount above the gross fails with `over_settlement`. A `write_off` is the exception.
+- The `withholding` settlements of an invoice cannot exceed its withheld amount. For a supplier invoice with withholding, the bank pays the gross less the withheld amount. A second entry moves the withheld amount from the payable to the withholding liability.
+- A credit note is an invoice of kind `credit_note` with the direction, the commodity and the control account of the invoice that it credits. Its recognition entry turns every side around. It settles the invoice by its gross, with a settlement of kind `credit_note`. It cannot exceed the open balance.
+- A cancel needs a reason and an invoice without settlements. It deletes a draft recognition entry. A posted recognition entry must be void first. A cancelled credit note stops settling its invoice.
+- An entry edit moves a settlement to the replacement of its posting. A deleted entry removes its settlements.
+
+An exchange difference applies to a `payment` or a `refund` with a posting. The value paid is the functional amount of the posting. When the posting holds the invoice commodity, the engine takes the part of it that the settlement covers. The booked value is the part of the control posting of the recognition entry that the settlement covers, or the amount at the invoice rate without a recognition entry. The difference is the value paid less the booked value. With `--fx-account`, the engine creates a draft entry between the control account and that account:
+
+| Direction | Positive difference | Negative difference |
+| --- | --- | --- |
+| `purchase` | Debit the FX account, credit the payable | Debit the payable, credit the FX account |
+| `sales` | Debit the receivable, credit the FX account | Debit the FX account, credit the receivable |
+
+Without the FX account, the settlement reports the difference and books nothing.
+
+### The duplicate rule
+
+A bank import can book an expense before the invoice arrives. The recognition entry of the invoice then books the same expense again. The engine applies this rule:
+
+1. `find_duplicate_expense` returns bank entries of the entity that look like the payment: a draft or posted entry within 3 days of the date, with the same party, a bank posting of the amount (money out), at least one expense posting, and no settlement. A bank entry has a statement line, or the origin `import` or `rule`. `means invoice show` lists these entries as `possible_duplicates`. For an invoice, the amount is the gross less the withheld amount, and the window runs from 3 days before the issue date to 3 days after the due date.
+2. A `payment` or a `refund` from such an entry converts it when the invoice has a recognition entry that is not void. The settlement moves the expense postings (revenue postings for a sale) of the bank entry to the control account through the ordinary entry edit, in the same transaction. The amounts, the bank posting and its evidence stay.
+3. The expense then stays once, on the recognition entry. The bank entry becomes a payment of the payable.
+
+An invoice without a recognition entry converts nothing: the bank entry is then the only booking of the expense.
+
+| Command | Result |
+| --- | --- |
+| `means invoice add --entity <e> (--json-file F \| --stdin) [--recognize]` | Records an invoice, and optionally its draft recognition entry. |
+| `means invoice list --entity <e> [--open] [--direction sales\|purchase] [--as-of D]` | Lists the invoices of an entity. |
+| `means invoice show <uid>` | Shows the lines, the settlements, the open balance, the linked entries and the documents. |
+| `means invoice settle <uid> --entry <uid> [--posting <uid>] --date D --amount X --kind K [--fx-account <path>]` | Records a settlement. |
+| `means invoice credit-note --entity <e> --credits <uid> (--json-file F \| --stdin)` | Records a credit note that settles the invoice. |
+| `means invoice cancel <uid> --reason R` | Cancels an invoice without settlements. |
+
 ## Reports and exports
 
 Balances, trial balances, income statements, and net worth are derived from the ledger. Reports keep entity scope explicit. Expense reports use stored book values. Currency-converted account reports round each account first, then sum the displayed rows. A missing required rate stops the report with an error.

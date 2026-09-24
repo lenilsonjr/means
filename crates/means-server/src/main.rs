@@ -11,6 +11,7 @@ mod entry_cli;
 mod filing_cli;
 mod grpc;
 mod inter_pj;
+mod invoice_cli;
 mod local_api;
 mod mercury;
 mod party_cli;
@@ -262,6 +263,11 @@ enum Command {
     Tax {
         #[command(subcommand)]
         command: tax_cli::TaxCommand,
+    },
+    /// Invoices received or issued elsewhere: open items, settlements and credit notes
+    Invoice {
+        #[command(subcommand)]
+        command: invoice_cli::Command,
     },
 }
 
@@ -1263,6 +1269,7 @@ async fn main() -> Result<()> {
         Command::Close { command } => close_cli::run(db_path, command),
         Command::Filing { command } => filing_cli::run(db_path, command),
         Command::Tax { command } => tax_cli::run(db_path, command),
+        Command::Invoice { command } => invoice_cli::run(db_path, command),
     }
 }
 
