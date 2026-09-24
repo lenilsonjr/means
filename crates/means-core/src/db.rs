@@ -30,6 +30,8 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (14, Migration::Sql(include_str!("../migrations/0014_budgets.sql"))),
     (15, Migration::Sql(include_str!("../migrations/0015_connections_ui.sql"))),
     (16, Migration::Sql(include_str!("../migrations/0016_payees.sql"))),
+    (18, Migration::Sql(include_str!("../migrations/0018_entity_facts.sql"))),
+    (19, Migration::Sql(include_str!("../migrations/0019_party_facts.sql"))),
     (20, Migration::Sql(include_str!("../migrations/0020_documents.sql"))),
     (21, Migration::Sql(include_str!("../migrations/0021_statutory_codes.sql"))),
 ];
@@ -140,7 +142,14 @@ pub fn migrate_to(conn: &Connection, target: i64) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     for (version, migration) in MIGRATIONS {
         if *version > current && *version <= target {
-            conn.execute_batch("BEGIN")?;
+            // Another process can open the same file at the same time. Take the write lock first,
+            // then read the version again, so each migration runs once.
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let now: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            if now >= *version {
+                conn.execute_batch("COMMIT")?;
+                continue;
+            }
             let applied = match migration {
                 Migration::Sql(sql) => conn.execute_batch(sql).map_err(Into::into),
                 Migration::Code(f) => f(conn),
@@ -170,4 +179,9 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 
 pub fn replica_marker(conn: &Connection) -> Result<bool> {
     Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='means_replica_marker')", [], |r| r.get(0))?)
+}
+
+/// Alias of `schema_version`.
+pub fn latest_version() -> i64 {
+    schema_version()
 }

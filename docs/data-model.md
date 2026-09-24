@@ -106,6 +106,20 @@ Templates generate balanced entries from fixed amounts, percentages, and a balan
 
 A budget applies one limit to an inclusive date range. It can cover a category and its children, an expense class, or a tag. The default period is a calendar month. See [reports and budgets](expense-reports.md).
 
+## Entity facts, groups and parties
+
+These records describe the books. They never change postings.
+
+Each entity keeps its legal form, fiscal year end (`MM-DD`), incorporation date and registrations. Registrations are a JSON object of `KEY: value` pairs, for example a registration number or a tax number. Keys are uppercase free text. An empty value removes a key.
+
+`entity_classifications` records the tax classification of an entity in a jurisdiction, for example `US` `disregarded_entity` or `SG` `company`. One classification applies per jurisdiction on a date. A new open classification closes the earlier open one in the same jurisdiction on its start date.
+
+`entity_groups` names a group of entities. `entity_group_members` puts an entity in a group, with an optional parent entity, the ownership that the parent holds in basis points (10000 is 100%) and a control flag. An entity is in one group at a time. A parent must be a member of the same group for the whole period of its child. The group tree shows the effective ownership along the path from the root, rounded down.
+
+Each payee keeps its country (ISO 3166-1 alpha-2), tax ids as a JSON object, and a kind: `person`, `company`, `authority` or `other`. `party_relationships` links a payee to the entity that keeps it, with a kind such as `owner`, `director`, `customer` or `lender`, an optional ownership in basis points and the basis for the record. A related party for reporting is a payee with an open `owner`, `subsidiary`, `director` or `related_party` relationship to the entity on the date.
+
+Classifications, memberships and relationships use dated periods. A period includes its `effective_from` date and excludes its `effective_to` date. An empty `effective_to` keeps the period open. An "as of" query returns the rows whose period includes that date. To close a period, set `effective_to` to the first day that the fact no longer applies. Two periods of the same fact cannot overlap. Every change goes to the audit log with its values before and after.
+
 ## Reports and exports
 
 Balances, trial balances, income statements, and net worth are derived from the ledger. Reports keep entity scope explicit. Expense reports use stored book values. Currency-converted account reports round each account first, then sum the displayed rows. A missing required rate stops the report with an error.
