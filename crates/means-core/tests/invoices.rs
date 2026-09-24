@@ -392,3 +392,67 @@ fn a_sales_invoice_debits_the_receivable() {
     let listed = invoices::list_invoices(&b.conn(), b.entity, Some(invoices::Direction::Sales), true, None).unwrap();
     assert_eq!(listed.len(), 1);
 }
+
+#[test]
+fn coded_invoice_lines_record_tax_events_on_the_recognition_entry() {
+    let b = books();
+    let input_vat = b.account("Assets:Tax:Input VAT");
+    let hosting = accounts::ensure_account(&b.conn(), b.entity, AccountType::Expense, &["Hosting"], "expense", "EUR").unwrap().id;
+    let code = means_core::tax::NewTaxCode {
+        entity_id: b.entity,
+        code: "IVAS21".into(),
+        name: "Input VAT 21%".into(),
+        kind: "input".into(),
+        rate_bp: 2100,
+        tax_account_id: Some(input_vat),
+        jurisdiction: "ES".into(),
+        effective_from: day("2026-01-01"),
+        ..Default::default()
+    };
+    means_core::tax::add_tax_code(&mut b.conn(), code).unwrap();
+
+    let line = |description: &str, net: &str, tax: &str, account: &str| InvoiceLineInput {
+        description: description.into(),
+        net: Some(net.into()),
+        tax_code: "IVAS21".into(),
+        tax: Some(tax.into()),
+        account: Some(account.into()),
+        ..Default::default()
+    };
+    let mut input = purchase("F-900", "1500.00", "315.00", "1815.00");
+    input.lines = vec![line("Annual licence", "1000.00", "210.00", "Expenses:Software"), line("Hosting", "500.00", "105.00", "Expenses:Hosting")];
+    input.tax_account = None;
+    let recorded = invoices::record_invoice(&mut b.conn(), b.entity, &input).unwrap();
+    let entry = recorded.recognition.expect("recognition entry");
+
+    // Two tax events, one per line. Their sum is the tax of the invoice.
+    let events = means_core::tax::tax_events_for_entry(&b.conn(), entry.id).unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events.iter().map(|e| e.tax.minor()).sum::<i64>(), 31500);
+    assert_eq!(events.iter().map(|e| e.base.minor()).sum::<i64>(), 150000);
+    assert!(events.iter().all(|e| e.document_ref == "F-900" && e.party_id == Some(b.supplier)));
+
+    // The entry balances. The tax lines are on the tax account and the control takes the gross.
+    assert_eq!(entry.postings.iter().map(|p| p.amount.minor()).sum::<i64>(), 0);
+    let sum_on = |account: i64| entry.postings.iter().filter(|p| p.account_id == account).map(|p| p.amount.minor()).sum::<i64>();
+    assert_eq!(sum_on(input_vat), 31500);
+    assert_eq!(sum_on(b.software), 100000);
+    assert_eq!(sum_on(hosting), 50000);
+    assert_eq!(sum_on(b.account("Liabilities:Accounts Payable")), -181500);
+
+    // After the post, the tax summary of the period includes both events.
+    journal::post_entry(&mut b.conn(), entry.id).unwrap();
+    let summary = means_core::tax::tax_summary(&b.conn(), b.entity, day("2026-03-01"), day("2026-03-31")).unwrap();
+    let row = summary.iter().find(|r| r.code == "IVAS21").unwrap();
+    assert_eq!((row.count, row.tax.minor(), row.base.minor()), (2, 31500, 150000));
+}
+
+#[test]
+fn an_unknown_tax_code_keeps_the_tax_account_fallback() {
+    let b = books();
+    let recorded = invoices::record_invoice(&mut b.conn(), b.entity, &purchase("F-901", "1000.00", "210.00", "1210.00")).unwrap();
+    let entry = recorded.recognition.unwrap();
+    assert!(means_core::tax::tax_events_for_entry(&b.conn(), entry.id).unwrap().is_empty());
+    let tax = entry.postings.iter().find(|p| p.account_path == "Assets:Tax:Input VAT").unwrap();
+    assert_eq!(tax.amount.minor(), 21000);
+}

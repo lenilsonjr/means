@@ -968,6 +968,44 @@ fn valued_posting(entity: &Entity, invoice: &Invoice, account: &Account, value: 
     Ok(PostingInput { amount: Some(amount), ..PostingInput::new(account.id, quantity) })
 }
 
+/// The tax block of an invoice line whose tax code exists for the entity on the tax point.
+/// Returns the block, whether the engine adds tax lines for it, and the sum of those lines as an
+/// unsigned value in the invoice commodity. Returns `None` when the code is absent or unknown,
+/// or when its kind does not fit the invoice. The caller then books the tax on the tax account.
+fn line_tax_block(conn: &Connection, entity: &Entity, invoice: &Invoice, line: &LineRow, functional: &dyn Fn(Decimal) -> AgentResult<Decimal>) -> AgentResult<Option<(TaxInput, bool, Decimal)>> {
+    if line.tax_code.is_empty() {
+        return Ok(None);
+    }
+    let code = match crate::tax::get_tax_code(conn, entity.id, &line.tax_code, invoice.tax_point) {
+        Ok(code) => code,
+        Err(crate::Error::NotFound(_) | crate::Error::Invalid(_)) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    // The engine signs the tax like the posting, so the tax must have the sign of the net.
+    if line.tax != 0 && (line.tax < 0) != (line.net < 0) {
+        return Ok(None);
+    }
+    let tax_value = Money::from_minor(line.tax, &invoice.commodity, invoice.gross.precision())?.major().abs();
+    let own_kind = match invoice.direction {
+        Direction::Purchase => "input",
+        Direction::Sales => "output",
+    };
+    let block = TaxInput { code: code.code.clone(), tax_point: Some(invoice.tax_point), party_id: invoice.party_id, document_ref: invoice.label(), ..Default::default() };
+    let kind = code.kind.as_str();
+    Ok(if kind == own_kind {
+        // The tax lines sum to the tax: the recoverable part on the tax account, the rest on the line account.
+        let block = TaxInput { tax_amount: Some(functional(tax_value)?), ..block };
+        Some((block, code.tax_account_id.is_some(), tax_value))
+    } else if crate::tax::ZERO_TAX_KINDS.contains(&kind) && line.tax == 0 {
+        Some((TaxInput { tax_amount: Some(Decimal::ZERO), ..block }, false, Decimal::ZERO))
+    } else if kind == "reverse_charge" && invoice.direction == Direction::Purchase && line.tax == 0 {
+        // The engine computes the tax from the rate. Its lines sum to zero.
+        Some((block, false, Decimal::ZERO))
+    } else {
+        None
+    })
+}
+
 /// Create the recognition entry of an invoice as a draft, dated on the tax point.
 /// Purchase: debit the lines and the tax, credit the payable. Sales: debit the receivable,
 /// credit the lines and the tax. A credit note turns every side around.
@@ -987,27 +1025,34 @@ fn recognize_in(tx: &Transaction<'_>, entity: &Entity, invoice: &Invoice, rows: 
         sign = -sign;
     }
     let line_type = invoice.direction.line_type();
-    // (account, value in the invoice commodity, memo, metadata)
-    let mut legs: Vec<(Account, Decimal, String, serde_json::Value)> = Vec::new();
+    // (account, value in the invoice commodity, memo, metadata, tax block and the sum of its tax lines in the invoice commodity)
+    let mut legs: Vec<(Account, Decimal, String, serde_json::Value, Option<(TaxInput, Decimal)>)> = Vec::new();
     let mut taxes: BTreeMap<String, i64> = BTreeMap::new();
     if rows.is_empty() {
         let account = default_account.ok_or_else(|| invalid("recognition needs an account: give lines with accounts, or the account of the invoice"))?;
-        legs.push((account.clone(), major(invoice.net.minor())?, String::new(), serde_json::json!({"invoice": invoice.uid})));
+        legs.push((account.clone(), major(invoice.net.minor())?, String::new(), serde_json::json!({"invoice": invoice.uid}), None));
         if invoice.tax.minor() != 0 {
             taxes.insert(String::new(), invoice.tax.minor());
         }
     } else {
         for (i, l) in rows.iter().enumerate() {
             let account = l.account.as_ref().or(default_account).ok_or_else(|| invalid(format!("line {} has no account; give one, or the account of the invoice", i + 1)))?;
+            let block = if l.net != 0 { line_tax_block(tx, entity, invoice, l, &functional)? } else { None };
+            // A block without engine tax lines still needs the tax on the tax account.
+            let fallback = match &block {
+                Some((_, lines, _)) => !lines,
+                None => true,
+            };
             if l.net != 0 {
-                legs.push((account.clone(), major(l.net)?, l.description.clone(), serde_json::json!({"invoice": invoice.uid, "invoice_line": i + 1})));
+                let block = block.map(|(b, lines, tax_value)| (b, if lines { tax_value } else { Decimal::ZERO }));
+                legs.push((account.clone(), major(l.net)?, l.description.clone(), serde_json::json!({"invoice": invoice.uid, "invoice_line": i + 1}), block));
             }
-            if l.tax != 0 {
+            if l.tax != 0 && fallback {
                 *taxes.entry(l.tax_code.clone()).or_default() += l.tax;
             }
         }
     }
-    for (account, _, _, _) in &legs {
+    for (account, _, _, _, _) in &legs {
         if account.r#type != line_type && !matches!(account.r#type, AccountType::Asset) {
             return Err(invalid(format!("{} is not an {} or an asset account", account.path, line_type.as_str())));
         }
@@ -1016,7 +1061,7 @@ fn recognize_in(tx: &Transaction<'_>, entity: &Entity, invoice: &Invoice, rows: 
         let account = tax_account(tx, entity, invoice.direction, tax_key)?;
         for (code, tax) in &taxes {
             let memo = if code.is_empty() { "tax".to_string() } else { code.clone() };
-            legs.push((account.clone(), major(*tax)?, memo, serde_json::json!({"invoice": invoice.uid, "tax_code": code})));
+            legs.push((account.clone(), major(*tax)?, memo, serde_json::json!({"invoice": invoice.uid, "tax_code": code}), None));
         }
     }
     let mut input = EntryInput::new(entity.id, invoice.tax_point);
@@ -1028,13 +1073,18 @@ fn recognize_in(tx: &Transaction<'_>, entity: &Entity, invoice: &Invoice, rows: 
         InvoiceKind::CreditNote => format!("Credit note {}", invoice.label()),
     };
     let mut total = Decimal::ZERO;
-    for (account, value, memo, metadata) in legs {
+    for (account, value, memo, metadata, block) in legs {
         let value = value * sign;
         let amount = functional(value)?;
         total += amount;
         let mut p = valued_posting(entity, invoice, &account, value, amount)?;
         p.memo = memo;
         p.metadata = metadata;
+        if let Some((block, tax_value)) = block {
+            // The engine adds the tax lines of the block. The control posting must absorb them too.
+            total += functional(tax_value * sign)?;
+            p.tax = Some(block);
+        }
         input.postings.push(p);
     }
     // The control posting takes the rest, so rounding never unbalances the entry.
