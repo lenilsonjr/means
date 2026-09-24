@@ -118,7 +118,8 @@ impl CsvMapping {
         if m.amount_column.is_empty() && m.debit_column.is_empty() && m.credit_column.is_empty() {
             return Err(Error::Invalid("column map needs amount=<column>, or debit and credit columns".into()));
         }
-        if !m.amount_column.is_empty() && !(m.debit_column.is_empty() && m.credit_column.is_empty()) {
+        let debit_or_credit = !m.debit_column.is_empty() || !m.credit_column.is_empty();
+        if !m.amount_column.is_empty() && debit_or_credit {
             return Err(Error::Invalid("column map takes amount OR debit and credit columns".into()));
         }
         Ok(m)

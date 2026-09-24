@@ -21,7 +21,7 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means entry propose <uid>` | Nothing | No |
 | `means entry confirm <uid> --digest <proposal_digest> [--actor <name>]` | Posts the draft | Yes |
 | `means entry void <uid> --reason <text> [--date YYYY-MM-DD]` | A reversal | Yes |
-| `means entry list --entity <e> [--status draft\|unreviewed\|posted\|void] [--since D] [--until D] [--limit N] [--json]` | Nothing | No |
+| `means entry list --entity <e> [--status draft\|unreviewed\|posted\|void] [--since D] [--until D] [--limit N \| --all] [--json]` | Nothing | No |
 | `means entry show <uid> [--json]` | Nothing | No |
 | `means policy show [--json]` | Nothing | No |
 | `means policy set normal\|draft-only [--json]` | The policy | Yes |
@@ -43,8 +43,23 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means intervault exceptions --entity E --from D --to D [--json]` | Nothing | No |
 | `means export --format snapshot --output DIR [--entity <e>]... [--as-of D] [--json]` | A new snapshot directory. The ledger does not change. | No |
 | `means export verify DIR [--json]` | Nothing | No |
+| `means rates set --date D --base B --quote Q --rate R [--source S] [--no-revalue] [--json]` | A rate and revalued postings | No |
+| `means rates list [--base B] [--quote Q] [--from D] [--to D] [--limit N] [--json]` | Nothing | No |
+| `means rates import <csv> [--source S] [--no-revalue] [--json]` | Rates and revalued postings | No |
+| `means entity list [--json]` | Nothing | No |
+| `means accounts --entity <id> [--json]` | Nothing | No |
+| `means status [--json]` | Nothing | No |
+| `means import --account <id> [--source generic_csv] --map date=<col>,amount=<col>,description=<col>[,counterparty=<col>][,external_id=<col>] [--date-format <strftime>] [--decimal-comma] <file>` | An import, its statement lines and entries | No |
 
 `--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed. A snapshot export writes a new directory for external tools. `export verify` exits with code 1 when a check fails. See the [snapshot format](snapshot-format.md).
+
+`entry list` returns at most 2000 entries. `--all` removes the limit: the engine reads every matching entry, page by page. The snapshot export is the complete read of the books. Use it for a full copy.
+
+`rates set` stores one rate: one unit of the base costs `rate` units of the quote on the date. The row goes in the prices table, which `means rates fetch` also fills. The default source is `manual`. Drafts, imports and invoices find the row through the rate lookup: directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. `rates import` reads a CSV file with the header `date,base,quote,rate`. It writes all rows or none, and a refusal names the bad line. `set` and `import` then revalue the postings booked without a rate, unless you give `--no-revalue`.
+
+`accounts`, `entity list`, `status` and `import` are older commands. With `--json`, `accounts` and `entity list` print one JSON array, and `status` prints one JSON object. These outputs have no `schema_version`. `status` prints the same JSON without the flag. `import` prints text.
+
+`import --map` reads the file as `generic_csv` and builds the same column mapping as the TUI. A column is a header name or a 1-based column number. `counterparty` adds its column to the description. `external_id` fills the reference of the statement line, which detects duplicates. The keys `debit`, `credit`, `balance` and `currency` are also accepted. `--date-format` takes a strftime pattern, for example `%d/%m/%Y`. Without it, the parser detects the format. `--decimal-comma` reads amounts such as `1.234,56`.
 
 ## Draft document
 
@@ -156,6 +171,10 @@ Each command writes exactly one JSON object to stdout. Each object has `"schema_
 
 `intervault link` returns `link`. `intervault list` returns `from`, `to`, `count`, `reconciled_count` and `links`. A link has `uid`, `kind`, `status`, `rate`, `note`, `entry_a`, `entry_b`, `reconciled`, `created_at` and `updated_at`; `link` and the draft result also have `warnings`. Each side has `entry_uid`, `entity_uid`, `entity_name`, `date`, `entry_status`, `amount` (stored with the link) and `current_amount` (on the entry now). `intervault unlink` returns the removed `link` with `entry_a_uid`, `entry_b_uid`, `amount_a` and `amount_b`, and the `reason`. `intervault exceptions` returns `entity_uid`, `from`, `to`, `count` and `postings`. Each posting has `entry_uid`, `posting_uid`, `date`, `payee`, `account_uid`, `account_path`, `quantity`, `amount` and `memo`.
 
+`rates set` returns `rate` and `revalued`. A rate has `id`, `date`, `base`, `quote`, `rate` (a decimal string) and `source`. `revalued` has `fixed`, `failed` and `first_error`. `rates list` returns `count` and `rates`, newest first. `rates import` returns `written`, `source` and `revalued`.
+
+`accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany` and `balance`. `entity list --json` returns an array. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`.
+
 `list --json` returns `entity_uid`, `count`, `total` and `entries`. `show --json` returns `entry`. Each entry has its postings, `evidence`, `review` (`state` and `reviewed_at`), `hash`, the uids of linked entries and `intervault_link_uids`. Without `--json`, `list` and `show` print text.
 
 ## Invoice document
@@ -192,6 +211,7 @@ Each command writes exactly one JSON object to stdout. Each object has `"schema_
 - Write every amount as a decimal string in the invoice commodity. An amount with more decimals than the commodity allows fails.
 - `tax_point` defaults to the issue date. The recognition entry uses it as its date.
 - A line needs `net` or `unit_price`. `quantity` defaults to 1.
+- A line `tax_code` that is a tax code of the entity on the tax point puts a tax block on the line posting of the recognition entry. The engine records one tax event for the line and adds the tax lines. `tax_account` is then not necessary for that line. An absent or unknown code uses `tax_account`, as before. See [invoices](data-model.md#invoices-open-items-and-settlements).
 - `account`, `receivable_account` and `rate` are optional. `rate` is the functional currency per unit of the invoice commodity.
 - A credit note can omit `direction` and `commodity`. It takes them from the invoice that it credits.
 - The engine refuses unknown fields.

@@ -81,7 +81,7 @@ means --db ./personal.db serve --listen 127.0.0.1:7771 --inbox ./inbox
 means tui --server http://127.0.0.1:7771
 ```
 
-Fetch exchange rates with `means rates fetch --from YYYY-MM-DD` for the period you need. Import a backup or bank file through the CLI or the TUI Imports screen. Use `means accounts --entity 1` to find account IDs for bank imports; replace `1` with the ID from `means entity list`.
+Fetch exchange rates with `means rates fetch --from YYYY-MM-DD` for the period you need. Without a network, enter rates with `means rates set` or load a CSV file with `means rates import`. Import a backup or bank file through the CLI or the TUI Imports screen. Use `means accounts --entity 1` to find account IDs for bank imports; replace `1` with the ID from `means entity list`. With `--json`, both commands give each `id` and `uid`.
 
 ## Local server and terminal workflows
 
@@ -115,7 +115,7 @@ and different-commodity destinations are refused.
 | N26, Revolut, Wise, Mercury | CSV exports | Detected from the header row. |
 | Banco Inter | OFX (preferred) or CSV extrato | |
 | Remessa Online | CSV extrato | Each row becomes a draft exchange between the BRL account and the foreign-currency account; the bank lines then match it. |
-| Anything else | CSV | Map columns and preview parsed rows in the TUI. |
+| Anything else | CSV | Map columns and preview parsed rows in the TUI, or give `--map` to `means import`. |
 
 Every file is kept and hashed. The same file is never processed twice, overlapping statements only add new lines, and every posting created from a line links back to it.
 
@@ -139,8 +139,14 @@ means entity add Personal --currency EUR --country PT
 means entity add LLC --currency USD --kind company --country US
 means import --entity 1 backup.atb                # Account Tracker into one entity
 means import --account 12 statement.csv           # bank file into account 12, source auto-detected
+means import --source generic_csv --account 12 --map date=Booked,amount=Value,description=Text,counterparty=Name,external_id=Ref --date-format %d/%m/%Y --decimal-comma export.csv
 means rates fetch --from 2021-01-01               # ECB reference rates, then revalue postings booked without a rate
+means rates set --date 2026-03-02 --base EUR --quote USD --rate 1.0850 --json   # 1 EUR = 1.0850 USD; offline
+means rates import rates.csv                      # columns date,base,quote,rate; all rows or none
+means rates list --base EUR --quote USD --from 2026-03-01 --to 2026-03-31 --json
+means entity list --json                          # id, uid, name, kind, country, currency, fiscal_year_end, lock_date
 means accounts --entity 1
+means accounts --entity 1 --json                  # each account with its id (for import --account) and uid
 means reconcile --account 12                      # statement versus ledger, unmatched lines and unreconciled postings
 means entries --entity Personal --status draft    # the journal, newest first, each entry with its postings
 means entries --entity Personal --json            # one JSON object per line; count on stderr
@@ -155,11 +161,15 @@ means rule add --entity Personal --contains namecheap --to Expenses:Domains  # a
 means rule delete 95
 means profiles                                    # learned inbox routes: source, filename pattern, account, hits
 means profiles delete 3                           # forget a wrong route (does not undo past imports)
-means status
+means status                                      # JSON; --json gives the same output
 means verify                                      # recompute every entity's hash chain
 means chart apply --entity "Personal" charts/personal-nomad.json          # create a chart template's accounts (existing ones kept, coded)
 means chart remap --dry-run charts/remap/example.json            # preview a remap plan; drop --dry-run to apply it atomically
 ```
+
+`means rates set` stores one row in the prices table: one unit of the base costs `rate` units of the quote on that day. The default source is `manual`; `--source` changes it. The rate lookup uses the row directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. For example, the ECB stores USD in EUR, so a USD posting in a EUR entity uses a recent ECB row before a manual `--base EUR --quote USD` row. To override the ECB for that posting, enter `--base USD --quote EUR`. `set` and `import` then revalue postings booked without a rate, as `fetch` does; `--no-revalue` skips this step.
+
+`means import --map` reads a CSV file as `generic_csv` and builds the same column mapping as the TUI. A column is a header name or a 1-based column number. `counterparty` adds its column to the description. `external_id` fills the line reference, which detects duplicates. The keys `debit`, `credit`, `balance` and `currency` are also accepted. `--date-format` takes a strftime pattern; without it, the parser detects the format. `--decimal-comma` reads `1.234,56`.
 
 `means entries --json` emits posting quantities and booked amounts as structured Money objects, for example `{"minor":"125","commodity":"EUR","precision":2}` means EUR 1.25. Minor units are strings to preserve exact integers in JavaScript. Quantity uses the account commodity; amount uses the entity’s functional currency.
 

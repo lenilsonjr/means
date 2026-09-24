@@ -968,6 +968,11 @@ fn valued_posting(entity: &Entity, invoice: &Invoice, account: &Account, value: 
     Ok(PostingInput { amount: Some(amount), ..PostingInput::new(account.id, quantity) })
 }
 
+/// One posting of a recognition entry before valuation: the account, the value in the invoice
+/// commodity, the memo, the metadata, and an optional tax block with the sum of its tax lines in
+/// the invoice commodity.
+type Leg = (Account, Decimal, String, serde_json::Value, Option<(TaxInput, Decimal)>);
+
 /// The tax block of an invoice line whose tax code exists for the entity on the tax point.
 /// Returns the block, whether the engine adds tax lines for it, and the sum of those lines as an
 /// unsigned value in the invoice commodity. Returns `None` when the code is absent or unknown,
@@ -1025,8 +1030,7 @@ fn recognize_in(tx: &Transaction<'_>, entity: &Entity, invoice: &Invoice, rows: 
         sign = -sign;
     }
     let line_type = invoice.direction.line_type();
-    // (account, value in the invoice commodity, memo, metadata, tax block and the sum of its tax lines in the invoice commodity)
-    let mut legs: Vec<(Account, Decimal, String, serde_json::Value, Option<(TaxInput, Decimal)>)> = Vec::new();
+    let mut legs: Vec<Leg> = Vec::new();
     let mut taxes: BTreeMap<String, i64> = BTreeMap::new();
     if rows.is_empty() {
         let account = default_account.ok_or_else(|| invalid("recognition needs an account: give lines with accounts, or the account of the invoice"))?;

@@ -233,7 +233,11 @@ The recognition entry books the invoice on its tax point. The engine creates it 
 | `purchase` | Each line account, and the tax account | The payable control account (gross) |
 | `sales` | The receivable control account (gross) | Each line account, and the tax account |
 
-The input names the control account (`payable_account` or `receivable_account`). The invoice keeps it for later settlements. A line without an account uses the `account` of the invoice. The engine makes one tax posting for each tax code. The tax account is the `tax_account` of the input. Without it, the engine uses the one open leaf account of the entity with the tax treatment `input_tax` (purchase) or `output_tax` (sales). An invoice in a foreign commodity uses the `rate` of the input, or the rate on the tax point. The control posting takes the rounding difference, so the entry always balances.
+The input names the control account (`payable_account` or `receivable_account`). The invoice keeps it for later settlements. A line without an account uses the `account` of the invoice.
+
+A line whose `tax_code` is a tax code of the entity on the tax point gets a tax block on its posting. The engine then records one tax event for the line and adds the tax lines, as for a [draft with a tax block](agent-interface.md#tax-block). The event has the line tax, the invoice party and the invoice label as `document_ref`. The block applies when the code kind fits the invoice: `input` for a purchase, `output` for a sale. A zero-rated, exempt or out-of-scope code applies when the line tax is zero. A reverse-charge code applies to a purchase line with zero tax, and the engine computes the tax from the rate. A code without a tax account records the event, and the tax goes to the tax account below.
+
+For the other lines, the engine makes one tax posting for each tax code. The tax account is the `tax_account` of the input. Without it, the engine uses the one open leaf account of the entity with the tax treatment `input_tax` (purchase) or `output_tax` (sales). An invoice in a foreign commodity uses the `rate` of the input, or the rate on the tax point. The control posting takes the rounding difference, so the entry always balances.
 
 A settlement links an entry, or one posting of it, to an invoice. Its amount is in the invoice commodity. A positive amount reduces the open balance. The kind is `payment`, `credit_note`, `withholding`, `fee`, `fx_difference`, `write_off` or `refund`. A `payment` and a `refund` need an entry. Only a `refund` and an `fx_difference` can be negative.
 
