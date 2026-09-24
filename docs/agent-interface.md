@@ -31,6 +31,10 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means filing record --entity <e> --jurisdiction J --code C --from D --to D [--status prepared] [--snapshot-digest X] [--artifact-digest Y] [--notes T] [--json]` | A filing | Only for `submitted` and `accepted` |
 | `means filing status <uid> --status S [--receipt R] [--at D] [--actor A] [--reason T] [--json]` | The filing status | Only for `submitted` and `accepted` |
 | `means filing list --entity <e> [--jurisdiction J] [--code C] [--json]` | Nothing | No |
+| `means intervault link --a <entry uid> --b <entry uid> --kind K [--note T] [--json]` | A link | No |
+| `means intervault unlink <link uid> --reason R [--json]` | Removes a link of two drafts | No |
+| `means intervault list [--group G \| --entity E] --from D --to D [--status draft\|posted\|void] [--json]` | Nothing | No |
+| `means intervault exceptions --entity E --from D --to D [--json]` | Nothing | No |
 
 `--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed.
 
@@ -92,6 +96,32 @@ A posting can carry a `tax` block. The document can also carry a `tax` block at 
 - A posting without `quantity` cannot carry a tax block.
 - See [tax codes and tax events](data-model.md#tax-codes-and-tax-events) for the lines of each kind.
 
+### Inter-vault block
+
+The document can carry an `intervault` block at the top level. The engine then links the new draft to an existing entry of another entity, in the same transaction. The new draft is entry A of the link.
+
+```json
+{
+  "date": "2026-03-02",
+  "payee": "Blue Harbor LLC",
+  "postings": [
+    { "account": "Assets:Loan to Blue Harbor", "quantity": "1350.00" },
+    { "account": "Assets:Bank:Operating" }
+  ],
+  "intervault": { "with": "<entry uid in the other vault>", "kind": "loan", "note": "Working capital" }
+}
+```
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `with` | Yes | The uid of an existing entry of another entity. It cannot be void. |
+| `kind` | No | `transfer`, `capital`, `loan`, `interest`, `dividend`, `service`, `recharge`, `settlement` or `other`. Default: `transfer`. |
+| `note` | No | Free text saved with the link. |
+
+- An entry of the same entity, a void entry or an existing link refuses the draft with `invalid_input`. The engine then writes nothing.
+- The link is `draft`. It becomes `posted` when both entries are posted. See [inter-vault links](data-model.md#inter-vault-links) for the pair lifecycle.
+- `draft` then also returns `intervault_link`, in the form of a link in `intervault list`.
+
 `propose` then also returns `tax_events`. Each event has `tax_code_uid`, `code`, `kind`, `rate_bp`, `tax_point`, `posting_index` (an index into `postings`), `base`, `tax`, `recoverable`, `withheld`, `native_base`, `native_tax`, `party_uid`, `document_ref` and `rule_version`. The tax lines are in `postings`. Their metadata has `tax_line`. The digest covers the tax lines and the events. `show --json` returns the events of the entry in `tax_events`.
 
 ## Output
@@ -116,7 +146,9 @@ Each command writes exactly one JSON object to stdout. Each object has `"schema_
 
 `filing record` and `filing status` return `filing`. `filing status` also returns `previous_status`. `filing list` returns `entity_uid`, `count` and `filings`. A filing has `uid`, `entity_uid`, `jurisdiction`, `filing_code`, `period_start`, `period_end`, `status`, `snapshot_digest`, `chain_head_seq`, `chain_head_hash`, `artifact_digest`, `receipt_ref`, `submitted_at`, `notes`, `amends_uid`, `created_at` and `updated_at`.
 
-`list --json` returns `entity_uid`, `count`, `total` and `entries`. `show --json` returns `entry`. Each entry has its postings, `evidence`, `review` (`state` and `reviewed_at`), `hash`, and the uids of linked entries. Without `--json`, `list` and `show` print text.
+`intervault link` returns `link`. `intervault list` returns `from`, `to`, `count`, `reconciled_count` and `links`. A link has `uid`, `kind`, `status`, `rate`, `note`, `entry_a`, `entry_b`, `reconciled`, `created_at` and `updated_at`; `link` and the draft result also have `warnings`. Each side has `entry_uid`, `entity_uid`, `entity_name`, `date`, `entry_status`, `amount` (stored with the link) and `current_amount` (on the entry now). `intervault unlink` returns the removed `link` with `entry_a_uid`, `entry_b_uid`, `amount_a` and `amount_b`, and the `reason`. `intervault exceptions` returns `entity_uid`, `from`, `to`, `count` and `postings`. Each posting has `entry_uid`, `posting_uid`, `date`, `payee`, `account_uid`, `account_path`, `quantity`, `amount` and `memo`.
+
+`list --json` returns `entity_uid`, `count`, `total` and `entries`. `show --json` returns `entry`. Each entry has its postings, `evidence`, `review` (`state` and `reviewed_at`), `hash`, the uids of linked entries and `intervault_link_uids`. Without `--json`, `list` and `show` print text.
 
 ## Errors
 
@@ -130,7 +162,7 @@ A refusal writes one JSON object to stdout and exits with code 1:
 | --- | --- |
 | `unbalanced` | The postings do not sum to zero in the functional currency. |
 | `missing_rate` | A posting needs an exchange rate that the ledger does not have. Add the rate, then revalue the draft. |
-| `locked_period` | The date is on or before the lock date of the entity. |
+| `locked_period` | The date is on or before the lock date of the entity. A void of a linked entry also gives this code when the period of the other entity is locked. The message names that entity. |
 | `unknown_account` | The account does not exist in the entity. |
 | `not_leaf_account` | The account groups other accounts. |
 | `not_found` | The entry or the entity does not exist. |

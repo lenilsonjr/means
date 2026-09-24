@@ -207,6 +207,7 @@ fn entry_view(conn: &means_core::rusqlite::Connection, entry: &JournalEntry) -> 
         "reverses_uid": proposal::uid_of(conn, "journal_entries", entry.reverses_id)?,
         "reversed_by_uid": proposal::uid_of(conn, "journal_entries", entry.reversed_by_id)?,
         "counterpart_uid": proposal::uid_of(conn, "journal_entries", entry.counterpart_id)?,
+        "intervault_link_uids": means_core::intervault::links_for_entry(conn, entry.id)?.into_iter().map(|l| l.uid).collect::<Vec<_>>(),
         "postings": postings,
         "tax_events": means_core::tax::tax_events_for_entry(conn, entry.id)?.iter().map(|e| crate::tax_cli::event_json(conn, e)).collect::<means_core::Result<Vec<_>>>()?,
         "evidence": proposal::evidence(conn, entry.id)?,
@@ -227,7 +228,11 @@ fn draft(db_path: &Path, entity: &str, json_file: Option<&Path>, stdin: bool) ->
     let mut conn = db.conn();
     let entity = resolve_entity(&conn, entity)?;
     let drafted = proposal::create_draft(&mut conn, entity.id, &document)?;
-    Ok(Output::Json(json!({"entry": entry_ref(&conn, &drafted.entry)?, "audit_event_id": drafted.audit_event_id})))
+    let mut out = json!({"entry": entry_ref(&conn, &drafted.entry)?, "audit_event_id": drafted.audit_event_id});
+    if let Some(link) = &drafted.link {
+        out["intervault_link"] = crate::intervault_cli::link_json(&conn, link)?;
+    }
+    Ok(Output::Json(out))
 }
 
 fn propose(db_path: &Path, uid: &str) -> AgentResult<Output> {
