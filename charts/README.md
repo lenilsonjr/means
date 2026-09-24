@@ -8,7 +8,7 @@ Spending categories are expense accounts. Templates define the income and expens
 |---|---|
 | `personal-nomad.json` | one person living across countries, several currencies, remote income |
 | `personal-family.json` | a household with children: two earners, a home, a car, school and childcare |
-| `us-llc-single-member.json` | a freelancer or consultant billing through a US single-member LLC (Schedule C), with the member's equity and balances |
+| `us-llc-single-member.json` | a freelancer or consultant billing through a US single-member LLC (Schedule C), with the bank, receivables, payables and the member's equity and balances |
 | `br-mei-servicos.json` | a Brazilian MEI providing services |
 | `br-empresa-servicos.json` | a small Brazilian services company in the Simples Nacional (ITG 1000 model chart) |
 | `company-services.json` | generic services-company operating accounts; examples include a Singapore Pte. Ltd., US C-corporation, and Estonian OÜ |
@@ -131,13 +131,14 @@ Sources:
 
 ### 4.3 `us-llc-single-member` · Business · US single-member LLC
 
-82 accounts: 75 income and expense accounts and 7 balance-sheet accounts for the member. A single-member LLC that has not elected corporate treatment is a disregarded entity: its income and expenses land on the owner's Schedule C. Every expense group names the Schedule C line it feeds. The income side mirrors Part I in order: gross receipts (line 1), returns and allowances (line 2), other income (line 6).
+86 accounts: 75 income and expense accounts and 11 balance-sheet accounts for the bank, the open invoices and the member. A single-member LLC that has not elected corporate treatment is a disregarded entity: its income and expenses land on the owner's Schedule C. Every expense group names the Schedule C line it feeds. The income side mirrors Part I in order: gross receipts (line 1), returns and allowances (line 2), other income (line 6).
 
 Judgment calls:
 
 - `Income:Returns and allowances` is a contra-revenue group at `4200`, not in the `4900` slot. Schedule C reads gross receipts, then returns, then other income, and the `4900` slot is for the Brazilian deduções da receita.
 - Owner draws and contributions are equity. They are not on the income and expense side (T6). The chart lists them at the system paths `Equity:Owner contributions` (member capital contributions, `owner_capital`) and `Equity:Owner distributions` (member distributions, `owner_distribution`), so the apply tags the system accounts (T7).
 - `Liabilities:Due to member/parent` holds business costs that the member or a parent paid; `Assets:Due from member/parent` holds personal costs that the LLC paid. Both are `intercompany`. Their `tax_treatment` names the equity account each usually closes to: `owner_capital` and `owner_distribution`.
+- A single-member LLC still has a bank account and open items. `Assets:Bank` is a group with one `Operating account`, and onboarding and imports add each bank under it. `Assets:Accounts receivable` and `Liabilities:Accounts payable` are the control accounts of sales and purchase invoices.
 - Income leaves carry the Schedule C line as `statutory_code` (`schc:1`, `schc:2`, `schc:6`). Expense groups name their line in the description, because some lines vary by practice.
 - Federal income tax and self-employment tax are the owner's, not deductible on Schedule C, and have no account.
 - `Business meals (50% deductible)` carries the limit in its name. The full cost is booked; the return applies the 50%.

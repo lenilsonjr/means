@@ -172,7 +172,7 @@ fn pt_individual_applies_with_foreign_capital_income_tags() {
 
 #[test]
 fn us_llc_single_member_applies_with_member_balances() {
-    let (db, id) = apply_and_reapply(&Expect { id: "us-llc-single-member", kind: "company", currency: "USD", nodes: 82, system_overlap: 2 });
+    let (db, id) = apply_and_reapply(&Expect { id: "us-llc-single-member", kind: "company", currency: "USD", nodes: 86, system_overlap: 2 });
     let conn = db.conn();
     let due_to = account(&conn, id, "Liabilities:Due to member/parent");
     assert!(due_to.intercompany);
@@ -183,6 +183,11 @@ fn us_llc_single_member_applies_with_member_balances() {
     let contributions = account(&conn, id, "Equity:Owner contributions");
     assert_eq!((contributions.system_role.as_str(), contributions.tax_treatment.as_str()), ("owner_contributions", "owner_capital"));
     assert_eq!(account(&conn, id, "Equity:Owner distributions").tax_treatment, "owner_distribution");
+    // The bank and the control accounts of invoices exist.
+    assert!(account(&conn, id, "Assets:Bank").placeholder);
+    assert!(!account(&conn, id, "Assets:Bank:Operating account").placeholder);
+    assert_eq!(account(&conn, id, "Assets:Accounts receivable").r#type, AccountType::Asset);
+    assert_eq!(account(&conn, id, "Liabilities:Accounts payable").r#type, AccountType::Liability);
     // The existing income and expense accounts keep their paths and codes.
     assert_eq!(account(&conn, id, "Income:Revenue:Consulting and services").statutory_code, "schc:1");
     assert_eq!(account(&conn, id, "Expenses:Other expenses:Miscellaneous").code, "7230");
