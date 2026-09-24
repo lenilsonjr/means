@@ -36,6 +36,7 @@ pub mod rates;
 pub mod refunds;
 pub mod reports;
 pub mod rules;
+pub mod snapshot;
 pub mod tags;
 pub mod tax;
 pub mod templates;

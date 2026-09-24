@@ -281,6 +281,8 @@ Ledger running balances follow chronological order. Sorting the rows changes the
 
 [Beancount exports](export.md) reproduce functional-currency book values and keep original quantities and commodities in metadata.
 
+A [snapshot export](snapshot-format.md) writes every record, the evidence files, the counts and the control totals into one hashed directory.
+
 ## Audit and sharing
 
 Entries have stable identifiers and a hash chain. Audited changes retain their before-and-after values. Use verification, backups, and independent review together to check the books.

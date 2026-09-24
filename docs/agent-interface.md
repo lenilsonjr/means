@@ -37,8 +37,10 @@ A change to the draft after the proposal changes the digest. The confirmation th
 | `means invoice settle <uid> --entry <uid> [--posting <uid>] --date D --amount X [--kind K] [--fx-account <path>] [--control-account <path>] [--json]` | A settlement, an entry conversion and a draft FX entry | No |
 | `means invoice credit-note --entity <e> --credits <uid> (--json-file <path> \| --stdin) [--recognize] [--json]` | A credit note and its settlement | No |
 | `means invoice cancel <uid> --reason R [--actor A] [--json]` | The invoice status and an audit event | Yes |
+| `means export --format snapshot --output DIR [--entity <e>]... [--as-of D] [--json]` | A new snapshot directory. The ledger does not change. | No |
+| `means export verify DIR [--json]` | Nothing | No |
 
-`--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed.
+`--actor` defaults to `$USER`, except on `close lock` and `close unlock`, which need it. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses. The `unreviewed` status selects posted entries that no human has confirmed. A snapshot export writes a new directory for external tools. `export verify` exits with code 1 when a check fails. See the [snapshot format](snapshot-format.md).
 
 ## Draft document
 

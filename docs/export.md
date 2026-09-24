@@ -16,6 +16,21 @@ Posted entries, voided originals, and their reversals are included. Drafts are e
 
 Accounts are grouped by type and entity, with numeric entity/account IDs in their names to prevent collisions. Original entity names and full account paths are retained in metadata. Names are sanitized for Beancount; unsupported currency identifiers (and the reserved `MEANSX` prefix) use an unambiguous hexadecimal escape, with the original code in commodity metadata. Entry IDs, UIDs, status, reversal links, notes, tags, and posting IDs/memos are retained as metadata. Keep a separate ledger backup alongside this report.
 
+`--entity` (repeatable) limits the export to some entities. `--as-of YYYY-MM-DD` leaves out the entries dated after that day.
+
+## Snapshot export
+
+A snapshot gives external tools the complete books in one directory:
+
+```sh
+means export --format snapshot --output DIR [--entity E]... [--as-of YYYY-MM-DD]
+means export verify DIR --json
+```
+
+The snapshot holds JSON files for entities, accounts, entries, drafts, parties, documents, statement lines, rates, tax codes, tax events, invoices and filings. It also holds a copy of each document file and the Beancount export of the same scope. One read transaction gives all records. The manifest has the SHA-256 of every file, the record counts, the chain heads and the control totals of each entity. means writes the files into a temporary directory and then renames it to `DIR`. It refuses an existing `DIR`. `means export verify` hashes the files again and exits with code 1 on a mismatch. See the [snapshot format](snapshot-format.md) for the contract.
+
+## Beancount syntax
+
 The syntax follows the [Beancount language specification](https://beancount.github.io/docs/beancount_language_syntax/).
 
 For integration verification, install Beancount in an isolated Python environment and run:
