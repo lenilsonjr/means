@@ -706,6 +706,11 @@ impl Means for MeansService {
                         statutory_code: None,
                         tax_treatment: None,
                         intercompany: None,
+                        country: None,
+                        iban: None,
+                        bic: None,
+                        institution: None,
+                        location: None,
                     },
                 )?;
                 account_with_balance(c, a.id)

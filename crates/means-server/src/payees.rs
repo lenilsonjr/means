@@ -51,7 +51,7 @@ pub enum Command {
         #[arg(long)]
         confirm: Option<String>,
     },
-    /// Set the country, tax ids and kind of a payee
+    /// Set the country, tax ids, kind, residence and citizenship of a payee
     Set(crate::party_cli::PayeeSetArgs),
 }
 pub fn run(path: PathBuf, command: Command) -> Result<()> {

@@ -16,11 +16,11 @@ With `--json`, the export prints one object: `{"schema_version":1,"ok":true,"out
 | File | Content |
 |---|---|
 | `manifest.json` | `{"schema_version":1,"generator":{"name":"means","version":"<crate version>","commit":"<MEANS_GIT_COMMIT or unknown>"},"exported_at":"<RFC 3339 UTC>","scope":{"entity_uids":[...],"as_of":null\|"YYYY-MM-DD"},"posting_policy":"normal\|draft_only","files":{"<path>":{"sha256":"...","bytes":N},...},"counts":{"entities","accounts","entries","postings","drafts","parties","documents","statement_lines","tax_codes","tax_events","invoices","settlements","filings","intervault_links"},"chain_heads":{"<entity_uid>":{"seq":N,"hash":"..."}},"control_totals":{"<entity_uid>":{"debits":Money,"credits":Money}}}` |
-| `entities.json` | Array of `{"uid","name","kind","legal_form","country","currency","fiscal_year_end","lock_date","incorporated_on","registrations":{},"archived_at","classifications":[{"jurisdiction","classification","effective_from","effective_to","note"}],"group":{"group_uid","group_name","parent_entity_uid","ownership_bp","control","effective_from","effective_to"}\|null}` |
-| `accounts.json` | Array of `{"uid","entity_uid","parent_uid","path","name","type","subtype","class","commodity","precision","placeholder","closed_at","statutory_code","tax_treatment","intercompany","external_ids":{}}` |
+| `entities.json` | Array of `{"uid","name","kind","legal_form","country","currency","fiscal_year_end","lock_date","incorporated_on","registrations":{},"archived_at","address":{},"flags":{},"flag_history":[{"key","value","effective_from","effective_to"}],"classifications":[{"jurisdiction","classification","effective_from","effective_to","note"}],"group":{"group_uid","group_name","parent_entity_uid","ownership_bp","control","effective_from","effective_to"}\|null}` |
+| `accounts.json` | Array of `{"uid","entity_uid","parent_uid","path","name","type","subtype","class","commodity","precision","placeholder","closed_at","statutory_code","tax_treatment","intercompany","country","iban","bic","institution","location","external_ids":{}}` |
 | `entries.jsonl` | One object per line, status `posted` or `void` only: `{"uid","entity_uid","date","payee","payee_uid","description","notes","status","origin","reverses_uid","counterpart_uid","reviewed_at","reviewed_by","seq","prev_hash","hash","tags":[],"metadata":{},"postings":[{"uid","account_uid","quantity":Money,"amount":Money,"rate","rate_source","memo","metadata":{},"external_id","fingerprint","reconciled_at","statement_line_ids":[],"document_uids":[],"tax_event_uids":[]}],"document_uids":[]}`. `amount` is the functional book value. `quantity` is the native quantity. |
 | `drafts.jsonl` | The same shape, status `draft` only. |
-| `parties.json` | Array of payees: `{"uid","name","kind","country","tax_ids":{},"aliases":[],"relationships":[{"entity_uid","kind","ownership_bp","effective_from","effective_to","basis"}]}` |
+| `parties.json` | Array of payees: `{"uid","name","kind","country","tax_ids":{},"residence","citizenship","aliases":[],"relationships":[{"entity_uid","kind","ownership_bp","effective_from","effective_to","basis"}]}` |
 | `documents.json` and `documents/<ab>/<sha256>` | Array of `{"uid","entity_uid","sha256","filename","mime","size","source","received_at","metadata":{},"path","links":[{"entry_uid","posting_uid","statement_line_id","role"}]}`, and a copy of each stored file. |
 | `statement_lines.json` | Array of `{"id","import_uid","account_uid","entity_uid","date","amount":Money,"description","counterparty","external_id","fingerprint","posting_uids":[]}` |
 | `rates.json` | Array of `{"date","base","quote","rate","source"}` from the prices table. |
@@ -63,6 +63,9 @@ These notes make the contract exact where the table is short.
 - `group` is the group membership in effect on the scope date: the `--as-of` date, or the export date. It is `null` when the entity has no membership on that date.
 - `classifications` lists every classification period of the entity.
 - `path` is the full account path from the type root, for example `Assets:Bank:Operating`.
+- `address` is the address object of the entity: `street`, `street2`, `city`, `region`, `postal_code` and `country`. A part without a value is absent.
+- `flags` holds the flag values on the scope date: the `--as-of` date, or the export date. `flag_history` lists every dated flag value of the entity by key and start date. `value` is a JSON string, integer or boolean. See [entity address and flags](data-model.md#entity-address-and-flags).
+- `country`, `iban`, `bic`, `institution` and `location` of an account are strings. An unknown value is an empty string.
 
 ### Entries and drafts
 
@@ -78,6 +81,15 @@ These notes make the contract exact where the table is short.
 
 - A party is a payee of an exported entity. Payees have a `uid` column, so `uid` is that value.
 - `aliases` lists the alias texts of the payee.
+- `residence` and `citizenship` are ISO 3166-1 alpha-2 codes, or empty strings when unknown.
+
+### Additive fields
+
+`schema_version` stays 1 when the format gets new fields. A reader must ignore fields that it does not know. These fields came after the first version 1 snapshots:
+
+- `entities.json`: `address`, `flags` and `flag_history`.
+- `accounts.json`: `country`, `iban`, `bic`, `institution` and `location`.
+- `parties.json`: `residence` and `citizenship`.
 
 ### Documents
 

@@ -20,6 +20,8 @@ erDiagram
     TEXT fiscal_year_end
     TEXT registrations
     TEXT incorporated_on
+    TEXT address
+    TEXT flags
   }
   entity_classifications {
     INTEGER id PK
@@ -29,6 +31,15 @@ erDiagram
     TEXT effective_from
     TEXT effective_to
     TEXT note
+    TEXT created_at
+  }
+  entity_flag_history {
+    INTEGER id PK
+    INTEGER entity_id FK "entities"
+    TEXT key
+    TEXT value
+    TEXT effective_from
+    TEXT effective_to
     TEXT created_at
   }
   entity_groups {
@@ -90,6 +101,11 @@ erDiagram
     TEXT statutory_code
     TEXT tax_treatment
     INTEGER intercompany
+    TEXT country
+    TEXT iban
+    TEXT bic
+    TEXT institution
+    TEXT location
   }
   journal_entries {
     INTEGER id PK
@@ -178,6 +194,8 @@ erDiagram
     TEXT country
     TEXT tax_ids
     TEXT kind
+    TEXT residence
+    TEXT citizenship
   }
   payee_aliases {
     INTEGER payee_id PK "payees"
@@ -482,6 +500,7 @@ erDiagram
   entities ||--o{ budgets : "entity_id"
   entities ||--o{ documents : "entity_id"
   entities ||--o{ entity_classifications : "entity_id"
+  entities ||--o{ entity_flag_history : "entity_id"
   entities ||--o{ entity_group_members : "entity_id"
   entities ||--o{ entry_templates : "entity_id"
   entities ||--o{ filings : "entity_id"

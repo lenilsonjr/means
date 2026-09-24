@@ -1,0 +1,26 @@
+{
+  "about": "Year-end questions by jurisdiction. Each question names an entity flag key. The answer goes to the ledger with `means entity set <e> --flag KEY=VALUE [--from D]`. The list is a short set of common questions, not a complete checklist. kind is a hint for the answer: bool, date (YYYY-MM-DD), integer or text.",
+  "jurisdictions": {
+    "SG": [
+      {"key": "sg.gst_registered", "kind": "bool", "question": "Is the company registered for GST?"},
+      {"key": "sg.gst_registration_date", "kind": "date", "question": "On what date did the GST registration start?"},
+      {"key": "sg.gst_voluntary", "kind": "bool", "question": "Is the GST registration voluntary?"},
+      {"key": "sg.gst_period", "kind": "text", "question": "What is the GST accounting period: monthly or quarterly?"},
+      {"key": "sg.publicly_accountable", "kind": "bool", "question": "Is the company publicly accountable (listed, or in the process of a listing)?"},
+      {"key": "sg.agm_dispensed", "kind": "bool", "question": "Has the company dispensed with the annual general meeting?"},
+      {"key": "sg.startup_exemption_eligible", "kind": "bool", "question": "Is the company eligible for the tax exemption for new start-up companies?"}
+    ],
+    "US": [
+      {"key": "us.trade_or_business", "kind": "bool", "question": "Did the entity carry on a trade or business in the United States this year?"},
+      {"key": "us.contractor_payments", "kind": "bool", "question": "Did the entity pay contractors for services this year?"}
+    ],
+    "ES": [
+      {"key": "es.rents_property", "kind": "bool", "question": "Does the entity rent out real estate?"},
+      {"key": "es.has_employees", "kind": "bool", "question": "Does the entity have employees?"}
+    ],
+    "PT": [
+      {"key": "pt.simplified_regime", "kind": "bool", "question": "Does the person use the simplified regime for business income?"},
+      {"key": "pt.activity_start_year", "kind": "integer", "question": "In what year did the person open the business activity?"}
+    ]
+  }
+}

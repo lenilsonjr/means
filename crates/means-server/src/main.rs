@@ -1,5 +1,6 @@
 //! `means`: books that survive an audit. One binary: engine, terminal UI, CLI.
 
+mod account_cli;
 mod budgets;
 mod close_cli;
 mod connections;
@@ -212,7 +213,7 @@ enum Command {
     Accounts {
         #[arg(long)]
         entity: Option<i64>,
-        /// Emit a JSON array: id, uid, path, type, statutory keys and balance of each account
+        /// Emit a JSON array: id, uid, path, type, statutory keys, identifiers and balance of each account
         #[arg(long)]
         json: bool,
     },
@@ -301,6 +302,11 @@ enum Command {
     Intervault {
         #[command(subcommand)]
         command: intervault_cli::Command,
+    },
+    /// The identifiers of one account: country, IBAN, BIC, institution and location
+    Account {
+        #[command(subcommand)]
+        command: account_cli::Command,
     },
 }
 
@@ -403,11 +409,11 @@ enum EntityCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Set the legal form, fiscal year end, incorporation date and registrations
+    /// Set the legal form, fiscal year end, incorporation date, registrations, address and flags
     Set(entity_cli::SetArgs),
     /// Record a tax classification in a jurisdiction from a date
     Classify(entity_cli::ClassifyArgs),
-    /// Show all facts, classifications and group membership on a date
+    /// Show all facts, the address, the flags, classifications and group membership on a date
     Facts(entity_cli::FactsArgs),
 }
 
@@ -646,6 +652,11 @@ fn account_json(a: &means_core::model::Account) -> serde_json::Value {
         "statutory_code": a.statutory_code,
         "tax_treatment": a.tax_treatment,
         "intercompany": a.intercompany,
+        "country": a.country,
+        "iban": a.iban,
+        "bic": a.bic,
+        "institution": a.institution,
+        "location": a.location,
         "balance": means_core::money::fmt(a.balance, a.precision),
     })
 }
@@ -1330,6 +1341,7 @@ async fn main() -> Result<()> {
         Command::Tax { command } => tax_cli::run(db_path, command),
         Command::Invoice { command } => invoice_cli::run(db_path, command),
         Command::Intervault { command } => intervault_cli::run(db_path, command),
+        Command::Account { command } => account_cli::run(db_path, command),
     }
 }
 

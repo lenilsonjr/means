@@ -1154,3 +1154,65 @@ fn generic_csv_import_takes_a_column_map() {
     let bad = ledger.refused(&["import", "--account", &books.n26.to_string(), "--map", "day=Booked,amount=Value", fixture]);
     assert!(bad.contains("unknown column map key"), "{bad}");
 }
+
+#[test]
+fn entity_flags_account_identifiers_party_residence_and_questions_cli() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    let json = |s: String| -> serde_json::Value { serde_json::from_str(&s).unwrap() };
+
+    // The address and a flag in one command, then a dated flag.
+    let set = json(ledger.ok(&["entity", "set", "Personal", "--address", "city=Lisbon", "--address", "country=pt", "--flag", "pt.simplified_regime=true", "--json"]));
+    assert_eq!(set["entity"]["address"], serde_json::json!({"city": "Lisbon", "country": "PT"}));
+    assert_eq!(set["entity"]["flags"]["pt.simplified_regime"], true);
+    ledger.ok(&["entity", "set", "Personal", "--flag", "es.has_employees=false", "--from", "2024-01-01", "--json"]);
+    let facts = json(ledger.ok(&["entity", "facts", "Personal", "--as-of", "2023-06-30", "--json"]));
+    assert!(facts["entity"]["flags"].get("es.has_employees").is_none());
+    assert_eq!(facts["flag_history"].as_array().unwrap().len(), 1);
+    let facts = json(ledger.ok(&["entity", "facts", "Personal", "--as-of", "2024-06-30", "--json"]));
+    assert_eq!(facts["entity"]["flags"]["es.has_employees"], false);
+    let bad = ledger.run(&["entity", "set", "Personal", "--address", "planet=Mars", "--json"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stdout).contains("invalid_argument"));
+
+    // Account identifiers by path, and in `accounts --json`.
+    let account =
+        json(ledger.ok(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--country", "de", "--iban", "DE89 3704 0044 0532 0130 00", "--institution", "Example Bank", "--json"]));
+    assert_eq!(account["account"]["iban"], "DE89370400440532013000");
+    let listed = json(ledger.ok(&["accounts", "--entity", &books.entity.to_string(), "--json"]));
+    let n26 = listed.as_array().unwrap().iter().find(|a| a["id"] == books.n26).unwrap().clone();
+    assert_eq!(n26["country"], "DE");
+    assert_eq!(n26["iban"], "DE89370400440532013000");
+    assert_eq!(n26["institution"], "Example Bank");
+    assert_eq!((n26["bic"].as_str(), n26["location"].as_str()), (Some(""), Some("")));
+    let bad = ledger.run(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--iban", "DE00", "--json"]);
+    assert_eq!(bad.status.code(), Some(1));
+
+    // Party residence and citizenship, and the payees without a tax id.
+    {
+        let db = ledger.db();
+        let mut conn = db.conn();
+        let change = means_core::payees::Change { id: 0, entity_id: books.entity, name: "Sample Cafe".into(), active: true, aliases: vec![] };
+        let preview = means_core::payees::save(&mut conn, change.clone(), None).unwrap();
+        means_core::payees::save(&mut conn, change, Some(&preview.token)).unwrap();
+    }
+    posted(&ledger, &books, "2026-02-01", "Sample Cafe", "-4.50");
+    let party = json(ledger.ok(&["party", "set", "Sample Cafe", "--entity", "Personal", "--residence", "pt", "--citizenship", "br", "--tax-id", "NIF=999999990", "--json"]));
+    assert_eq!((party["payee"]["residence"].as_str(), party["payee"]["citizenship"].as_str()), (Some("PT"), Some("BR")));
+    let list = json(ledger.ok(&["party", "list", "--entity", "Personal", "--json"]));
+    let cafe = list["parties"].as_array().unwrap().iter().find(|p| p["name"] == "Sample Cafe").unwrap().clone();
+    assert_eq!((cafe["residence"].as_str(), cafe["tax_ids"]["NIF"].as_str()), (Some("PT"), Some("999999990")));
+    let missing = json(ledger.ok(&["party", "missing", "--entity", "Personal", "--need", "vat", "--json"]));
+    assert_eq!(missing["need"], "VAT");
+    assert_eq!(missing["parties"][0]["name"], "Sample Cafe");
+    assert_eq!(missing["parties"][0]["entry_count"], 1);
+    let missing = json(ledger.ok(&["party", "missing", "--entity", "Personal", "--need", "NIF", "--json"]));
+    assert!(missing["parties"].as_array().unwrap().is_empty());
+
+    // The year-end questionnaire.
+    let q = json(ledger.ok(&["close", "questions", "--entity", "Personal", "--jurisdiction", "PT", "--json"]));
+    assert_eq!(q["answered"][0]["key"], "pt.simplified_regime");
+    assert_eq!(q["missing"][0]["key"], "pt.activity_start_year");
+    let refused = ledger.run(&["close", "questions", "--entity", "Personal", "--jurisdiction", "XX", "--json"]);
+    assert_eq!(refused.status.code(), Some(1));
+}

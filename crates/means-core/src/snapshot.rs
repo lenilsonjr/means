@@ -16,7 +16,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::money::Money;
-use crate::{accounts, documents, export, new_uid, now_ts, policy, Error, Result};
+use crate::{accounts, documents, entity_flags, export, new_uid, now_ts, policy, Error, Result};
 
 /// The version of the snapshot format. A reader refuses other versions.
 pub const SCHEMA_VERSION: i64 = 1;
@@ -161,7 +161,8 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
         value: Map<String, Value>,
     }
     let mut entity_rows: Vec<EntityRow> = {
-        let mut stmt = tx.prepare("SELECT id, uid, name, kind, legal_form, country, currency, fiscal_year_end, lock_date, incorporated_on, registrations, archived_at FROM entities ORDER BY id")?;
+        let mut stmt =
+            tx.prepare("SELECT id, uid, name, kind, legal_form, country, currency, fiscal_year_end, lock_date, incorporated_on, registrations, archived_at, address FROM entities ORDER BY id")?;
         let rows = stmt.query_map([], |r| {
             let uid: String = r.get(1)?;
             let currency: String = r.get(6)?;
@@ -177,6 +178,7 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
             v.insert("incorporated_on".into(), json!(r.get::<_, Option<String>>(9)?));
             v.insert("registrations".into(), json_text(&r.get::<_, String>(10)?));
             v.insert("archived_at".into(), json!(r.get::<_, Option<String>>(11)?));
+            v.insert("address".into(), json_text(&r.get::<_, String>(12)?));
             Ok(EntityRow { id: r.get(0)?, uid, currency, value: v })
         })?;
         rows.collect::<std::result::Result<_, _>>()?
@@ -249,15 +251,18 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
             );
         }
     }
-    let entities_json: Vec<Value> = entity_rows
-        .iter()
-        .map(|e| {
-            let mut v = e.value.clone();
-            v.insert("classifications".into(), Value::Array(classifications.remove(&e.id).unwrap_or_default()));
-            v.insert("group".into(), groups.remove(&e.id).unwrap_or(Value::Null));
-            Value::Object(v)
-        })
-        .collect();
+    let flags_date = options.as_of.unwrap_or_else(crate::today);
+    let mut entities_json: Vec<Value> = Vec::with_capacity(entity_rows.len());
+    for e in &entity_rows {
+        let mut v = e.value.clone();
+        v.insert("flags".into(), serde_json::to_value(entity_flags::flags_as_of(tx, e.id, flags_date)?)?);
+        let history: Vec<Value> =
+            entity_flags::flag_history(tx, e.id)?.into_iter().map(|p| json!({"key": p.key, "value": p.value, "effective_from": p.effective_from, "effective_to": p.effective_to})).collect();
+        v.insert("flag_history".into(), Value::Array(history));
+        v.insert("classifications".into(), Value::Array(classifications.remove(&e.id).unwrap_or_default()));
+        v.insert("group".into(), groups.remove(&e.id).unwrap_or(Value::Null));
+        entities_json.push(Value::Object(v));
+    }
 
     // Accounts, including closed accounts.
     let accounts_json: Vec<Value> = accounts::list_accounts(tx, None, true)?
@@ -280,6 +285,11 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
                 "statutory_code": a.statutory_code,
                 "tax_treatment": a.tax_treatment,
                 "intercompany": a.intercompany,
+                "country": a.country,
+                "iban": a.iban,
+                "bic": a.bic,
+                "institution": a.institution,
+                "location": a.location,
                 "external_ids": a.external_ids,
             })
         })
@@ -606,10 +616,11 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
     }
     let mut parties_json = Vec::new();
     {
-        let mut stmt = tx.prepare("SELECT id, uid, entity_id, name, kind, country, tax_ids FROM payees ORDER BY id")?;
-        let rows: Vec<(i64, String, i64, String, String, String, String)> =
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))?.collect::<std::result::Result<_, _>>()?;
-        for (id, uid, entity_id, name, kind, country, tax_ids) in rows {
+        let mut stmt = tx.prepare("SELECT id, uid, entity_id, name, kind, country, tax_ids, residence, citizenship FROM payees ORDER BY id")?;
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(i64, String, i64, String, String, String, String, String, String)> =
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)))?.collect::<std::result::Result<_, _>>()?;
+        for (id, uid, entity_id, name, kind, country, tax_ids, residence, citizenship) in rows {
             if !scope.contains(&entity_id) {
                 continue;
             }
@@ -619,6 +630,8 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
                 "kind": kind,
                 "country": country,
                 "tax_ids": json_text(&tax_ids),
+                "residence": residence,
+                "citizenship": citizenship,
                 "aliases": aliases.remove(&id).unwrap_or_default(),
                 "relationships": relationships.remove(&id).unwrap_or_default(),
             }));

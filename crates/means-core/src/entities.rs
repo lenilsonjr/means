@@ -151,7 +151,14 @@ pub fn get_facts(conn: &Connection, entity_id: i64) -> Result<EntityFacts> {
 /// Change the facts of an entity and audit the values before and after.
 pub fn set_facts(conn: &mut Connection, entity_id: i64, patch: EntityFactsPatch) -> Result<EntityFacts> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    let before = get_facts(&tx, entity_id)?;
+    let after = set_facts_in(&tx, entity_id, patch)?;
+    tx.commit()?;
+    Ok(after)
+}
+
+/// Change the facts of an entity inside the caller's transaction.
+pub fn set_facts_in(tx: &Connection, entity_id: i64, patch: EntityFactsPatch) -> Result<EntityFacts> {
+    let before = get_facts(tx, entity_id)?;
     let mut after = before.clone();
     if let Some(form) = patch.legal_form {
         after.legal_form = form.trim().to_string();
@@ -168,10 +175,19 @@ pub fn set_facts(conn: &mut Connection, entity_id: i64, patch: EntityFactsPatch)
             "UPDATE entities SET legal_form = ?2, fiscal_year_end = ?3, incorporated_on = ?4, registrations = ?5, updated_at = ?6 WHERE id = ?1",
             params![entity_id, after.legal_form, after.fiscal_year_end, after.incorporated_on.map(|d| d.to_string()), serde_json::to_string(&after.registrations)?, now_ts()],
         )?;
-        crate::audit::log(&tx, "entities", entity_id, "set_facts", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
+        crate::audit::log(tx, "entities", entity_id, "set_facts", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
     }
-    tx.commit()?;
     Ok(after)
+}
+
+/// Check an ISO 3166-1 alpha-2 country code. The code becomes uppercase. An empty value stays
+/// empty. `what` names the field in the error.
+pub fn normalize_country(s: &str, what: &str) -> Result<String> {
+    let country = s.trim().to_ascii_uppercase();
+    if !country.is_empty() && (country.len() != 2 || !country.chars().all(|c| c.is_ascii_alphabetic())) {
+        return Err(Error::Invalid(format!("{what} must be an ISO 3166-1 alpha-2 code such as SG, got {country:?}")));
+    }
+    Ok(country)
 }
 
 /// Check a fiscal year end as `MM-DD`. An empty value stays empty.

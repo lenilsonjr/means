@@ -47,6 +47,8 @@ Spending categories are expense accounts. Templates define the income and expens
 | `tax_treatment` | Optional string. A free-text tag for tax reports, such as `output_tax`, `input_tax`, `withholding_payable`, `income_tax`, `intercompany`, `owner_capital`, `owner_distribution` or `foreign_capital_income`. Goes to the account's `tax_treatment`. |
 | `intercompany` | Optional boolean. `true` when the account holds balances or flows with a related party: a parent, a subsidiary, a member or a shareholder. Goes to the account's `intercompany` flag. |
 
+A node can also carry the optional account identifiers `country`, `iban`, `bic`, `institution` and `location` as strings. They go to the columns of the same name. A node without them leaves the values of the account unchanged. The bundled templates do not use them.
+
 The three statutory keys are optional, so a template without them stays valid. Statutory codes in the bundled templates are indicative: they show where a line usually goes, not a filing position. `means accounts --entity <id> --json` lists each account with its path, type, subtype, commodity, statutory keys and balance.
 
 Rules a template MUST satisfy. `validate_charts.py` (section 5) checks each one.

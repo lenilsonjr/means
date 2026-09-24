@@ -1,4 +1,4 @@
-//! `means close`: check a period, lock it, and reopen it.
+//! `means close`: check a period, lock it, reopen it, and list the year-end questions.
 //!
 //! With `--json`, each command prints one JSON object with `"schema_version": 1`. A refusal
 //! prints `"ok": false` with an error code and exits with code 1. `lock` and `unlock` are human
@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use means_core::close::{self, CloseReport, Severity};
+use means_core::close_questions;
 use means_core::proposal::{AgentError, AgentResult};
 use serde_json::{json, Value};
 
@@ -70,6 +71,20 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List the year-end flags of a jurisdiction that the ledger has, and the ones it lacks. Writes nothing.
+    Questions {
+        /// Entity id, name or uid
+        #[arg(long)]
+        entity: String,
+        /// Jurisdiction code, for example SG, US, ES or PT
+        #[arg(long)]
+        jurisdiction: String,
+        /// Date of the flag values, YYYY-MM-DD (default: today)
+        #[arg(long)]
+        as_of: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub fn run(db_path: PathBuf, command: Command) -> anyhow::Result<()> {
@@ -81,6 +96,7 @@ fn execute(db_path: &Path, command: Command) -> AgentResult<Output> {
         Command::Check { entity, from, to, json } => check(db_path, &entity, &from, &to, json),
         Command::Lock { entity, through, actor, reason, force, json } => lock(db_path, &entity, &through, &actor, &reason, force, json),
         Command::Unlock { entity, to, actor, reason, amend, json } => unlock(db_path, &entity, &to, &actor, &reason, amend, json),
+        Command::Questions { entity, jurisdiction, as_of, json } => questions(db_path, &entity, &jurisdiction, as_of.as_deref(), json),
     }
 }
 
@@ -168,5 +184,30 @@ fn unlock(db_path: &Path, entity: &str, to: &str, actor: &str, reason: &str, ame
         "reason": reason.trim(),
         "amendments": out.amendments.iter().map(filing_json).collect::<Vec<_>>(),
         "audit_event_id": out.audit_event_id,
+    })))
+}
+
+fn questions(db_path: &Path, entity: &str, jurisdiction: &str, as_of: Option<&str>, json: bool) -> AgentResult<Output> {
+    let as_of = as_of.map(|d| parse_date("as_of", d)).transpose()?.unwrap_or_else(means_core::today);
+    let db = open(db_path)?;
+    let conn = db.conn();
+    let entity = resolve_entity(&conn, entity)?;
+    let q = close_questions::questionnaire(&conn, entity.id, jurisdiction, as_of)?;
+    if !json {
+        let mut text = format!("{} year-end questions for {} on {}\n", q.jurisdiction, entity.name, q.as_of);
+        for a in &q.answered {
+            text.push_str(&format!("  answered {:<36} {}\n", a.key, a.value));
+        }
+        for m in &q.missing {
+            text.push_str(&format!("  missing  {:<36} {}\n", m.key, m.question));
+        }
+        return Ok(Output::Text(text));
+    }
+    Ok(Output::Json(json!({
+        "entity_uid": entity.uid,
+        "jurisdiction": q.jurisdiction,
+        "as_of": q.as_of.to_string(),
+        "answered": to_value(&q.answered)?,
+        "missing": to_value(&q.missing)?,
     })))
 }

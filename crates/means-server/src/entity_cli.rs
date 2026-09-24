@@ -1,4 +1,4 @@
-//! Commands for entity facts, tax classifications and entity groups.
+//! Commands for entity facts, addresses, flags, tax classifications and entity groups.
 //!
 //! Each command prints one JSON object with `"schema_version": 1`. A failure prints
 //! `{"schema_version":1,"ok":false,"error":{"code":..,"message":..}}` and exits with code 1.
@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use means_core::entities::{self, Classification, EntityFacts, EntityFactsPatch};
+use means_core::entity_flags::{self, FlagPeriod};
 use means_core::groups::{self, Group, GroupTree, Member, NewMember, TreeNode};
 use means_core::{Db, Entity, Error};
 use serde_json::{json, Map, Value};
@@ -38,6 +39,15 @@ pub struct SetArgs {
     /// Registration or tax number as KEY=VALUE; repeat it; an empty VALUE removes KEY
     #[arg(long = "registration")]
     pub registrations: Vec<String>,
+    /// Address part as KEY=VALUE: street, street2, city, region, postal_code or country; repeat it; an empty VALUE removes KEY
+    #[arg(long = "address")]
+    pub address: Vec<String>,
+    /// Flag as KEY=VALUE, for example sg.gst_registered=true; repeat it; an empty VALUE removes the flag
+    #[arg(long = "flag")]
+    pub flags: Vec<String>,
+    /// First day of the flag values (YYYY-MM-DD); it applies to every --flag of the command; omit it for undated flags
+    #[arg(long, requires = "flags")]
+    pub from: Option<String>,
     #[command(flatten)]
     pub output: Output,
 }
@@ -68,7 +78,7 @@ pub struct ClassifyArgs {
 pub struct FactsArgs {
     /// Entity id, uid or name
     pub entity: String,
-    /// Date for classifications and group membership (default: today)
+    /// Date for flags, classifications and group membership (default: today)
     #[arg(long)]
     pub as_of: Option<String>,
     #[command(flatten)]
@@ -210,7 +220,23 @@ pub fn entity_ref(e: &Entity) -> Value {
     json!({"uid": e.uid, "name": e.name})
 }
 
-fn entity_json(e: &Entity, facts: &EntityFacts) -> Value {
+/// The address and the flags of an entity. The flags are the values on one date.
+pub struct Extras {
+    pub address: std::collections::BTreeMap<String, String>,
+    pub flags: std::collections::BTreeMap<String, Value>,
+}
+
+impl Extras {
+    pub fn read(conn: &means_core::rusqlite::Connection, entity_id: i64, on: chrono::NaiveDate) -> means_core::Result<Extras> {
+        Ok(Extras { address: entity_flags::get_address(conn, entity_id)?, flags: entity_flags::flags_as_of(conn, entity_id, on)? })
+    }
+}
+
+pub fn flag_period_json(p: &FlagPeriod) -> Value {
+    json!({"id": p.id, "key": p.key, "value": p.value, "effective_from": p.effective_from, "effective_to": p.effective_to})
+}
+
+fn entity_json(e: &Entity, facts: &EntityFacts, extras: &Extras) -> Value {
     json!({
         "uid": e.uid,
         "name": e.name,
@@ -221,6 +247,8 @@ fn entity_json(e: &Entity, facts: &EntityFacts) -> Value {
         "fiscal_year_end": facts.fiscal_year_end,
         "incorporated_on": facts.incorporated_on,
         "registrations": facts.registrations,
+        "address": extras.address,
+        "flags": extras.flags,
     })
 }
 
@@ -279,9 +307,19 @@ pub fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             let mut conn = db.conn();
             let entity = find_entity(&conn, &args.entity)?;
             let registrations = args.registrations.iter().map(|s| entities::parse_pair(s)).collect::<means_core::Result<Vec<_>>>()?;
+            let address = args.address.iter().map(|s| entity_flags::parse_address_pair(s)).collect::<means_core::Result<Vec<_>>>()?;
+            let from = args.from.as_deref().map(date).transpose()?;
+            let flags = args.flags.iter().map(|s| entity_flags::parse_flag(s, from)).collect::<means_core::Result<Vec<_>>>()?;
             let patch = EntityFactsPatch { legal_form: args.legal_form, fiscal_year_end: args.fye, incorporated_on: args.incorporated_on, registrations };
-            let facts = entities::set_facts(&mut conn, entity.id, patch)?;
-            Ok(fields(json!({"entity": entity_json(&entity, &facts)})))
+            // One transaction: the command changes all the facts or none of them.
+            let tx = conn.transaction_with_behavior(means_core::rusqlite::TransactionBehavior::Immediate)?;
+            let facts = entities::set_facts_in(&tx, entity.id, patch)?;
+            entity_flags::set_address_in(&tx, entity.id, &address)?;
+            entity_flags::set_flags_in(&tx, entity.id, &flags)?;
+            let extras = Extras::read(&tx, entity.id, means_core::today())?;
+            let history = entity_flags::flag_history(&tx, entity.id)?;
+            tx.commit()?;
+            Ok(fields(json!({"entity": entity_json(&entity, &facts, &extras), "flag_history": history.iter().map(flag_period_json).collect::<Vec<_>>()})))
         })(),
     )
 }
@@ -309,6 +347,8 @@ pub fn facts(path: PathBuf, args: FactsArgs) -> Result<()> {
             let entity = find_entity(&conn, &args.entity)?;
             let as_of = opt_date(args.as_of.as_deref())?;
             let facts = entities::get_facts(&conn, entity.id)?;
+            let extras = Extras::read(&conn, entity.id, as_of)?;
+            let history = entity_flags::flag_history(&conn, entity.id)?;
             let classifications = entities::list_classifications(&conn, entity.id, Some(as_of))?;
             let group = match groups::membership_of(&conn, entity.id, as_of)? {
                 Some(m) => {
@@ -320,7 +360,8 @@ pub fn facts(path: PathBuf, args: FactsArgs) -> Result<()> {
             };
             Ok(fields(json!({
                 "as_of": as_of,
-                "entity": entity_json(&entity, &facts),
+                "entity": entity_json(&entity, &facts, &extras),
+                "flag_history": history.iter().map(flag_period_json).collect::<Vec<_>>(),
                 "classifications": classifications.iter().map(classification_json).collect::<Vec<_>>(),
                 "group": group,
             })))

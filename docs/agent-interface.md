@@ -22,7 +22,7 @@ The commands have three output styles:
 | Style | Commands | Success | Refusal |
 | --- | --- | --- | --- |
 | Compact | `entry`, `policy`, `rates set\|list\|import`, `close`, `filing`, `invoice`, `intervault`, `report` (except `expenses`) | One line of JSON with `--json`. Text without it. `entry draft`, `entry propose`, `entry confirm` and `entry void` always print JSON. | Always one line of JSON with an error object. |
-| Indented | `entity set\|classify\|facts`, `group`, `party`, `payee set`, `tax` | Always JSON. Indented by default, one line with `--json`. | Always JSON with an error object. |
+| Indented | `entity set\|classify\|facts`, `group`, `party`, `payee set`, `account set`, `tax` | Always JSON. Indented by default, one line with `--json`. | Always JSON with an error object. |
 | Evidence | `doc`, `export --format snapshot`, `export verify` | JSON with `--json`, text without it. | `doc` prints the error object with `--json`. `export` prints a text error on stderr. |
 
 A refusal exits with code 1. See [Errors](#errors). Command-line usage errors, such as a missing argument, come from the argument parser. They print text and exit with code 2.
@@ -42,6 +42,7 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 | `means group list [--json]` | Nothing | Allowed |
 | `means group show <group> [--as-of D] [--json]` | Nothing | Allowed |
 | `means party list --entity <e> [--as-of D] [--related-only] [--json]` | Nothing | Allowed |
+| `means party missing --entity <e> --need KEY [--json]` | Nothing | Allowed |
 | `means accounts [--entity <id>] [--json]` | Nothing | Allowed |
 | `means entries [--entity <e>] [--account <path>] [--status S] [--from D] [--to D] [--search T] [--limit N] [--json]` | Nothing | Allowed |
 | `means status [--json]` | Nothing | Allowed |
@@ -53,9 +54,11 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 
 `entry list --json` returns `entity_uid`, `count`, `total` and `entries`. `entry show --json` returns `entry`. Each entry has `uid`, `entity_uid`, `date`, `status`, `origin`, `payee`, `description`, `notes`, `tags`, `hash`, `posted_at`, `created_at`, `review` (`state` and `reviewed_at`), `reverses_uid`, `reversed_by_uid`, `counterpart_uid`, `intervault_link_uids`, `postings`, `tax_events` and `evidence`. Without `--json`, `list` and `show` print text.
 
-`entity facts` returns `as_of`, `entity`, `classifications` and `group`. `group show` returns the ownership tree of the group on the date. `party list` returns `entity`, `as_of`, `related_only` and `parties`.
+`entity facts` returns `as_of`, `entity`, `flag_history`, `classifications` and `group`. `entity` has the facts, the registrations, the `address` and the `flags` on the `--as-of` date. `flag_history` lists every dated flag value: `id`, `key`, `value`, `effective_from` and `effective_to`. `group show` returns the ownership tree of the group on the date. `party list` returns `entity`, `as_of`, `related_only` and `parties`. Each party has `uid`, `name`, `entity_uid`, `active`, `country`, `kind`, every tax id in `tax_ids`, `residence`, `citizenship`, `related_party` and `relationships`.
 
-`accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany` and `balance`. `entity list --json` returns an array. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`. `status` prints one JSON object, with or without `--json`. `entries --json` prints one JSON object per line and the count on stderr.
+`party missing` lists the payees of the entity that have entries (except void entries) or invoices, but no tax id under `--need`, for example `GST`, `VAT` or `EIN`. The key ignores case. It returns `entity`, `need` and `parties`. Each party has the fields of `party list` without the relationships, and `entry_count`, `invoice_count` and `last_date`.
+
+`accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany`, `country`, `iban`, `bic`, `institution`, `location` and `balance`. `entity list --json` returns an array. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`. `status` prints one JSON object, with or without `--json`. `entries --json` prints one JSON object per line and the count on stderr.
 
 ## Entity facts, groups and parties
 
@@ -63,16 +66,28 @@ These commands describe the books. They never change postings. See [entity facts
 
 | Command | Writes | `MEANS_AGENT=1` |
 | --- | --- | --- |
-| `means entity set <entity> [--legal-form T] [--fye MM-DD] [--incorporated-on D] [--registration KEY=VALUE]... [--json]` | Entity facts and an audit event | Allowed |
+| `means entity set <entity> [--legal-form T] [--fye MM-DD] [--incorporated-on D] [--registration KEY=VALUE]... [--address KEY=VALUE]... [--flag KEY=VALUE]... [--from D] [--json]` | Entity facts, the address, the flags and audit events | Allowed |
 | `means entity classify <entity> --jurisdiction J --classification C --from D [--to D] [--note T] [--json]` | A classification and an audit event | Allowed |
 | `means group add <name> [--json]` | A group | Allowed |
 | `means group member add --group G --entity <e> [--parent <e>] [--ownership-bp N] [--no-control] [--from D] [--json]` | A membership | Allowed |
 | `means group member close --group G --entity <e> --to D [--json]` | The end of a membership | Allowed |
-| `means payee set <payee> [--entity <e>] [--country CC] [--tax-id KEY=VALUE]... [--kind person\|company\|authority\|other] [--json]` | Payee facts | Allowed |
+| `means payee set <payee> [--entity <e>] [--country CC] [--tax-id KEY=VALUE]... [--kind person\|company\|authority\|other] [--residence CC] [--citizenship CC] [--json]` | Payee facts and an audit event | Allowed |
+| `means party set <payee> ...` | The same as `payee set` | Allowed |
+| `means account set <account> --entity <e> [--country CC] [--iban X] [--bic X] [--institution T] [--location T] [--json]` | Account identifiers and an audit event | Allowed |
 | `means party relate --payee P --entity <e> --kind K --from D [--ownership-bp N] [--basis T] [--json]` | A relationship | Allowed |
 | `means party unrelate --payee P --entity <e> --kind K --to D [--json]` | The end of a relationship | Allowed |
 
-`entity set` returns `entity`. `entity classify` returns `entity` and `classification`. `group add` returns `group`. `group member add` and `close` return `group` and `member`. `payee set` returns `payee`. `party relate` and `unrelate` return `relationship`. `--to` is the day after the last day of the period.
+`entity set` returns `entity` and `flag_history`. Its `flags` are the values of today. `entity classify` returns `entity` and `classification`. `group add` returns `group`. `group member add` and `close` return `group` and `member`. `payee set` and `party set` return `payee`. `account set` returns `entity` and `account`. The account has `id`, `uid`, `path`, `type`, `commodity`, `country`, `iban`, `bic`, `institution` and `location`. `party relate` and `unrelate` return `relationship`. `--to` is the day after the last day of the period.
+
+`entity set` changes all its facts in one transaction. A refusal changes nothing.
+
+- `--address KEY=VALUE` sets one part of the address. The keys are `street`, `street2`, `city`, `region`, `postal_code` and `country`. `country` is an ISO 3166-1 alpha-2 code. Another key is refused. An empty value removes the part.
+- `--flag KEY=VALUE` sets one flag. A key has lowercase letters, digits, `_`, `.` and `-`, for example `sg.gst_registered`. `true` and `false` become booleans. An integer becomes a number. Any other value stays a string. See the [flag key convention](data-model.md#entity-address-and-flags).
+- Without `--from`, a flag is undated and applies on every date. An empty value removes it.
+- With `--from D`, each `--flag` of the command starts a dated value on D. An open value of the same key that starts earlier ends on D. Another overlap is a `conflict`. An empty value ends the open value on D. To give flags different dates, run the command once for each date.
+- A key with dated values refuses an undated change.
+
+`account set` takes an account path, a uid or an id. The IBAN loses its spaces and must pass the check digits. The BIC has 8 or 11 characters, and the first six are letters. An empty value clears an identifier. `location` is free text, for example the state where an asset is.
 
 ## Drafting
 
@@ -293,6 +308,7 @@ The document can carry an `intervault` block at the top level. The engine then l
 | `means close check --entity <e> --from D --to D [--json]` | Nothing | Allowed |
 | `means close lock --entity <e> --through D --actor A --reason R [--force] [--json]` | The lock date and an audit event | Refused |
 | `means close unlock --entity <e> --to D --actor A --reason R [--amend] [--json]` | The lock date, an audit event and amendments | Refused |
+| `means close questions --entity <e> --jurisdiction J [--as-of D] [--json]` | Nothing | Allowed |
 | `means filing record --entity <e> --jurisdiction J --code C --from D --to D [--status S] [--snapshot-digest X] [--artifact-digest Y] [--notes T] [--actor A] [--reason T] [--json]` | A filing and an audit event | Refused for `submitted` and `accepted` |
 | `means filing status <uid> --status S [--receipt R] [--at D] [--actor A] [--reason T] [--json]` | The filing status and an audit event | Refused for `submitted` and `accepted` |
 | `means filing list --entity <e> [--jurisdiction J] [--code C] [--json]` | Nothing | Allowed |
@@ -300,6 +316,8 @@ The document can carry an `intervault` block at the top level. The engine then l
 `close lock` and `close unlock` need `--actor`. On `filing record` and `filing status`, `--actor` defaults to `$USER`. The default status of `filing record` is `prepared`. See [close, lock and filings](data-model.md#close-lock-and-filings) for the findings and the filing statuses.
 
 `close check --json` returns `report` and `report_digest`. The report has `entity_uid`, `period_start`, `period_end`, `lock_date`, `ok`, `error_count`, `warning_count`, `findings` and `totals`. Each finding has `code`, `severity` (`error` or `warning`), `message`, `entry_uid`, `account_uid`, `count` and `amount`. Its `ok` field tells whether the period can close. `close lock` returns `entity_uid`, `previous_lock`, `lock_date`, `forced`, `actor`, `reason`, `finding_counts`, `report`, `report_digest` and `audit_event_id`. `close unlock` returns `entity_uid`, `previous_lock`, `lock_date`, `actor`, `reason`, `amendments` and `audit_event_id`.
+
+`close questions` reads the year-end question list of the jurisdiction from `crates/means-core/src/close_questions.json`. Lists exist for `SG`, `US`, `ES` and `PT`. Another code is refused with `invalid_input`. With `--json`, it returns `entity_uid`, `jurisdiction`, `as_of`, `answered` and `missing`. `answered` lists every flag of the entity on the date whose key starts with the lowercase code and a dot, with `key`, `value` and `question` (`null` for a key that is not in the list). `missing` lists the questions without a flag on the date, with `key`, `kind` (`bool`, `date`, `integer` or `text`) and `question`. Ask a human the missing questions once. Then store each answer with `means entity set <e> --flag KEY=VALUE [--from D]`.
 
 `filing record` and `filing status` return `filing`. `filing status` also returns `previous_status`. `filing list` returns `entity_uid`, `count` and `filings`. A filing has `uid`, `entity_uid`, `jurisdiction`, `filing_code`, `period_start`, `period_end`, `status`, `snapshot_digest`, `chain_head_seq`, `chain_head_hash`, `artifact_digest`, `receipt_ref`, `submitted_at`, `notes`, `amends_uid`, `created_at` and `updated_at`.
 
@@ -402,7 +420,7 @@ The compact commands (`entry`, `policy`, `rates`, `close`, `filing`, `invoice`, 
 | `invalid_input` | The input is not valid. The message tells you why. |
 | `internal` | The engine failed for an unexpected reason, such as a database error. |
 
-The indented commands (`entity set`, `entity classify`, `entity facts`, `group`, `party`, `payee set` and `tax`) use other codes: `not_found`, `invalid_argument`, `locked`, `unbalanced`, `conflict`, `parse_error`, `database_error`, `json_error` and `internal`.
+The indented commands (`entity set`, `entity classify`, `entity facts`, `group`, `party`, `payee set`, `account set` and `tax`) use other codes: `not_found`, `invalid_argument`, `locked`, `unbalanced`, `conflict`, `parse_error`, `database_error`, `json_error` and `internal`.
 
 `doc` uses `not_found`, `invalid_path`, `hash_mismatch`, `duplicate`, `invalid_input` and `io_error`.
 
