@@ -326,8 +326,9 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
         let replacement = identity.or_else(|| {
             candidates.iter().copied().find(|i| {
                 let p = &rows[*i];
-                !(old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id)
-                    && !(old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint)
+                // Two known identities that differ belong to different postings.
+                let differ = |a: &Option<String>, b: &Option<String>| a.is_some() && b.is_some() && a != b;
+                !differ(&old.external_id, &p.external_id) && !differ(&old.fingerprint, &p.fingerprint)
             })
         });
         let Some(index) = replacement else {

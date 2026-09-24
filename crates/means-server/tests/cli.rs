@@ -939,3 +939,65 @@ fn import_lines_exposes_all_errors_read_only_and_retry_recovers_them() {
     missing.refused(&["import", "lines", "1"]);
     assert!(!missing.path.exists(), "inspection must not create a ledger");
 }
+
+#[test]
+fn entity_group_and_party_commands_print_versioned_json() {
+    let ledger = Ledger::new();
+    {
+        let db = ledger.db();
+        let mut conn = db.conn();
+        entities::create_entity(&mut conn, "Northwind Holdings Pte. Ltd.", "company", "SG", "SGD").unwrap();
+        let harbor = entities::create_entity(&mut conn, "Blue Harbor LLC", "company", "US", "USD").unwrap();
+        let change = means_core::payees::Change { id: 0, entity_id: harbor.id, name: "Sample Person".into(), active: true, aliases: vec![] };
+        let preview = means_core::payees::save(&mut conn, change.clone(), None).unwrap();
+        means_core::payees::save(&mut conn, change, Some(&preview.token)).unwrap();
+    }
+    let json = |args: &[&str]| -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_str(&ledger.ok(args)).unwrap();
+        assert_eq!((v["schema_version"].as_i64(), v["ok"].as_bool()), (Some(1), Some(true)), "{v}");
+        v
+    };
+
+    let set = json(&["entity", "set", "Northwind Holdings Pte. Ltd.", "--legal-form", "Private limited company", "--fye", "12-31", "--registration", "uen=202000001X", "--json"]);
+    assert_eq!(set["entity"]["fiscal_year_end"], "12-31");
+    assert_eq!(set["entity"]["registrations"]["UEN"], "202000001X");
+    assert!(set["entity"]["uid"].is_string());
+
+    json(&["entity", "classify", "Blue Harbor LLC", "--jurisdiction", "US", "--classification", "disregarded_entity", "--from", "2024-01-01"]);
+    let facts = json(&["entity", "facts", "Blue Harbor LLC", "--as-of", "2024-06-01", "--json"]);
+    assert_eq!(facts["classifications"][0]["classification"], "disregarded_entity");
+    assert!(facts["group"].is_null());
+
+    json(&["group", "add", "Northwind Group"]);
+    json(&["group", "member", "add", "--group", "Northwind Group", "--entity", "Northwind Holdings Pte. Ltd.", "--from", "2020-01-01"]);
+    json(&["group", "member", "add", "--group", "Northwind Group", "--entity", "Blue Harbor LLC", "--parent", "Northwind Holdings Pte. Ltd.", "--ownership-bp", "6000", "--from", "2024-01-01"]);
+    let tree = json(&["group", "show", "Northwind Group", "--as-of", "2024-06-01", "--json"]);
+    assert_eq!(tree["members"][0]["entity_name"], "Northwind Holdings Pte. Ltd.");
+    assert_eq!(tree["members"][0]["children"][0]["effective_ownership_bp"], 6000);
+    let facts = json(&["entity", "facts", "Blue Harbor LLC", "--as-of", "2024-06-01"]);
+    assert_eq!(facts["group"]["group"]["name"], "Northwind Group");
+
+    let payee = json(&["payee", "set", "Sample Person", "--entity", "Blue Harbor LLC", "--country", "us", "--tax-id", "TIN=000-00-0000", "--kind", "person", "--json"]);
+    assert_eq!(payee["payee"]["country"], "US");
+    assert_eq!(payee["payee"]["tax_ids"]["TIN"], "000-00-0000");
+    json(&["party", "relate", "--payee", "Sample Person", "--entity", "Blue Harbor LLC", "--kind", "owner", "--ownership-bp", "10000", "--from", "2024-01-01"]);
+    let related = json(&["party", "list", "--entity", "Blue Harbor LLC", "--as-of", "2024-06-01", "--related-only", "--json"]);
+    assert_eq!(related["parties"].as_array().unwrap().len(), 1);
+    assert_eq!(related["parties"][0]["relationships"][0]["kind"], "owner");
+    json(&["party", "unrelate", "--payee", "Sample Person", "--entity", "Blue Harbor LLC", "--kind", "owner", "--to", "2024-06-01"]);
+    let related = json(&["party", "list", "--entity", "Blue Harbor LLC", "--as-of", "2024-06-01", "--related-only"]);
+    assert!(related["parties"].as_array().unwrap().is_empty());
+
+    for (args, code) in [
+        (vec!["entity", "set", "Blue Harbor LLC", "--fye", "13-01", "--json"], "invalid_argument"),
+        (vec!["entity", "facts", "Nobody Ltd", "--json"], "not_found"),
+        (vec!["group", "add", "Northwind Group", "--json"], "conflict"),
+    ] {
+        let out = ledger.run(&args);
+        assert_eq!(out.status.code(), Some(1), "means {args:?}");
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!((v["schema_version"].as_i64(), v["ok"].as_bool()), (Some(1), Some(false)));
+        assert_eq!(v["error"]["code"], code, "{v}");
+        assert!(v["error"]["message"].is_string());
+    }
+}

@@ -4,10 +4,12 @@ mod budgets;
 mod connections;
 mod email;
 mod enable_banking;
+mod entity_cli;
 mod grpc;
 mod inter_pj;
 mod local_api;
 mod mercury;
+mod party_cli;
 mod payees;
 mod refunds;
 mod reports;
@@ -212,6 +214,16 @@ enum Command {
     Status,
     /// Verify the hash chain of every entity
     Verify,
+    /// Groups of entities with dated ownership
+    Group {
+        #[command(subcommand)]
+        command: entity_cli::GroupCommand,
+    },
+    /// Dated relationships between payees and entities, and related parties
+    Party {
+        #[command(subcommand)]
+        command: party_cli::PartyCommand,
+    },
 }
 
 #[derive(Args)]
@@ -309,6 +321,12 @@ enum EntityCommand {
     },
     /// List entities
     List,
+    /// Set the legal form, fiscal year end, incorporation date and registrations
+    Set(entity_cli::SetArgs),
+    /// Record a tax classification in a jurisdiction from a date
+    Classify(entity_cli::ClassifyArgs),
+    /// Show all facts, classifications and group membership on a date
+    Facts(entity_cli::FactsArgs),
 }
 
 #[derive(Subcommand)]
@@ -1135,6 +1153,11 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Entity { command: EntityCommand::Set(args) } => entity_cli::set(db_path, args),
+        Command::Entity { command: EntityCommand::Classify(args) } => entity_cli::classify(db_path, args),
+        Command::Entity { command: EntityCommand::Facts(args) } => entity_cli::facts(db_path, args),
+        Command::Group { command } => entity_cli::group(db_path, command),
+        Command::Party { command } => party_cli::run(db_path, command),
         Command::Chart { command } => chart(db_path, command),
         Command::Accounts { entity } => {
             let db = Db::open(&db_path)?;

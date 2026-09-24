@@ -1,7 +1,10 @@
 //! Entities (sets of books) and commodities.
 
+use std::collections::BTreeMap;
+
 use chrono::NaiveDate;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use crate::accounts;
 use crate::model::{AccountType, Commodity, Entity, NewAccount};
@@ -86,6 +89,239 @@ pub fn update_entity(conn: &mut Connection, id: i64, name: &str, kind: &str, cou
     )?;
     let after = get_entity(conn, id)?;
     crate::audit::log(conn, "entities", id, "update", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
+    Ok(after)
+}
+
+/// Legal and tax facts of an entity. They describe the books and never change postings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityFacts {
+    pub entity_id: i64,
+    pub legal_form: String,
+    /// `MM-DD`, or empty when unknown.
+    pub fiscal_year_end: String,
+    pub incorporated_on: Option<NaiveDate>,
+    /// Registration and tax numbers. Keys are uppercase free text.
+    pub registrations: BTreeMap<String, String>,
+}
+
+/// A change to the facts of an entity. `None` keeps the stored value.
+#[derive(Debug, Clone, Default)]
+pub struct EntityFactsPatch {
+    pub legal_form: Option<String>,
+    /// `MM-DD`. An empty string clears the value.
+    pub fiscal_year_end: Option<String>,
+    /// `YYYY-MM-DD`. An empty string clears the value.
+    pub incorporated_on: Option<String>,
+    /// Pairs to merge into the registrations. An empty value removes its key.
+    pub registrations: Vec<(String, String)>,
+}
+
+/// A tax classification of an entity in one jurisdiction for one period.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Classification {
+    pub id: i64,
+    pub entity_id: i64,
+    pub jurisdiction: String,
+    pub classification: String,
+    pub effective_from: NaiveDate,
+    /// Exclusive. `None` keeps the period open.
+    pub effective_to: Option<NaiveDate>,
+    pub note: String,
+    pub created_at: String,
+}
+
+pub fn get_facts(conn: &Connection, entity_id: i64) -> Result<EntityFacts> {
+    let (legal_form, fiscal_year_end, incorporated_on, registrations) = conn
+        .query_row("SELECT legal_form, fiscal_year_end, incorporated_on, registrations FROM entities WHERE id = ?1", [entity_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, opt_date_at(r, 2)?, r.get::<_, String>(3)?))
+        })
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("entity {entity_id}")))?;
+    Ok(EntityFacts { entity_id, legal_form, fiscal_year_end, incorporated_on, registrations: serde_json::from_str(&registrations)? })
+}
+
+/// Change the facts of an entity and audit the values before and after.
+pub fn set_facts(conn: &mut Connection, entity_id: i64, patch: EntityFactsPatch) -> Result<EntityFacts> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let before = get_facts(&tx, entity_id)?;
+    let mut after = before.clone();
+    if let Some(form) = patch.legal_form {
+        after.legal_form = form.trim().to_string();
+    }
+    if let Some(fye) = patch.fiscal_year_end {
+        after.fiscal_year_end = normalize_fiscal_year_end(&fye)?;
+    }
+    if let Some(date) = patch.incorporated_on {
+        after.incorporated_on = crate::parse_opt_date(&date)?;
+    }
+    merge_pairs(&mut after.registrations, &patch.registrations)?;
+    if after != before {
+        tx.execute(
+            "UPDATE entities SET legal_form = ?2, fiscal_year_end = ?3, incorporated_on = ?4, registrations = ?5, updated_at = ?6 WHERE id = ?1",
+            params![entity_id, after.legal_form, after.fiscal_year_end, after.incorporated_on.map(|d| d.to_string()), serde_json::to_string(&after.registrations)?, now_ts()],
+        )?;
+        crate::audit::log(&tx, "entities", entity_id, "set_facts", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
+    }
+    tx.commit()?;
+    Ok(after)
+}
+
+/// Check a fiscal year end as `MM-DD`. An empty value stays empty.
+pub fn normalize_fiscal_year_end(s: &str) -> Result<String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Ok(String::new());
+    }
+    let invalid = || Error::Invalid(format!("fiscal year end must be MM-DD, got {s:?}"));
+    let (m, d) = s.split_once('-').ok_or_else(invalid)?;
+    if m.len() != 2 || d.len() != 2 {
+        return Err(invalid());
+    }
+    let (m, d) = (m.parse::<u32>().map_err(|_| invalid())?, d.parse::<u32>().map_err(|_| invalid())?);
+    // A leap year accepts 02-29.
+    NaiveDate::from_ymd_opt(2000, m, d).ok_or_else(invalid)?;
+    Ok(format!("{m:02}-{d:02}"))
+}
+
+/// Parse `KEY=VALUE`. The key becomes uppercase. The value can be empty.
+pub fn parse_pair(s: &str) -> Result<(String, String)> {
+    let (k, v) = s.split_once('=').ok_or_else(|| Error::Invalid(format!("expected KEY=VALUE, got {s:?}")))?;
+    let key = k.trim().to_uppercase();
+    if key.is_empty() {
+        return Err(Error::Invalid(format!("expected KEY=VALUE, got {s:?}")));
+    }
+    Ok((key, v.trim().to_string()))
+}
+
+/// Merge `KEY=VALUE` pairs into a map. An empty value removes its key.
+pub fn merge_pairs(map: &mut BTreeMap<String, String>, pairs: &[(String, String)]) -> Result<()> {
+    for (k, v) in pairs {
+        let key = k.trim().to_uppercase();
+        if key.is_empty() {
+            return Err(Error::Invalid("a key is required".into()));
+        }
+        if v.trim().is_empty() {
+            map.remove(&key);
+        } else {
+            map.insert(key, v.trim().to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Reject a period whose end is not after its start.
+pub(crate) fn check_period(from: NaiveDate, to: Option<NaiveDate>) -> Result<()> {
+    match to {
+        Some(to) if to <= from => Err(Error::Invalid(format!("the period must end after it starts: {from} to {to}"))),
+        _ => Ok(()),
+    }
+}
+
+/// True when a period `[from, to)` includes the date.
+pub(crate) fn covers(from: NaiveDate, to: Option<NaiveDate>, on: NaiveDate) -> bool {
+    from <= on && to.is_none_or(|to| on < to)
+}
+
+/// True when two periods `[from, to)` share at least one day.
+pub(crate) fn overlaps(a: (NaiveDate, Option<NaiveDate>), b: (NaiveDate, Option<NaiveDate>)) -> bool {
+    a.1.is_none_or(|end| b.0 < end) && b.1.is_none_or(|end| a.0 < end)
+}
+
+fn row_to_classification(r: &rusqlite::Row<'_>) -> rusqlite::Result<Classification> {
+    Ok(Classification {
+        id: r.get(0)?,
+        entity_id: r.get(1)?,
+        jurisdiction: r.get(2)?,
+        classification: r.get(3)?,
+        effective_from: date_at(r, 4)?,
+        effective_to: opt_date_at(r, 5)?,
+        note: r.get(6)?,
+        created_at: r.get(7)?,
+    })
+}
+
+/// Read a `YYYY-MM-DD` column.
+pub(crate) fn date_at(r: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<NaiveDate> {
+    let s: String = r.get(idx)?;
+    NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|e| rusqlite::Error::FromSqlConversionFailure(idx, rusqlite::types::Type::Text, Box::new(e)))
+}
+
+/// Read a nullable `YYYY-MM-DD` column.
+pub(crate) fn opt_date_at(r: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Option<NaiveDate>> {
+    match r.get::<_, Option<String>>(idx)? {
+        None => Ok(None),
+        Some(_) => date_at(r, idx).map(Some),
+    }
+}
+
+const CLASSIFICATION_COLUMNS: &str = "id, entity_id, jurisdiction, classification, effective_from, effective_to, note, created_at";
+
+pub fn get_classification(conn: &Connection, id: i64) -> Result<Classification> {
+    conn.query_row(&format!("SELECT {CLASSIFICATION_COLUMNS} FROM entity_classifications WHERE id = ?1"), [id], row_to_classification)
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("classification {id}")))
+}
+
+/// All classifications of an entity, or only those in effect on `as_of`.
+pub fn list_classifications(conn: &Connection, entity_id: i64, as_of: Option<NaiveDate>) -> Result<Vec<Classification>> {
+    get_entity(conn, entity_id)?;
+    let mut stmt = conn.prepare(&format!("SELECT {CLASSIFICATION_COLUMNS} FROM entity_classifications WHERE entity_id = ?1 ORDER BY jurisdiction, effective_from, id"))?;
+    let all = stmt.query_map([entity_id], row_to_classification)?.collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(all.into_iter().filter(|c| as_of.is_none_or(|d| covers(c.effective_from, c.effective_to, d))).collect())
+}
+
+/// Record a classification. One classification applies per jurisdiction at a time. An open
+/// classification that starts earlier in the same jurisdiction closes on `from`. Any other
+/// overlap is a conflict.
+pub fn add_classification(conn: &mut Connection, entity_id: i64, jurisdiction: &str, classification: &str, from: NaiveDate, to: Option<NaiveDate>, note: &str) -> Result<Classification> {
+    let jurisdiction = jurisdiction.trim().to_ascii_uppercase();
+    if jurisdiction.is_empty() || !jurisdiction.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(Error::Invalid(format!("jurisdiction must be a code such as US or SG, got {jurisdiction:?}")));
+    }
+    let classification = classification.trim().to_ascii_lowercase();
+    if classification.is_empty() || !classification.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(Error::Invalid(format!("classification must be a code such as corporation, got {classification:?}")));
+    }
+    check_period(from, to)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let existing: Vec<_> = list_classifications(&tx, entity_id, None)?.into_iter().filter(|c| c.jurisdiction == jurisdiction).collect();
+    for c in &existing {
+        if !overlaps((c.effective_from, c.effective_to), (from, to)) {
+            continue;
+        }
+        if c.effective_to.is_none() && c.effective_from < from {
+            close_classification_in(&tx, c, from)?;
+        } else {
+            return Err(Error::Conflict(format!("{jurisdiction} classification #{} ({}) already covers part of this period", c.id, c.classification)));
+        }
+    }
+    tx.execute(
+        "INSERT INTO entity_classifications (entity_id, jurisdiction, classification, effective_from, effective_to, note, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![entity_id, jurisdiction, classification, from.to_string(), to.map(|d| d.to_string()), note.trim(), now_ts()],
+    )?;
+    let saved = get_classification(&tx, tx.last_insert_rowid())?;
+    crate::audit::log(&tx, "entity_classifications", saved.id, "create", None, Some(serde_json::to_value(&saved)?))?;
+    tx.commit()?;
+    Ok(saved)
+}
+
+/// End an open classification on `to` (exclusive).
+pub fn close_classification(conn: &mut Connection, id: i64, to: NaiveDate) -> Result<Classification> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let c = get_classification(&tx, id)?;
+    if c.effective_to.is_some() {
+        return Err(Error::Conflict(format!("classification #{id} is already closed")));
+    }
+    let after = close_classification_in(&tx, &c, to)?;
+    tx.commit()?;
+    Ok(after)
+}
+
+fn close_classification_in(conn: &Connection, c: &Classification, to: NaiveDate) -> Result<Classification> {
+    check_period(c.effective_from, Some(to))?;
+    conn.execute("UPDATE entity_classifications SET effective_to = ?2 WHERE id = ?1", params![c.id, to.to_string()])?;
+    let after = get_classification(conn, c.id)?;
+    crate::audit::log(conn, "entity_classifications", c.id, "close", Some(serde_json::to_value(c)?), Some(serde_json::to_value(&after)?))?;
     Ok(after)
 }
 

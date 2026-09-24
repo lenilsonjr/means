@@ -1184,7 +1184,7 @@ impl Means for MeansService {
             .iter()
             .map(|m| imports::account_tracker::Mapping { external_id: m.external_id.clone(), entity_id: m.entity_id, r#type: m.r#type.clone(), subtype: m.subtype.clone(), skip: m.skip })
             .collect();
-        let expand = r.expand_recurring || r.mapping.is_empty() && !r.expand_recurring && true;
+        let expand = r.expand_recurring || r.mapping.is_empty();
         let out = self.run(move |c| imports::account_tracker::import(c, &r.content, &r.filename, &mappings, r.default_entity_id, expand, r.schedules)).await?;
         Ok(Response::new(pb::ImportAccountTrackerResponse {
             import: Some(import_pb(&out.import)),
@@ -1543,7 +1543,7 @@ mod replica_tests {
         drop(db);
         // Install in a distinct empty database as the production importer does.
         let replica_path = path.with_extension("replica");
-        let staging = Db::open(&replica_path).unwrap();
+        let staging = Db::open_replica_staging(&replica_path).unwrap();
         means_sharing::snapshot::install(&staging, &snapshot, &entity.uid, "", 0).unwrap();
         drop(staging);
         let db = Arc::new(Db::open_replica(&replica_path).unwrap());

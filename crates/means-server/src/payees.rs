@@ -51,8 +51,14 @@ pub enum Command {
         #[arg(long)]
         confirm: Option<String>,
     },
+    /// Set the country, tax ids and kind of a payee
+    Set(crate::party_cli::PayeeSetArgs),
 }
 pub fn run(path: PathBuf, command: Command) -> Result<()> {
+    let command = match command {
+        Command::Set(args) => return crate::party_cli::payee_set(path, args),
+        other => other,
+    };
     let db = Db::open(path)?;
     let mut c = db.conn();
     let value = match command {
@@ -63,6 +69,7 @@ pub fn run(path: PathBuf, command: Command) -> Result<()> {
         Command::Backfill { entity, confirm, chart_reviewed } => serde_json::to_value(payees::backfill(&mut c, entity, confirm.as_deref(), chart_reviewed)?)?,
         Command::Link { entry, payee, confirm } => serde_json::to_value(payees::reassign(&mut c, 0, payee, Some(entry), confirm.as_deref())?)?,
         Command::Merge { source, target, confirm } => serde_json::to_value(payees::reassign(&mut c, source, target, None, confirm.as_deref())?)?,
+        Command::Set(_) => unreachable!("payee set returns before the ledger opens"),
     };
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())

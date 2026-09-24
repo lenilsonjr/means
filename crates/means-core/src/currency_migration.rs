@@ -63,8 +63,10 @@ pub fn open_existing(path: &Path, writable: bool) -> Result<Connection> {
         return Err(Error::Locked("shared vaults cannot change accounting currency".into()));
     }
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version != 16 {
-        return Err(Error::Invalid(format!("currency migration requires ledger schema 16; found {version}")));
+    // Schemas after 16 add no money columns, so the migration reads the latest schema unchanged.
+    let latest = crate::db::latest_version();
+    if version != latest {
+        return Err(Error::Invalid(format!("currency migration requires ledger schema {latest}; found {version}")));
     }
     conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
     Ok(conn)
