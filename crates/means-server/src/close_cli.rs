@@ -94,6 +94,7 @@ fn report_text(report: &CloseReport) -> String {
         let level = match f.severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
+            Severity::Info => "info",
         };
         out.push_str(&format!("  {level:<7} {:<28} {}\n", f.code, f.message));
     }

@@ -298,7 +298,7 @@ An agent can also link a new draft with the `intervault` block of `means entry d
 
 ## Close, lock and filings
 
-A close check reads one period of one entity and lists findings. It writes nothing. An error blocks a final close. A warning needs attention but does not block it.
+A close check reads one period of one entity and lists findings. It writes nothing. An error blocks a final close. A warning needs attention but does not block it. An info finding needs no action.
 
 | Code | Severity | Condition |
 | --- | --- | --- |
@@ -309,7 +309,10 @@ A close check reads one period of one entity and lists findings. It writes nothi
 | `lock_moved_back` | error | The lock date is before the highest lock date that the audit log records since the last unlock. |
 | `unbalanced_period` | error | The debits and the credits of the booked entries in the period differ. |
 | `unmatched_evidence` | warning | Statement lines in the period have no posting link. Skipped and duplicate lines do not count. |
-| `intercompany_out_of_balance` | warning | An account with `intercompany = 1` has a non-zero balance in the period. Reconcile it with the other entity in a group close. |
+| `intercompany_out_of_balance` | warning | An account with `intercompany = 1` moved in the period, and posted, reconciled inter-vault links do not cover the movement. `amount` is the part without such a link. `link_uids` names the links that are not posted or do not reconcile. Reconcile the account with the other entity in a group close. |
+| `intercompany_linked` | info | Posted, reconciled inter-vault links cover this movement of an intercompany account. `amount` is the linked total and `link_uids` names the links. A report without `intercompany_out_of_balance` can say that all intercompany flows are linked. |
+
+An entry counts as linked when it has at least one link that is not void, and each such link is `posted` and reconciled. The check reads the movement of each entry of the entity in the period. It then subtracts the movement of the linked entries. A void link does not count, because a void entry and its reversal cancel each other.
 
 A report has the findings, their counts, and control totals: booked entries, drafts, postings, statement lines, debits, credits and the balance. Booked entries are `posted` and `void` entries. The `report_digest` is the SHA-256 of the canonical JSON of the report.
 

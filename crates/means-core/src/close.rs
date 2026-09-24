@@ -1,7 +1,7 @@
 //! Period close: checks, the lock and the unlock.
 //!
 //! `close_check` reads the books of one entity for one period and lists the findings that block
-//! a final close (errors) or need attention (warnings). It writes nothing.
+//! a final close (errors), need attention (warnings) or only inform (info). It writes nothing.
 //! `close_lock` moves the lock date of the entity forward. It refuses when the check finds an
 //! error, unless the caller forces it. `unlock` moves the lock date back. Both record an audit
 //! event with the actor and the reason. `entities::update_entity` refuses to move the lock back.
@@ -26,6 +26,8 @@ use crate::{accounts, audit, entities, now_ts};
 pub enum Severity {
     Error,
     Warning,
+    /// A fact for the report. It needs no action.
+    Info,
 }
 
 /// One result of a close check.
@@ -39,12 +41,62 @@ pub struct Finding {
     pub count: Option<i64>,
     /// A balance in the functional currency, when the finding is about a balance.
     pub amount: Option<Money>,
+    /// The inter-vault links that the finding is about. Absent when there are none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub link_uids: Vec<String>,
 }
 
 impl Finding {
     fn new(code: &str, severity: Severity, message: String) -> Finding {
-        Finding { code: code.into(), severity, message, entry_uid: None, account_uid: None, count: None, amount: None }
+        Finding { code: code.into(), severity, message, entry_uid: None, account_uid: None, count: None, amount: None, link_uids: Vec::new() }
     }
+}
+
+/// The period movement of one intercompany account, split by link coverage. Amounts are
+/// functional minor units.
+struct IntercompanyFlows {
+    /// The movement of entries whose links are all posted and reconciled.
+    linked: i64,
+    /// The movement of entries without a link, or with a link that is not posted or does not reconcile.
+    unlinked: i64,
+    /// The posted, reconciled links that cover `linked`.
+    linked_uids: Vec<String>,
+    /// The links that are not posted or do not reconcile.
+    open_uids: Vec<String>,
+}
+
+/// Split the period movement of an intercompany account by link coverage. An entry counts as
+/// linked when it has at least one link that is not void, and each such link is posted and
+/// reconciled. Void links do not count: a void entry and its reversal cancel each other.
+fn intercompany_flows(conn: &Connection, entity_id: i64, account_id: i64, from: &str, to: &str) -> AgentResult<IntercompanyFlows> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id, SUM(p.amount) FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id
+         WHERE e.entity_id = ?1 AND p.account_id = ?2 AND e.status IN ('posted','void') AND e.date BETWEEN ?3 AND ?4
+         GROUP BY e.id ORDER BY e.date, e.id",
+    )?;
+    let rows = stmt.query_map(params![entity_id, account_id, from, to], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut flows = IntercompanyFlows { linked: 0, unlinked: 0, linked_uids: Vec::new(), open_uids: Vec::new() };
+    for (entry_id, minor) in rows {
+        let links: Vec<_> = crate::intervault::links_for_entry(conn, entry_id)?.into_iter().filter(|l| l.status != "void").collect();
+        let mut open = Vec::new();
+        for link in &links {
+            if link.status != "posted" || !crate::intervault::view(conn, link)?.reconciled {
+                open.push(link.uid.clone());
+            }
+        }
+        if !links.is_empty() && open.is_empty() {
+            flows.linked += minor;
+            flows.linked_uids.extend(links.into_iter().map(|l| l.uid));
+        } else {
+            flows.unlinked += minor;
+            flows.open_uids.extend(open);
+        }
+    }
+    flows.linked_uids.sort();
+    flows.linked_uids.dedup();
+    flows.open_uids.sort();
+    flows.open_uids.dedup();
+    Ok(flows)
 }
 
 /// Control totals of the period. Booked entries are `posted` and `void` entries.
@@ -156,7 +208,7 @@ pub fn close_check(conn: &Connection, entity_id: i64, period_start: NaiveDate, p
         .query_map(params![entity_id, from, to], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)? != 0, r.get::<_, i64>(3)?)))?
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let index = accounts::path_index(conn)?;
-    for (id, uid, intercompany, minor) in &balances {
+    for (id, uid, _, minor) in &balances {
         if *minor == 0 {
             continue;
         }
@@ -169,14 +221,35 @@ pub fn close_check(conn: &Connection, entity_id: i64, period_start: NaiveDate, p
             f.amount = Some(amount);
             findings.push(f);
         }
-        if *intercompany {
+    }
+
+    // Intercompany accounts: posted, reconciled links cover a movement. The rest needs attention.
+    for (id, uid, _, _) in balances.iter().filter(|b| b.2) {
+        let Some(account) = index.get(id) else { continue };
+        let flows = intercompany_flows(conn, entity_id, *id, &from, &to)?;
+        let show = |minor: i64| crate::money::fmt(Money::from_minor(minor, &entity.currency, fprec).map(|m| m.major()).unwrap_or_default(), fprec);
+        if flows.linked != 0 {
             let mut f = Finding::new(
-                "intercompany_out_of_balance",
-                Severity::Warning,
-                format!("intercompany account {} moved {shown} {} in the period; reconcile it with the other entity", account.path, entity.currency),
+                "intercompany_linked",
+                Severity::Info,
+                format!("intercompany account {}: {} {} is covered by {} posted, reconciled link(s)", account.path, show(flows.linked), entity.currency, flows.linked_uids.len()),
             );
             f.account_uid = Some(uid.clone());
-            f.amount = Some(amount);
+            f.count = Some(flows.linked_uids.len() as i64);
+            f.amount = Some(money(flows.linked)?);
+            f.link_uids = flows.linked_uids;
+            findings.push(f);
+        }
+        if flows.unlinked != 0 || !flows.open_uids.is_empty() {
+            let mut message = format!("intercompany account {} moved {} {} in the period without a posted, reconciled link", account.path, show(flows.unlinked), entity.currency);
+            if !flows.open_uids.is_empty() {
+                message.push_str(&format!("; these links do not reconcile or are not posted: {}", flows.open_uids.join(", ")));
+            }
+            message.push_str("; reconcile it with the other entity");
+            let mut f = Finding::new("intercompany_out_of_balance", Severity::Warning, message);
+            f.account_uid = Some(uid.clone());
+            f.amount = Some(money(flows.unlinked)?);
+            f.link_uids = flows.open_uids;
             findings.push(f);
         }
     }
@@ -235,7 +308,7 @@ pub fn close_check(conn: &Connection, entity_id: i64, period_start: NaiveDate, p
     }
 
     let error_count = findings.iter().filter(|f| f.severity == Severity::Error).count() as i64;
-    let warning_count = findings.len() as i64 - error_count;
+    let warning_count = findings.iter().filter(|f| f.severity == Severity::Warning).count() as i64;
     Ok(CloseReport {
         entity_uid: entity.uid,
         period_start,

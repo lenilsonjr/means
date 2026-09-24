@@ -364,3 +364,58 @@ fn an_agent_draft_can_link_to_an_entry_in_another_vault() {
     let after: i64 = b.db.conn().query_row("SELECT COUNT(*) FROM journal_entries", [], |r| r.get(0)).unwrap();
     assert_eq!(before, after);
 }
+
+/// The close check of the parent for March 2026.
+fn parent_close(b: &Books) -> means_core::close::CloseReport {
+    means_core::close::close_check(&b.db.conn(), b.parent, day("2026-03-01"), day("2026-03-31")).unwrap()
+}
+
+fn finding<'a>(report: &'a means_core::close::CloseReport, code: &str) -> Option<&'a means_core::close::Finding> {
+    report.findings.iter().find(|f| f.code == code)
+}
+
+#[test]
+fn a_fully_linked_intercompany_flow_raises_no_close_warning() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-02", EntryStatus::Posted);
+    let link = b.link(&a, &s, "loan").unwrap();
+    assert_eq!(link.status, "posted");
+    let report = parent_close(&b);
+    assert!(finding(&report, "intercompany_out_of_balance").is_none(), "{:?}", report.findings);
+    let info = finding(&report, "intercompany_linked").unwrap();
+    assert_eq!(info.severity, means_core::close::Severity::Info);
+    assert_eq!(info.amount.unwrap().minor(), 135000);
+    assert_eq!(info.link_uids, vec![link.uid.clone()]);
+    assert_eq!(report.warning_count, 0);
+}
+
+#[test]
+fn an_unlinked_intercompany_posting_is_the_warning_amount() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-02", EntryStatus::Posted);
+    b.link(&a, &s, "loan").unwrap();
+    b.entry(b.parent, "2026-03-20", b.parent_loan, "200.00", b.parent_bank, EntryStatus::Posted);
+    let report = parent_close(&b);
+    let warning = finding(&report, "intercompany_out_of_balance").unwrap();
+    assert_eq!(warning.amount.unwrap().minor(), 20000);
+    assert!(warning.link_uids.is_empty());
+    assert_eq!(finding(&report, "intercompany_linked").unwrap().amount.unwrap().minor(), 135000);
+}
+
+#[test]
+fn a_link_with_mismatched_amounts_is_named_in_the_warning() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-02", EntryStatus::Posted);
+    let link = b.link(&a, &s, "loan").unwrap();
+    // The stored rate no longer matches the two amounts.
+    b.db.conn().execute("UPDATE intervault_links SET rate = '0.5' WHERE uid = ?1", [&link.uid]).unwrap();
+    let report = parent_close(&b);
+    let warning = finding(&report, "intercompany_out_of_balance").unwrap();
+    assert_eq!(warning.amount.unwrap().minor(), 135000);
+    assert_eq!(warning.link_uids, vec![link.uid.clone()]);
+    assert!(warning.message.contains(&link.uid), "{}", warning.message);
+    assert!(finding(&report, "intercompany_linked").is_none());
+}
