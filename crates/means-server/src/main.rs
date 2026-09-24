@@ -182,6 +182,9 @@ enum Command {
     Accounts {
         #[arg(long)]
         entity: Option<i64>,
+        /// Emit a JSON array: path, type, statutory keys and balance of each account
+        #[arg(long)]
+        json: bool,
     },
     /// Compare a bank statement with the ledger; inspect unmatched evidence
     Reconcile {
@@ -540,6 +543,23 @@ struct PlanMove {
     kind: String,
     from: String,
     to: String,
+}
+
+/// One row of `accounts --json`. The balance is a money string in the account's commodity.
+fn account_json(a: &means_core::model::Account) -> serde_json::Value {
+    serde_json::json!({
+        "entity_id": a.entity_id,
+        "path": a.path,
+        "code": a.code,
+        "type": a.r#type.as_str(),
+        "subtype": a.subtype,
+        "placeholder": a.placeholder,
+        "commodity": a.commodity,
+        "statutory_code": a.statutory_code,
+        "tax_treatment": a.tax_treatment,
+        "intercompany": a.intercompany,
+        "balance": means_core::money::fmt(a.balance, a.precision),
+    })
 }
 
 fn find_account(conn: &means_core::rusqlite::Connection, entity_id: i64, path: &str) -> Result<means_core::model::Account> {
@@ -1154,10 +1174,16 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Chart { command } => chart(db_path, command),
-        Command::Accounts { entity } => {
+        Command::Accounts { entity, json } => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
-            for a in means_core::accounts::list_accounts_with_balances(&conn, entity, false, None)? {
+            let accounts = means_core::accounts::list_accounts_with_balances(&conn, entity, false, None)?;
+            if json {
+                let rows: Vec<serde_json::Value> = accounts.iter().map(account_json).collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            for a in accounts {
                 if a.placeholder {
                     println!("{:<48} {:>16}", a.path, "");
                 } else {

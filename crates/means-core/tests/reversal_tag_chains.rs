@@ -4,9 +4,10 @@ use means_core::{accounts, db, entities, hashchain, journal, model::*, reports, 
 fn fixture() -> (Connection, i64, Vec<i64>) {
     let mut c = Connection::open_in_memory().unwrap();
     db::migrate_to(&c, 11).unwrap();
-    // Seed legacy tag contents using current journal helpers. Payee metadata is
+    // Seed legacy tag contents using current journal helpers. Payee and statutory metadata are
     // independent of the tag repairs under test; do not advance their migration version.
     c.execute_batch(include_str!("../migrations/0016_payees.sql")).unwrap();
+    c.execute_batch(include_str!("../migrations/0021_statutory_codes.sql")).unwrap();
     let e = entities::create_entity(&mut c, "Personal", "person", "PT", "EUR").unwrap();
     let bank = accounts::ensure_account(&c, e.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
     let expense = accounts::ensure_account(&c, e.id, AccountType::Expense, &["Food"], "expense", "EUR").unwrap();

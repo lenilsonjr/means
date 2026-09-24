@@ -31,9 +31,11 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (15, Migration::Sql(include_str!("../migrations/0015_connections_ui.sql"))),
     (16, Migration::Sql(include_str!("../migrations/0016_payees.sql"))),
     (20, Migration::Sql(include_str!("../migrations/0020_documents.sql"))),
+    (21, Migration::Sql(include_str!("../migrations/0021_statutory_codes.sql"))),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.
+/// Snapshot records hold the columns of this schema. Newer columns take their defaults on install.
 pub const REPLICA_SCHEMA_VERSION: i64 = 16;
 
 pub struct Db {
@@ -68,13 +70,14 @@ impl Db {
         Ok(Db { conn: Mutex::new(conn), path: PathBuf::from(":memory:"), replica: false })
     }
 
-    /// A new, empty staging file for a shared vault snapshot. It migrates only to
-    /// `REPLICA_SCHEMA_VERSION`, so owned-book migrations do not change the replica schema.
+    /// A new, empty staging file for a shared vault snapshot. It migrates to today's schema.
+    /// The version-1 wire format fills the tables of `REPLICA_SCHEMA_VERSION`; later columns keep
+    /// their defaults, so reads through today's API work on a replica.
     pub fn open_replica_staging(path: impl AsRef<Path>) -> Result<Db> {
         let path = path.as_ref().to_path_buf();
         let conn = Connection::open(&path)?;
         configure(&conn)?;
-        migrate_to(&conn, REPLICA_SCHEMA_VERSION)?;
+        migrate_to(&conn, schema_version())?;
         Ok(Db { conn: Mutex::new(conn), path, replica: false })
     }
 
@@ -86,7 +89,9 @@ impl Db {
             return Err(crate::Error::Invalid("not a shared vault snapshot".into()));
         }
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != REPLICA_SCHEMA_VERSION {
+        // A replica installs into a freshly migrated book, and reads use the columns of today's schema.
+        // A replica that an older build installed has an older schema and needs a new snapshot.
+        if version != schema_version() {
             return Err(crate::Error::Invalid("unsupported replica schema; obtain a new snapshot".into()));
         }
         conn.execute_batch("PRAGMA query_only=ON; PRAGMA foreign_keys=ON;")?;

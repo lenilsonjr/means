@@ -122,6 +122,15 @@ pub struct Account {
     pub closed_at: Option<String>,
     /// Budget nature of an expense account: fixed | committed | discretionary | savings | not-spending, or ''.
     pub class: String,
+    /// Code of the matching line in a national chart or reporting taxonomy, or ''.
+    #[serde(default)]
+    pub statutory_code: String,
+    /// Free-text tax tag, such as output_tax, input_tax or owner_capital, or ''.
+    #[serde(default)]
+    pub tax_treatment: String,
+    /// True when the account holds balances with a related party.
+    #[serde(default)]
+    pub intercompany: bool,
     // Derived when listing:
     pub balance: Decimal,
     pub balance_functional: Decimal,

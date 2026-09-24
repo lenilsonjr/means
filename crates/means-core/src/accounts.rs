@@ -12,7 +12,8 @@ use crate::money::{self, MinorUnits};
 use crate::{new_uid, now_ts, Error, Result};
 
 const SELECT: &str = "SELECT a.id, a.uid, a.entity_id, a.parent_id, a.code, a.name, a.type, a.subtype, a.commodity_id, c.code, c.precision,
-        a.system_role, a.placeholder, a.in_net_worth, a.credit_limit, a.statement_day, a.due_day, a.external_ids, a.notes, a.position, a.closed_at, a.class
+        a.system_role, a.placeholder, a.in_net_worth, a.credit_limit, a.statement_day, a.due_day, a.external_ids, a.notes, a.position, a.closed_at, a.class,
+        a.statutory_code, a.tax_treatment, a.intercompany
      FROM accounts a JOIN commodities c ON c.id = a.commodity_id";
 
 fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
@@ -44,6 +45,9 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         position: r.get(19)?,
         closed_at: r.get(20)?,
         class: r.get(21)?,
+        statutory_code: r.get(22)?,
+        tax_treatment: r.get(23)?,
+        intercompany: r.get::<_, i64>(24)? != 0,
         balance: Decimal::ZERO,
         balance_functional: Decimal::ZERO,
         postings_count: 0,
@@ -353,6 +357,9 @@ pub struct AccountUpdate {
     pub placeholder: Option<bool>,
     pub commodity: Option<String>,
     pub class: Option<String>,
+    pub statutory_code: Option<String>,
+    pub tax_treatment: Option<String>,
+    pub intercompany: Option<bool>,
 }
 
 pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<Account> {
@@ -419,6 +426,15 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
         }
         a.class = v;
     }
+    if let Some(v) = upd.statutory_code {
+        a.statutory_code = v.trim().to_string();
+    }
+    if let Some(v) = upd.tax_treatment {
+        a.tax_treatment = v.trim().to_string();
+    }
+    if let Some(v) = upd.intercompany {
+        a.intercompany = v;
+    }
     if let Some(v) = upd.placeholder {
         if v && before.postings_count_db(conn)? > 0 {
             return Err(Error::Invalid("an account with postings cannot become a placeholder".into()));
@@ -437,7 +453,8 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
     }
     conn.execute(
         "UPDATE accounts SET parent_id = ?2, code = ?3, name = ?4, subtype = ?5, in_net_worth = ?6, credit_limit = ?7, statement_day = ?8,
-            due_day = ?9, notes = ?10, position = ?11, external_ids = ?12, placeholder = ?13, commodity_id = ?14, updated_at = ?15, class = ?16 WHERE id = ?1",
+            due_day = ?9, notes = ?10, position = ?11, external_ids = ?12, placeholder = ?13, commodity_id = ?14, updated_at = ?15, class = ?16,
+            statutory_code = ?17, tax_treatment = ?18, intercompany = ?19 WHERE id = ?1",
         params![
             id,
             a.parent_id,
@@ -454,7 +471,10 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
             a.placeholder as i64,
             a.commodity_id,
             now_ts(),
-            a.class
+            a.class,
+            a.statutory_code,
+            a.tax_treatment,
+            a.intercompany as i64
         ],
     )
     .map_err(|e| match e {
@@ -836,7 +856,7 @@ pub fn tag_account(conn: &mut Connection, account_id: i64, tag: &str) -> Result<
 }
 
 /// One node of a chart template.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChartNode {
     pub code: String,
     pub path: String,
@@ -845,9 +865,20 @@ pub struct ChartNode {
     pub placeholder: bool,
     #[serde(default)]
     pub description: String,
+    /// Code in a national chart or taxonomy. None keeps the value of the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statutory_code: Option<String>,
+    /// Free-text tax tag. None keeps the value of the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tax_treatment: Option<String>,
+    /// Related-party flag. None keeps the value of the account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intercompany: Option<bool>,
 }
 
 /// Create the accounts of a chart in an entity: existing paths are kept (their code is set when empty), missing ones created.
+/// Each apply writes the statutory keys that a node gives (statutory_code, tax_treatment, intercompany).
+/// These keys do not touch postings, so balances do not change.
 /// Paths are "Income:..." / "Expenses:..." with the root name dropped, or bare names under the type root.
 pub fn apply_chart(conn: &mut Connection, entity_id: i64, nodes: &[ChartNode]) -> Result<(usize, usize)> {
     let tx = conn.transaction()?;
@@ -898,7 +929,16 @@ fn apply_chart_in(conn: &Connection, entity_id: i64, nodes: &[ChartNode]) -> Res
         if !n.description.trim().is_empty() && acc.notes.trim().is_empty() {
             upd.notes = Some(n.description.trim().to_string());
         }
-        if upd.code.is_some() || upd.placeholder.is_some() || upd.notes.is_some() {
+        if let Some(v) = n.statutory_code.as_deref().map(str::trim).filter(|v| *v != acc.statutory_code) {
+            upd.statutory_code = Some(v.to_string());
+        }
+        if let Some(v) = n.tax_treatment.as_deref().map(str::trim).filter(|v| *v != acc.tax_treatment) {
+            upd.tax_treatment = Some(v.to_string());
+        }
+        if let Some(v) = n.intercompany.filter(|v| *v != acc.intercompany) {
+            upd.intercompany = Some(v);
+        }
+        if upd.code.is_some() || upd.placeholder.is_some() || upd.notes.is_some() || upd.statutory_code.is_some() || upd.tax_treatment.is_some() || upd.intercompany.is_some() {
             update_account(conn, acc.id, upd)?;
         }
     }

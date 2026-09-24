@@ -701,6 +701,10 @@ impl Means for MeansService {
                         placeholder: Some(a.placeholder),
                         commodity: if a.commodity.is_empty() { None } else { Some(a.commodity.clone()) },
                         class: Some(a.class.clone()),
+                        // The gRPC account has no statutory keys yet. Keep the stored values.
+                        statutory_code: None,
+                        tax_treatment: None,
+                        intercompany: None,
                     },
                 )?;
                 account_with_balance(c, a.id)
@@ -739,7 +743,7 @@ impl Means for MeansService {
         let nodes: Vec<accounts::ChartNode> = r
             .accounts
             .iter()
-            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone() })
+            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone(), ..Default::default() })
             .collect();
         let (created, existing) = self.run(move |c| accounts::apply_chart(c, r.entity_id, &nodes)).await?;
         Ok(Response::new(pb::ApplyChartResponse { created: created as i32, existing: existing as i32 }))
@@ -751,7 +755,7 @@ impl Means for MeansService {
         let nodes: Vec<accounts::ChartNode> = r
             .accounts
             .iter()
-            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone() })
+            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone(), ..Default::default() })
             .collect();
         let moves: Vec<(i64, String)> = r.moves.iter().map(|m| (m.source_id, m.target_path.clone())).collect();
         let rep = self.run(move |c| accounts::remap_accounts(c, r.entity_id, &nodes, &moves)).await?;
