@@ -17,7 +17,7 @@ use crate::entity_cli::{emit, entity_ref, fields, find_entity, Output};
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Set the country, IBAN, BIC, institution and location of an account
+    /// Set the country, IBAN, BIC, institution, location and statutory code of an account
     Set(SetArgs),
 }
 
@@ -43,6 +43,10 @@ pub struct SetArgs {
     /// Where the asset is, as free text, for example a state
     #[arg(long)]
     pub location: Option<String>,
+    /// Code of the account in a national chart or a reporting taxonomy, without
+    /// whitespace; an empty value clears it
+    #[arg(long, value_name = "CODE")]
+    pub statutory_code: Option<String>,
     #[command(flatten)]
     pub output: Output,
 }
@@ -57,6 +61,16 @@ fn find_account(conn: &Connection, entity_id: i64, key: &str) -> means_core::Res
     accounts::find_by_path(conn, entity_id, key)?.ok_or_else(|| Error::NotFound(format!("account {key} in entity {entity_id}")))
 }
 
+/// Check the shape of a statutory code. An empty value clears the code. Any other value
+/// must not contain whitespace. The engine does not check the code against a chart.
+fn statutory_code(raw: &str) -> means_core::Result<String> {
+    let code = raw.trim();
+    if code.chars().any(char::is_whitespace) {
+        return Err(Error::Invalid(format!("statutory code {code:?} contains whitespace")));
+    }
+    Ok(code.to_string())
+}
+
 pub fn account_json(a: &Account) -> Value {
     json!({
         "id": a.id,
@@ -69,6 +83,7 @@ pub fn account_json(a: &Account) -> Value {
         "bic": a.bic,
         "institution": a.institution,
         "location": a.location,
+        "statutory_code": a.statutory_code,
     })
 }
 
@@ -86,8 +101,9 @@ fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             let mut conn = db.conn();
             let entity = find_entity(&conn, &args.entity)?;
             let account = find_account(&conn, entity.id, &args.account)?;
-            let upd = AccountUpdate { country: args.country, iban: args.iban, bic: args.bic, institution: args.institution, location: args.location, ..Default::default() };
-            let changed = upd.country.is_some() || upd.iban.is_some() || upd.bic.is_some() || upd.institution.is_some() || upd.location.is_some();
+            let statutory_code = args.statutory_code.as_deref().map(statutory_code).transpose()?;
+            let upd = AccountUpdate { country: args.country, iban: args.iban, bic: args.bic, institution: args.institution, location: args.location, statutory_code, ..Default::default() };
+            let changed = upd.country.is_some() || upd.iban.is_some() || upd.bic.is_some() || upd.institution.is_some() || upd.location.is_some() || upd.statutory_code.is_some();
             let after = if changed {
                 // `update_account` records the account before and after in the audit log. The
                 // transaction keeps the change and its audit event together.

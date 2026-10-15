@@ -1252,6 +1252,19 @@ fn entity_flags_account_identifiers_party_residence_and_questions_cli() {
     let bad = ledger.run(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--iban", "DE00", "--json"]);
     assert_eq!(bad.status.code(), Some(1));
 
+    // A statutory code: set, shown in `accounts --json`, refused with whitespace, then cleared.
+    let coded = json(ledger.ok(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--statutory-code", " 572.1 ", "--json"]));
+    assert_eq!(coded["account"]["statutory_code"], "572.1");
+    assert_eq!(coded["account"]["iban"], "DE89370400440532013000");
+    let listed = json(ledger.ok(&["accounts", "--entity", &books.entity.to_string(), "--json"]));
+    let n26 = listed.as_array().unwrap().iter().find(|a| a["id"] == books.n26).unwrap().clone();
+    assert_eq!(n26["statutory_code"], "572.1");
+    let bad = ledger.run(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--statutory-code", "57 2", "--json"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stdout).contains("invalid_input"));
+    let cleared = json(ledger.ok(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--statutory-code", "", "--json"]));
+    assert_eq!(cleared["account"]["statutory_code"], "");
+
     // Party residence and citizenship, and the payees without a tax id.
     {
         let db = ledger.db();

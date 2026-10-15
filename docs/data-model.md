@@ -80,7 +80,7 @@ Three columns map an account to statutory reporting. They never change postings:
 - `tax_treatment`: a free-text tag for tax reports, for example `output_tax`, `input_tax` or `owner_capital`. Invoices use `input_tax` and `output_tax` to find the tax account.
 - `intercompany`: 1 when the account holds balances with a related party. Inter-vault links and the close check use it.
 
-A [chart template](../charts/README.md) sets these columns when it creates the accounts.
+A [chart template](../charts/README.md) sets these columns when it creates the accounts. `means account set --statutory-code` changes `statutory_code` of one account, and the change goes to the audit log.
 
 Five columns identify an account for external tools. They never change postings:
 

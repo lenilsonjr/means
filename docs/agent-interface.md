@@ -73,11 +73,11 @@ These commands describe the books. They never change postings. See [entity facts
 | `means group member close --group G --entity <e> --to D [--json]` | The end of a membership | Allowed |
 | `means payee set <payee> [--entity <e>] [--country CC] [--tax-id KEY=VALUE]... [--kind person\|company\|authority\|other] [--residence CC] [--citizenship CC] [--json]` | Payee facts and an audit event | Allowed |
 | `means party set <payee> ...` | The same as `payee set` | Allowed |
-| `means account set <account> --entity <e> [--country CC] [--iban X] [--bic X] [--institution T] [--location T] [--json]` | Account identifiers and an audit event | Allowed |
+| `means account set <account> --entity <e> [--country CC] [--iban X] [--bic X] [--institution T] [--location T] [--statutory-code CODE] [--json]` | Account identifiers and an audit event | Allowed |
 | `means party relate --payee P --entity <e> --kind K --from D [--ownership-bp N] [--basis T] [--json]` | A relationship | Allowed |
 | `means party unrelate --payee P --entity <e> --kind K --to D [--json]` | The end of a relationship | Allowed |
 
-`entity set` returns `entity` and `flag_history`. Its `flags` are the values of today. `entity classify` returns `entity` and `classification`. `group add` returns `group`. `group member add` and `close` return `group` and `member`. `payee set` and `party set` return `payee`. `account set` returns `entity` and `account`. The account has `id`, `uid`, `path`, `type`, `commodity`, `country`, `iban`, `bic`, `institution` and `location`. `party relate` and `unrelate` return `relationship`. `--to` is the day after the last day of the period.
+`entity set` returns `entity` and `flag_history`. Its `flags` are the values of today. `entity classify` returns `entity` and `classification`. `group add` returns `group`. `group member add` and `close` return `group` and `member`. `payee set` and `party set` return `payee`. `account set` returns `entity` and `account`. The account has `id`, `uid`, `path`, `type`, `commodity`, `country`, `iban`, `bic`, `institution`, `location` and `statutory_code`. `party relate` and `unrelate` return `relationship`. `--to` is the day after the last day of the period.
 
 `entity set` changes all its facts in one transaction. A refusal changes nothing.
 
@@ -87,7 +87,7 @@ These commands describe the books. They never change postings. See [entity facts
 - With `--from D`, each `--flag` of the command starts a dated value on D. An open value of the same key that starts earlier ends on D. Another overlap is a `conflict`. An empty value ends the open value on D. To give flags different dates, run the command once for each date.
 - A key with dated values refuses an undated change.
 
-`account set` takes an account path, a uid or an id. The IBAN loses its spaces and must pass the check digits. The BIC has 8 or 11 characters, and the first six are letters. An empty value clears an identifier. `location` is free text, for example the state where an asset is.
+`account set` takes an account path, a uid or an id. The IBAN loses its spaces and must pass the check digits. The BIC has 8 or 11 characters, and the first six are letters. An empty value clears an identifier. `location` is free text, for example the state where an asset is. `--statutory-code` sets the code of the account in a national chart or a reporting taxonomy. The code must not contain whitespace. The engine does not check it against a chart. An empty value clears it.
 
 ## Drafting
 
