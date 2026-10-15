@@ -1193,6 +1193,27 @@ fn generic_csv_import_takes_a_column_map() {
     assert!(bad.contains("unknown column map key"), "{bad}");
 }
 
+#[test]
+fn import_from_and_to_keep_lines_outside_the_range_as_skipped() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    let file = ledger.path.with_extension("csv");
+    std::fs::write(&file, "Booked,Text,Value,Ref\n2025-12-30,Old fee,-1.00,ref-old\n2026-01-05,Card payment Sample Cafe,-12.50,ref-in\n2026-02-10,Later fee,-2.00,ref-late\n").unwrap();
+    let account = books.n26.to_string();
+    let args = ["import", "--account", &account, "--map", "date=Booked,amount=Value,description=Text,external_id=Ref", "--from", "2026-01-01", "--to", "2026-01-31", file.to_str().unwrap()];
+    let bad = ledger.refused(&[&args[..5], &["--from", "2026-02-01"], &args[7..]].concat());
+    assert!(bad.contains("is after --to"), "{bad}");
+    let out = ledger.ok(&args);
+    std::fs::remove_file(&file).unwrap();
+    assert!(out.contains("3 lines, 1 created") && out.contains("2 skipped"), "{out}");
+    let id: String = out.trim_start_matches("import #").chars().take_while(char::is_ascii_digit).collect();
+    let skipped: serde_json::Value = serde_json::from_str(&ledger.ok(&["import", "lines", &id, "--status", "skipped", "--json"])).unwrap();
+    let notes: Vec<(&str, &str)> = skipped.as_array().unwrap().iter().map(|l| (l["reference"].as_str().unwrap(), l["note"].as_str().unwrap())).collect();
+    assert_eq!(notes, [("ref-old", "before --from 2026-01-01"), ("ref-late", "after --to 2026-01-31")]);
+    let drafts = ledger.ok(&["entries", "--entity", "Personal", "--status", "draft"]);
+    assert!(drafts.ends_with("1 of 1 entries\n") && drafts.contains("Sample Cafe"), "{drafts}");
+}
+
 /// The error object of a refused command: exit code 1 and one JSON object on stdout.
 fn error_object(out: &std::process::Output) -> serde_json::Value {
     assert_eq!(out.status.code(), Some(1), "stdout: {} stderr: {}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));

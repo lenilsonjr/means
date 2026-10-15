@@ -319,7 +319,8 @@ pub struct ImportOutcome {
 pub(crate) const MATCH_WINDOW_DAYS: i64 = 5;
 
 /// One file to import, and how to read it. `source` may be "auto" or "" to detect it from the
-/// file, and `preview` parses without writing anything.
+/// file, and `preview` parses without writing anything. `from` and `to` are an inclusive range of
+/// line dates: a line outside it is kept as a skipped line and gets no draft.
 pub struct ImportRequest<'a> {
     pub source: &'a str,
     pub account_id: Option<i64>,
@@ -328,11 +329,19 @@ pub struct ImportRequest<'a> {
     pub mapping: Option<&'a CsvMapping>,
     pub preview: bool,
     pub options: serde_json::Value,
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
 }
 
 impl<'a> ImportRequest<'a> {
     pub fn new(source: &'a str, account_id: Option<i64>, filename: &'a str, content: &'a [u8]) -> ImportRequest<'a> {
-        ImportRequest { source, account_id, filename, content, mapping: None, preview: false, options: serde_json::json!({}) }
+        ImportRequest { source, account_id, filename, content, mapping: None, preview: false, options: serde_json::json!({}), from: None, to: None }
+    }
+
+    pub fn date_range(mut self, from: Option<NaiveDate>, to: Option<NaiveDate>) -> ImportRequest<'a> {
+        self.from = from;
+        self.to = to;
+        self
     }
 
     pub fn mapping(mut self, mapping: Option<&'a CsvMapping>) -> ImportRequest<'a> {
@@ -353,10 +362,15 @@ impl<'a> ImportRequest<'a> {
 
 /// The pipeline: receive, parse, dedupe, match, draft, reconcile.
 pub fn run_import(conn: &mut Connection, request: ImportRequest<'_>) -> Result<ImportOutcome> {
-    let ImportRequest { source, account_id, filename, content, mapping, preview, options } = request;
+    let ImportRequest { source, account_id, filename, content, mapping, preview, options, from, to } = request;
     let source = if source.is_empty() || source == "auto" { detect_source(filename, content) } else { source.to_string() };
     if source == "account_tracker" {
         return Err(Error::Invalid("use ImportAccountTracker for Account Tracker backups".into()));
+    }
+    if let (Some(f), Some(t)) = (from, to) {
+        if f > t {
+            return Err(Error::Invalid(format!("--from {f} is after --to {t}")));
+        }
     }
     let sum = checksum(content);
     if !preview {
@@ -367,6 +381,7 @@ pub fn run_import(conn: &mut Connection, request: ImportRequest<'_>) -> Result<I
         }
     }
     let mut parse = parse(&source, content, mapping)?;
+    skip_outside(&mut parse, from, to);
     if source == "remessa_csv" {
         return remessa::run(conn, parse, &sum, ImportRequest::new(&source, account_id, filename, content).preview(preview).options(options));
     }
@@ -589,6 +604,19 @@ pub fn run_import(conn: &mut Connection, request: ImportRequest<'_>) -> Result<I
     }
     crate::audit::log(conn, "imports", import.id, "create", None, Some(serde_json::json!({"source": source, "filename": filename, "lines": import.lines_count})))?;
     Ok(ImportOutcome { import: get_import(conn, import.id)?.0, lines, parse })
+}
+
+/// Mark the dated lines outside the inclusive range from..to as skipped. The import keeps them as
+/// statement lines, so the file stays auditable, but they get no draft.
+fn skip_outside(parse: &mut ParseOutput, from: Option<NaiveDate>, to: Option<NaiveDate>) {
+    for line in parse.lines.iter_mut().filter(|l| l.skip.is_none()) {
+        let Some(date) = line.date else { continue };
+        if let Some(from) = from.filter(|f| date < *f) {
+            line.skip = Some(format!("before --from {from}"));
+        } else if let Some(to) = to.filter(|t| date > *t) {
+            line.skip = Some(format!("after --to {to}"));
+        }
+    }
 }
 
 /// Retry only unfinished bank-import lines from their persisted evidence.

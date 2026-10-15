@@ -227,12 +227,14 @@ The document can carry an `intervault` block at the top level. The engine then l
 | `means doc link <document uid> (--entry <uid> \| --line <id>) [--role R] [--json]` | A link and an audit event | Allowed |
 | `means doc show <document uid> [--json]` | Nothing | Allowed |
 | `means doc verify [--json]` | Nothing | Allowed |
-| `means import --account <id> [--source generic_csv] --map date=<col>,amount=<col>,description=<col>[,counterparty=<col>][,external_id=<col>] [--date-format <strftime>] [--decimal-comma] <file>` | An import, its statement lines and entries | Allowed |
+| `means import --account <id> [--source generic_csv] --map date=<col>,amount=<col>,description=<col>[,counterparty=<col>][,external_id=<col>] [--date-format <strftime>] [--decimal-comma] [--from D] [--to D] <file>` | An import, its statement lines and entries | Allowed |
 | `means import lines <import id> [--status S] [--json]` | Nothing | Allowed |
 
 `doc add` returns `created`, `document`, `links` and `stored_path`. The same bytes twice return the first document with `created: false`. `doc list` returns `entity_uid`, `count` and `documents`. `doc link` returns `link`. `doc show` returns `document`, `links`, `stored_path` and `exists`. `doc verify` returns `checked`, `passed`, `missing` and `mismatched`. It exits with code 1 and an error when a file is missing (`not_found`) or has another hash (`hash_mismatch`). See [documents](data-model.md#documents).
 
 `import --map` reads the file as `generic_csv` and builds the same column mapping as the TUI. See [column maps](import-formats.md#column-maps-for-other-csv-files). `import` prints text.
+
+`import --from D --to D` drafts only the lines dated in the range, both days included. It works with every bank source, with or without `--map`. A line outside the range stays in the import with the status `skipped` and the note `before --from D` or `after --to D`. It gets no draft. The summary counts it as skipped. `--from` after `--to` is refused.
 
 ## Tax
 

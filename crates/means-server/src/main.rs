@@ -158,6 +158,12 @@ enum Command {
         /// Amounts use a decimal comma, for example 1.234,56
         #[arg(long, requires = "map")]
         decimal_comma: bool,
+        /// First line date to draft, YYYY-MM-DD; earlier lines are kept as skipped lines (bank sources)
+        #[arg(long)]
+        from: Option<String>,
+        /// Last line date to draft, YYYY-MM-DD; later lines are kept as skipped lines (bank sources)
+        #[arg(long)]
+        to: Option<String>,
         #[arg(required = true)]
         file: Option<PathBuf>,
         #[command(subcommand)]
@@ -1211,7 +1217,7 @@ async fn main() -> Result<()> {
         }
         Command::Serve { listen, inbox } => serve(db_path, listen, inbox).await,
         Command::Tui { server } => means_tui::run(&server).await,
-        Command::Import { source, account, entity, map, date_format, decimal_comma, file, command } => match command {
+        Command::Import { source, account, entity, map, date_format, decimal_comma, from, to, file, command } => match command {
             Some(ImportCommand::Lines { id, status, json }) => {
                 let conn = means_core::rusqlite::Connection::open_with_flags(&db_path, means_core::rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let (_, lines) = means_core::imports::get_import(&conn, id)?;
@@ -1256,7 +1262,8 @@ async fn main() -> Result<()> {
             }
             None => {
                 let mapping = map.as_deref().map(|spec| means_core::imports::CsvMapping::from_column_map(spec, date_format.as_deref().unwrap_or(""), decimal_comma)).transpose()?;
-                import(db_path, &source, account, entity, mapping.as_ref(), &file.context("an import file is required")?)
+                let range = (from.as_deref().map(means_core::parse_date).transpose()?, to.as_deref().map(means_core::parse_date).transpose()?);
+                import(db_path, &source, account, entity, mapping.as_ref(), range, &file.context("an import file is required")?)
             }
         },
         Command::Draft { command: DraftCommand::Delete { id } } => {
@@ -1534,7 +1541,9 @@ fn watch_inbox(db: Arc<Db>, dir: PathBuf) {
     });
 }
 
-fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i64>, mapping: Option<&means_core::imports::CsvMapping>, file: &PathBuf) -> Result<()> {
+type DateRange = (Option<chrono::NaiveDate>, Option<chrono::NaiveDate>);
+
+fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i64>, mapping: Option<&means_core::imports::CsvMapping>, range: DateRange, file: &PathBuf) -> Result<()> {
     let db = Db::open(&db_path)?;
     let content = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let filename = file.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -1547,6 +1556,7 @@ fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i
     };
     anyhow::ensure!(mapping.is_none() || source.ends_with("_csv"), "--map reads a CSV file; use it with --source generic_csv");
     if source == "account_tracker" {
+        anyhow::ensure!(range == (None, None), "--from and --to apply to bank statements; an Account Tracker backup imports whole");
         let entity = entity.context("--entity is required for Account Tracker backups")?;
         let r = means_core::imports::account_tracker::import(&mut conn, &content, &filename, &[], entity, true, true)?;
         println!("import #{}: {} entries created, {} already present", r.import.id, r.created, r.skipped_existing);
@@ -1558,7 +1568,7 @@ fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i
         }
         return Ok(());
     }
-    let out = means_core::imports::run_import(&mut conn, means_core::imports::ImportRequest::new(&source, account, &filename, &content).mapping(mapping))?;
+    let out = means_core::imports::run_import(&mut conn, means_core::imports::ImportRequest::new(&source, account, &filename, &content).mapping(mapping).date_range(range.0, range.1))?;
     let i = &out.import;
     println!(
         "import #{} ({}): {} lines, {} created, {} matched, {} duplicates, {} skipped, {} unmatched, {} errors",

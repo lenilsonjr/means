@@ -887,6 +887,21 @@ unmatched evidence. Posted and void entries are refused. Retrying the unmatched 
 - Pluggy: the `status` values a real connection sends, whether a `CREDIT` transaction carries a
   `balance` at all, and what `next` looks like on a second page.
 
+## Importing part of a long export
+
+A bank export can cover years before the books of the entity start. Give a date range to draft
+only the lines in it:
+
+```sh
+means import --account 12 --from 2026-01-01 --to 2026-12-31 all-time.csv
+```
+
+Both days are included, and each option is optional. The import keeps every line outside the range
+as a statement line with the status `skipped` and a note such as `before --from 2026-01-01`. These
+lines get no draft, and the summary counts them as skipped. The range works with every bank
+source. The file checksum still identifies the file, so the same file cannot be imported again
+with another range. Roll the first import back before you import the file again.
+
 ## Retrying an interrupted bank import
 
 Inspect failed evidence before retrying:
