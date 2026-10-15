@@ -119,6 +119,8 @@ These commands describe the books. They never change postings. See [entity facts
 
 `void` returns `entry`, `reversal`, `already_void` and `evidence_lines_returned`.
 
+`means void <id> --json` returns `entry`, `reversal`, `evidence_lines`, `applied` and `already_void`. Without `--yes`, the command is a preview and saves nothing. `applied` is then false, and `entry` is the stored entry with its real status. `reversal` shows the entry that `--yes` creates, but the preview does not save it. With `--yes`, `applied` is true, and `entry` has the status `void` and `reversed_by_id`.
+
 `rates set` stores one rate: one unit of the base costs `rate` units of the quote on the date. The row goes in the prices table, which `means rates fetch` also fills. The default source is `manual`. Drafts, imports and invoices find the row through the rate lookup: directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. `rates import` reads a CSV file with the header `date,base,quote,rate`. It writes all rows or none, and a refusal names the bad line. `set` and `import` then revalue the postings booked without a rate, unless you give `--no-revalue`.
 
 `rates set` returns `rate` and `revalued`. A rate has `id`, `date`, `base`, `quote`, `rate` (a decimal string) and `source`. `revalued` has `fixed`, `failed` and `first_error`. `rates list` returns `count` and `rates`, newest first. `rates import` returns `written`, `source` and `revalued`.

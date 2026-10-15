@@ -731,6 +731,7 @@ pub struct VoidReview {
 }
 
 /// Compute the full reversal inside one transaction. Preview rolls it back.
+/// A preview returns the stored entry and `applied: false`.
 /// Drafts are never deleted by a void request.
 pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str, apply: bool) -> Result<VoidReview> {
     let tx = conn.transaction()?;
@@ -748,10 +749,12 @@ pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reas
     let reversal = get_entry(&tx, entry.reversed_by_id.ok_or_else(|| Error::Invalid("void did not create a reversal".into()))?)?;
     if apply {
         tx.commit()?;
-    } else {
-        tx.rollback()?;
+        return Ok(VoidReview { entry, reversal, evidence_lines, applied: true, already_void: false });
     }
-    Ok(VoidReview { entry, reversal, evidence_lines, applied: apply, already_void: false })
+    tx.rollback()?;
+    // A preview saves nothing. It returns the stored entry with its real status, not the
+    // entry as the void would leave it.
+    Ok(VoidReview { entry: before, reversal, evidence_lines, applied: false, already_void: false })
 }
 
 /// Void a posted entry within a larger atomic operation (such as cross-source reconciliation).

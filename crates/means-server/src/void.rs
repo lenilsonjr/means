@@ -19,7 +19,7 @@ pub struct Args {
     /// Explicit preview (also the default)
     #[arg(long, conflicts_with = "yes")]
     dry_run: bool,
-    /// Print the original entry, reversal, and evidence count as JSON
+    /// Print the original entry, reversal, evidence count and `applied` as JSON
     #[arg(long)]
     json: bool,
 }
