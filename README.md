@@ -163,6 +163,7 @@ means post 4214 --to "Expenses:Groceries=72.40" --to "Expenses:Household"  # fin
 means rule list --entity Personal                 # the bank rules, in the order they run
 means rule add --entity Personal --contains namecheap --to Expenses:Domains  # appended after the last rule
 means rule delete 95
+means rule apply --entity Personal --dry-run      # re-run the rules over import drafts; drop --dry-run to move them
 means profiles                                    # learned inbox routes: source, filename pattern, account, hits
 means profiles delete 3                           # forget a wrong route (does not undo past imports)
 means status                                      # JSON; --json gives the same output

@@ -327,6 +327,90 @@ pub fn run_rules(conn: &mut Connection, entity_id: Option<i64>, account_id: Opti
     Ok((drafted, redrafted))
 }
 
+/// One draft whose balancing posting moves to the account a rule now selects.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DraftChange {
+    pub entry_id: i64,
+    pub date: chrono::NaiveDate,
+    pub payee: String,
+    pub from: String,
+    pub to: String,
+    pub rule: String,
+}
+
+/// The result of `apply_to_drafts`: what changed, or what would change in a dry run.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DraftApply {
+    pub examined: usize,
+    pub changed: usize,
+    pub unchanged: usize,
+    pub applied: bool,
+    pub changes: Vec<DraftChange>,
+}
+
+/// Re-run the entity's rules, in their order, over the drafts that its bank imports created.
+/// The balancing posting of each draft moves to the account of the first matching rule, and the
+/// entry takes the payee the import gives. Drafts stay drafts. Posted entries do not change.
+/// A draft stays as it is when no rule matches, when the first match applies a template, or when
+/// it has more than one balancing posting. Without `apply`, the transaction rolls back.
+pub fn apply_to_drafts(conn: &mut Connection, entity_id: i64, import_id: Option<i64>, apply: bool) -> Result<DraftApply> {
+    let rules = list_rules(conn, Some(entity_id))?;
+    let tx = conn.transaction()?;
+    let line_ids: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT sl.id FROM statement_lines sl JOIN journal_entries e ON e.id = sl.journal_entry_id
+             WHERE sl.status = 'created' AND e.status = 'draft' AND e.entity_id = ?1 AND (?2 IS NULL OR sl.import_id = ?2)
+             ORDER BY e.date, e.id, sl.id",
+        )?;
+        let rows = stmt.query_map(params![entity_id, import_id], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut changes = Vec::new();
+    for line_id in line_ids {
+        let sl = crate::imports::get_line(&tx, line_id)?;
+        let Some(eid) = sl.journal_entry_id.filter(|id| seen.insert(*id)) else { continue };
+        let entry = journal::get_entry(&tx, eid)?;
+        let balancing: Vec<&Posting> = entry.postings.iter().filter(|p| Some(p.id) != sl.posting_id).collect();
+        let (Some(rule), [old]) = (resolved_rule(&tx, entity_id, &rules, &sl)?, balancing.as_slice()) else { continue };
+        let Some(target) = rule.account_id.filter(|a| *a != old.account_id) else { continue };
+        let mut input = EntryInput::new(entry.entity_id, entry.date);
+        input.payee = if rule.payee.is_empty() { sl.description.clone() } else { rule.payee.clone() };
+        input.description = entry.description.clone();
+        input.notes = entry.notes.clone();
+        input.status = EntryStatus::Draft;
+        for p in &entry.postings {
+            if p.id == old.id {
+                input.postings.push(PostingInput::balancing(target).memo(&p.memo));
+            } else {
+                input.postings.push(PostingInput {
+                    account_id: p.account_id,
+                    quantity: p.quantity.major(),
+                    amount: Some(p.amount.major()),
+                    memo: p.memo.clone(),
+                    metadata: p.metadata.clone(),
+                    external_id: p.external_id.clone(),
+                    fingerprint: p.fingerprint.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        let payee = input.payee.clone();
+        journal::update_entry_in_transaction(&tx, eid, input)?;
+        let canonical = if rule.payee.trim().is_empty() { crate::payees::resolve(&tx, entity_id, &sl.description)? } else { crate::payees::explicit(&tx, entity_id, &rule.payee)? };
+        crate::payees::link(&tx, eid, canonical.map(|p| p.id))?;
+        tx.execute("UPDATE rules SET hits_count = hits_count + 1 WHERE id = ?1", [rule.id])?;
+        tx.execute("UPDATE statement_lines SET note = ?2 WHERE id = ?1", params![sl.id, format!("rule: {}", rule.name)])?;
+        changes.push(DraftChange { entry_id: eid, date: entry.date, payee, from: old.account_path.clone(), to: accounts::get_account(&tx, target)?.path, rule: rule.name.clone() });
+    }
+    if apply {
+        tx.commit()?;
+    } else {
+        tx.rollback()?;
+    }
+    Ok(DraftApply { examined: seen.len(), changed: changes.len(), unchanged: seen.len() - changes.len(), applied: apply, changes })
+}
+
 /// Create (or post) the entry a statement line evidences, with the contra account, splits or template chosen on the review screen.
 pub fn create_entry_from_line(
     conn: &mut Connection,

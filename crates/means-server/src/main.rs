@@ -376,6 +376,24 @@ enum RuleCommand {
     },
     /// Delete a rule
     Delete { id: i64 },
+    /// Re-run the rules over import drafts and move each draft to the account the rules now select
+    ///
+    /// The balancing posting moves, also to another account type. The payee follows the rule.
+    /// Drafts stay drafts. Posted entries, drafts that no rule matches and split drafts do not change.
+    Apply {
+        /// Entity id or name
+        #[arg(long)]
+        entity: String,
+        /// Only the drafts of this import
+        #[arg(long)]
+        import: Option<i64>,
+        /// Show what would change and write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the counts and changes as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1057,7 +1075,7 @@ fn post(db_path: PathBuf, id: i64, to: &[String], payee: Option<String>) -> Resu
 
 fn rule(db_path: PathBuf, command: RuleCommand) -> Result<()> {
     let db = Db::open(&db_path)?;
-    let conn = db.conn();
+    let mut conn = db.conn();
     match command {
         RuleCommand::List { entity } => {
             let e = resolve_entity(&conn, &entity)?;
@@ -1099,6 +1117,28 @@ fn rule(db_path: PathBuf, command: RuleCommand) -> Result<()> {
             let r = means_core::rules::get_rule(&conn, id)?;
             means_core::rules::delete_rule(&conn, id)?;
             println!("rule #{} {} deleted", r.id, r.payee);
+            Ok(())
+        }
+        RuleCommand::Apply { entity, import, dry_run, json } => {
+            let e = resolve_entity(&conn, &entity)?;
+            if let Some(id) = import {
+                let (_, lines) = means_core::imports::get_import(&conn, id)?;
+                if let Some(account) = lines.iter().find_map(|l| l.account_id) {
+                    anyhow::ensure!(means_core::accounts::get_account(&conn, account)?.entity_id == e.id, "import #{id} belongs to another entity");
+                }
+            }
+            let r = means_core::rules::apply_to_drafts(&mut conn, e.id, import, !dry_run)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+                return Ok(());
+            }
+            println!("{}: {} drafts examined, {} changed, {} unchanged", e.name, r.examined, r.changed, r.unchanged);
+            for c in &r.changes {
+                println!("  #{} {} {}: {} -> {} (rule: {})", c.entry_id, c.date, c.payee, c.from, c.to, c.rule);
+            }
+            if dry_run {
+                println!("Dry run: no changes saved. Repeat without --dry-run to apply.");
+            }
             Ok(())
         }
     }

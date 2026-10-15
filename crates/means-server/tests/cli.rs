@@ -477,6 +477,32 @@ fn rule_add_refuses_an_unknown_account_path() {
 }
 
 #[test]
+fn rule_apply_previews_as_json_then_reroutes_import_drafts() {
+    let l = Ledger::new();
+    let b = seed(&l);
+    let (import_id, entry_id) = {
+        let db = l.db();
+        let mut conn = db.conn();
+        let csv = b"Date,Amount,Text\n2026-05-02,-9.00,SAMPLE VENDOR ORDER 17\n";
+        let mapping = imports::CsvMapping { date_column: "Date".into(), amount_column: "Amount".into(), description_column: "Text".into(), ..Default::default() };
+        let out = imports::run_import(&mut conn, imports::ImportRequest::new("generic_csv", Some(b.n26), "vendor.csv", csv).mapping(Some(&mapping))).unwrap();
+        (out.import.id, out.lines[0].journal_entry_id.unwrap())
+    };
+    l.ok(&["rule", "add", "--entity", "Personal", "--contains", "sample vendor", "--to", "Expenses:Domains", "--payee", "Sample Vendor"]);
+    let args = ["rule", "apply", "--entity", "Personal", "--import", &import_id.to_string()];
+    let preview: serde_json::Value = serde_json::from_str(&l.ok(&[args.as_slice(), &["--dry-run", "--json"]].concat())).unwrap();
+    assert_eq!((preview["examined"].as_u64(), preview["changed"].as_u64(), preview["applied"].as_bool()), (Some(1), Some(1), Some(false)), "{preview}");
+    assert_eq!(preview["changes"][0]["to"], "Expenses:Domains");
+    let contra = || journal::get_entry(&l.db().conn(), entry_id).unwrap().postings.iter().find(|p| p.account_id != b.n26).unwrap().account_id;
+    assert_eq!(contra(), b.suspense, "a dry run writes nothing");
+    let text = l.ok(&args);
+    assert!(text.contains("1 drafts examined, 1 changed, 0 unchanged"), "{text}");
+    assert!(text.contains("Sample Vendor: Expenses:Uncategorized -> Expenses:Domains"), "{text}");
+    assert_eq!(contra(), b.domains);
+    assert_eq!(journal::get_entry(&l.db().conn(), entry_id).unwrap().status, EntryStatus::Draft);
+}
+
+#[test]
 fn profiles_list_routes_and_delete_only_the_selected_profile() {
     let l = Ledger::new();
     let b = seed(&l);
