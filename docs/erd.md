@@ -106,6 +106,7 @@ erDiagram
     TEXT bic
     TEXT institution
     TEXT location
+    INTEGER counterparty_payee_id FK "payees"
   }
   journal_entries {
     INTEGER id PK
@@ -533,6 +534,7 @@ erDiagram
   journal_entries ||--o{ intervault_links : "entry_b_id"
   journal_entries ||--o{ postings : "journal_entry_id"
   journal_entries ||--o{ tax_events : "entry_id"
+  payees |o--o{ accounts : "counterparty_payee_id"
   payees |o--o{ invoices : "party_id"
   payees |o--o{ journal_entries : "payee_id"
   payees |o--o{ tax_events : "party_id"

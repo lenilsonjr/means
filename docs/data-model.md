@@ -100,6 +100,7 @@ Three columns map an account to statutory reporting. They never change postings:
 - `statutory_code`: a code from a national chart or a reporting taxonomy, as free text, for example a PGC account number.
 - `tax_treatment`: a free-text tag for tax reports, for example `output_tax`, `input_tax` or `owner_capital`. Invoices use `input_tax` and `output_tax` to find the tax account.
 - `intercompany`: 1 when the account holds balances with a related party. Inter-vault links and the close check use it.
+- `counterparty_payee_id`: the payee at the other side of the account, for example the shareholder of an "Amount due to related parties" account. It must be a payee of the same entity. `means account set --counterparty` sets it, and the close check reads it.
 
 A [chart template](../charts/README.md) sets these columns when it creates the accounts. `means chart new --statutory-code C` sets the statutory code of one new account. Without it, the account has no statutory code. `means account set --statutory-code` changes `statutory_code` of one account, and the change goes to the audit log.
 
@@ -380,6 +381,7 @@ A close check reads one period of one entity and lists findings. It writes nothi
 | `unbalanced_period` | error | The debits and the credits of the booked entries in the period differ. |
 | `unmatched_evidence` | warning | Statement lines in the period have no posting link. Skipped and duplicate lines do not count. |
 | `intercompany_out_of_balance` | warning | An account with `intercompany = 1` moved in the period, and posted, reconciled inter-vault links do not cover the movement. `amount` is the part without such a link. `link_uids` names the links that are not posted or do not reconcile. Reconcile the account with the other entity in a group close. |
+| `related_party_balance` | info | An account with `intercompany = 1` moved in the period, and its counterparty is a related party outside the group: a payee of kind `person`, or a payee that stands for no other active entity of the ledger. A payee stands for an entity when its name or one of its aliases is the name of that entity, ignoring case. Such a party has no books in the ledger, so no link can cover the movement. `amount` is the balance of the account at the end of the period. This finding replaces `intercompany_out_of_balance` for the account. |
 | `intercompany_linked` | info | Posted, reconciled inter-vault links cover this movement of an intercompany account. `amount` is the linked total and `link_uids` names the links. A report without `intercompany_out_of_balance` can say that all intercompany flows are linked. |
 
 An entry counts as linked when it has at least one link that is not void, and each such link is `posted` and reconciled. The check reads the movement of each entry of the entity in the period. It then subtracts the movement of the linked entries. A void link does not count, because a void entry and its reversal cancel each other.

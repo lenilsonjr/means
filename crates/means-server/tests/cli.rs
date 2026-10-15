@@ -1501,3 +1501,35 @@ fn chart_new_sets_commodity_statutory_code_and_subtype_in_one_command() {
     // A group account takes no subtype.
     ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--subtype", "bank", "Assets:Current assets"]);
 }
+
+#[test]
+fn account_set_counterparty_turns_the_close_warning_into_a_related_party_balance() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let mut conn = db.conn();
+    let e = entities::create_entity(&mut conn, "Blue Harbor Pte. Ltd.", "company", "SG", "SGD").unwrap();
+    let bank = accounts::ensure_account(&conn, e.id, AccountType::Asset, &["Bank", "Operating"], "bank", "SGD").unwrap();
+    let due = accounts::ensure_account(&conn, e.id, AccountType::Liability, &["Amount due to related parties"], "payable", "SGD").unwrap();
+    accounts::update_account(&conn, due.id, accounts::AccountUpdate { intercompany: Some(true), ..Default::default() }).unwrap();
+    let mut input = EntryInput::new(e.id, date("2026-01-15"));
+    input.postings = vec![PostingInput::new(bank.id, d("250")), PostingInput::balancing(due.id)];
+    let entry = journal::create_entry(&mut conn, input).unwrap();
+    journal::mark_reviewed(&conn, &[entry.id]).unwrap();
+    conn.execute("INSERT INTO payees (uid, entity_id, name, kind) VALUES ('payee-shareholder', ?1, 'Sample Shareholder', 'person')", [e.id]).unwrap();
+    drop(conn);
+    let check = ["close", "check", "--entity", "Blue Harbor Pte. Ltd.", "--from", "2026-01-01", "--to", "2026-01-31", "--json"];
+    let codes = |out: &str| -> Vec<String> { json_of(out)["report"]["findings"].as_array().unwrap().iter().map(|f| f["code"].as_str().unwrap().to_string()).collect() };
+    assert_eq!(codes(&ledger.ok(&check)), ["intercompany_out_of_balance"]);
+
+    let set = json_of(&ledger.ok(&["account", "set", "Liabilities:Amount due to related parties", "--entity", "Blue Harbor Pte. Ltd.", "--counterparty", "Sample Shareholder", "--json"]));
+    assert_eq!((set["account"]["counterparty_uid"].as_str(), set["account"]["counterparty_name"].as_str()), (Some("payee-shareholder"), Some("Sample Shareholder")));
+    let report = json_of(&ledger.ok(&check));
+    assert_eq!(codes(&report.to_string()), ["related_party_balance"]);
+    assert_eq!(report["report"]["findings"][0]["severity"], "info");
+    assert_eq!(report["report"]["warning_count"], 0);
+
+    assert_eq!(refusal_code(&ledger.run(&["account", "set", "Liabilities:Amount due to related parties", "--entity", "Blue Harbor Pte. Ltd.", "--counterparty", "Nobody", "--json"])), "not_found");
+    let cleared = json_of(&ledger.ok(&["account", "set", "Liabilities:Amount due to related parties", "--entity", "Blue Harbor Pte. Ltd.", "--counterparty", "", "--json"]));
+    assert!(cleared["account"]["counterparty_uid"].is_null());
+    assert_eq!(codes(&ledger.ok(&check)), ["intercompany_out_of_balance"]);
+}

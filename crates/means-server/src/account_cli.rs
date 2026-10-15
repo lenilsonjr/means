@@ -1,4 +1,4 @@
-//! `means account`: the identifiers of one account.
+//! `means account`: the identifiers and the counterparty of one account.
 //!
 //! Each command prints one JSON object with `"schema_version": 1`. A failure prints
 //! `{"schema_version":1,"ok":false,"error":{"code":..,"message":..}}` and exits with code 1.
@@ -17,7 +17,7 @@ use crate::entity_cli::{emit, entity_ref, fields, find_entity, Output};
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Set the country, IBAN, BIC, institution, location and statutory code of an account
+    /// Set the country, IBAN, BIC, institution, location, statutory code and counterparty of an account
     Set(SetArgs),
 }
 
@@ -47,6 +47,9 @@ pub struct SetArgs {
     /// whitespace; an empty value clears it
     #[arg(long, value_name = "CODE")]
     pub statutory_code: Option<String>,
+    /// The party at the other side of the account: a payee id, uid or name of the entity; an empty value clears it
+    #[arg(long)]
+    pub counterparty: Option<String>,
     #[command(flatten)]
     pub output: Output,
 }
@@ -71,8 +74,9 @@ fn statutory_code(raw: &str) -> means_core::Result<String> {
     Ok(code.to_string())
 }
 
-pub fn account_json(a: &Account) -> Value {
-    json!({
+pub fn account_json(conn: &Connection, a: &Account) -> means_core::Result<Value> {
+    let counterparty = a.counterparty_payee_id.map(|id| means_core::payees::get(conn, id)).transpose()?;
+    Ok(json!({
         "id": a.id,
         "uid": a.uid,
         "path": a.path,
@@ -84,7 +88,9 @@ pub fn account_json(a: &Account) -> Value {
         "institution": a.institution,
         "location": a.location,
         "statutory_code": a.statutory_code,
-    })
+        "counterparty_uid": counterparty.as_ref().map(|p| p.uid.clone()),
+        "counterparty_name": counterparty.as_ref().map(|p| p.name.clone()),
+    }))
 }
 
 pub fn run(path: PathBuf, command: Command) -> Result<()> {
@@ -106,8 +112,28 @@ fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             if account.placeholder && statutory_code.as_deref().is_some_and(|c| !c.is_empty()) {
                 return Err(Error::Invalid(format!("{} is a group account; a statutory code needs a leaf account", account.path)).into());
             }
-            let upd = AccountUpdate { country: args.country, iban: args.iban, bic: args.bic, institution: args.institution, location: args.location, statutory_code, ..Default::default() };
-            let changed = upd.country.is_some() || upd.iban.is_some() || upd.bic.is_some() || upd.institution.is_some() || upd.location.is_some() || upd.statutory_code.is_some();
+            let counterparty = match args.counterparty.as_deref().map(str::trim) {
+                None => None,
+                Some("") => Some(None),
+                Some(key) => Some(Some(means_core::parties::find_payee(&conn, Some(entity.id), key)?.id)),
+            };
+            let upd = AccountUpdate {
+                country: args.country,
+                iban: args.iban,
+                bic: args.bic,
+                institution: args.institution,
+                location: args.location,
+                statutory_code,
+                counterparty_payee_id: counterparty,
+                ..Default::default()
+            };
+            let changed = upd.country.is_some()
+                || upd.iban.is_some()
+                || upd.bic.is_some()
+                || upd.institution.is_some()
+                || upd.location.is_some()
+                || upd.statutory_code.is_some()
+                || upd.counterparty_payee_id.is_some();
             let after = if changed {
                 // `update_account` records the account before and after in the audit log. The
                 // transaction keeps the change and its audit event together.
@@ -118,7 +144,7 @@ fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             } else {
                 account
             };
-            Ok(fields(json!({"entity": entity_ref(&entity), "account": account_json(&after)})))
+            Ok(fields(json!({"entity": entity_ref(&entity), "account": account_json(&conn, &after)?})))
         })(),
     )
 }

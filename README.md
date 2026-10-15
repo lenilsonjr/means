@@ -178,6 +178,7 @@ means entity unarchive "LLC (first attempt)" --actor "Sample Person" --reason "k
 means entity set LLC --address city=Springfield --flag us.contractor_payments=true --from 2026-01-01   # address and dated flags
 means account set Assets:Bank:Operating --entity LLC --country US --institution "Example Bank"   # account identifiers
 means account set Assets:Bank:Operating --entity LLC --statutory-code 572   # the code in a national chart; "" clears it
+means account set "Liabilities:Amount due to related parties" --entity LLC --counterparty "Sample Shareholder"   # a related party outside the group ("" clears it)
 means close questions --entity LLC --jurisdiction US --json      # year-end flags the ledger has, and the ones it lacks
 means doc add receipt.pdf --entity LLC --link-entry <entry uid> --role receipt   # store a hashed file as evidence
 means tax code add --entity LLC --code SR --kind output --rate-bp 900 --tax-account "Liabilities:GST output" --from 2026-01-01
