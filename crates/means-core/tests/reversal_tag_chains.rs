@@ -11,8 +11,9 @@ fn fixture() -> (Connection, i64, Vec<i64>) {
     c.execute_batch(include_str!("../migrations/0021_statutory_codes.sql")).unwrap();
     c.execute_batch(include_str!("../migrations/0022_tax_events.sql")).unwrap();
     c.execute_batch(include_str!("../migrations/0025_intervault_links.sql")).unwrap();
-    // The account reader also reads the account identifiers of migration 27.
+    // The account reader also reads the account identifiers of migration 27 and the counterparty of migration 30.
     c.execute_batch(include_str!("../migrations/0027_entity_flags.sql")).unwrap();
+    c.execute_batch(include_str!("../migrations/0030_account_counterparty.sql")).unwrap();
     let e = entities::create_entity(&mut c, "Personal", "person", "PT", "EUR").unwrap();
     let bank = accounts::ensure_account(&c, e.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
     let expense = accounts::ensure_account(&c, e.id, AccountType::Expense, &["Food"], "expense", "EUR").unwrap();

@@ -290,6 +290,7 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
                 "bic": a.bic,
                 "institution": a.institution,
                 "location": a.location,
+                "counterparty_uid": uid_of(&payee_uids, a.counterparty_payee_id),
                 "external_ids": a.external_ids,
             })
         })

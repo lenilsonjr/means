@@ -44,6 +44,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (27, Migration::Sql(include_str!("../migrations/0027_entity_flags.sql"))),
     (28, Migration::Rebuild(include_str!("../migrations/0028_entity_active_names.sql"))),
     (29, Migration::Sql(include_str!("../migrations/0029_archive_guards.sql"))),
+    (30, Migration::Sql(include_str!("../migrations/0030_account_counterparty.sql"))),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.

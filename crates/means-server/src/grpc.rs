@@ -721,6 +721,7 @@ impl Means for MeansService {
                         bic: None,
                         institution: None,
                         location: None,
+                        counterparty_payee_id: None,
                     },
                 )?;
                 account_with_balance(c, a.id)

@@ -143,14 +143,20 @@ fn migration_28_keeps_entities_and_their_references() {
     let raw = rusqlite::Connection::open_in_memory().unwrap();
     raw.execute_batch("PRAGMA foreign_keys = ON").unwrap();
     db::migrate_to(&raw, 27).unwrap();
-    let mut raw = raw;
-    let e = entities::create_entity(&mut raw, "Woodgrove Ltd", "company", "GB", "GBP").unwrap();
-    raw.execute("UPDATE entities SET legal_form = 'Private limited company', flags = '{\"gb.vat\":true}' WHERE id = ?1", [e.id]).unwrap();
-    let accounts_before: i64 = raw.query_row("SELECT COUNT(*) FROM accounts WHERE entity_id = ?1", [e.id], |r| r.get(0)).unwrap();
+    // The readers of today need later columns, so the seed uses SQL.
+    raw.execute_batch(
+        "INSERT INTO commodities (code, kind, name, precision) VALUES ('GBP', 'currency', 'Pound sterling', 2);
+         INSERT INTO entities (uid, name, kind, country, currency, created_at, updated_at, legal_form, flags)
+           VALUES ('e-1', 'Woodgrove Ltd', 'company', 'GB', 'GBP', 'now', 'now', 'Private limited company', '{\"gb.vat\":true}');
+         INSERT INTO accounts (uid, entity_id, name, type, commodity_id, created_at, updated_at)
+           VALUES ('a-1', 1, 'Bank', 'asset', 1, 'now', 'now'), ('a-2', 1, 'Fees', 'expense', 1, 'now', 'now');",
+    )
+    .unwrap();
+    let accounts_before: i64 = raw.query_row("SELECT COUNT(*) FROM accounts WHERE entity_id = ?1", [1], |r| r.get(0)).unwrap();
     db::migrate_to(&raw, db::schema_version()).unwrap();
-    let (name, legal_form, flags): (String, String, String) = raw.query_row("SELECT name, legal_form, flags FROM entities WHERE id = ?1", [e.id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+    let (name, legal_form, flags): (String, String, String) = raw.query_row("SELECT name, legal_form, flags FROM entities WHERE id = ?1", [1], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
     assert_eq!((name.as_str(), legal_form.as_str(), flags.as_str()), ("Woodgrove Ltd", "Private limited company", "{\"gb.vat\":true}"));
-    let accounts_after: i64 = raw.query_row("SELECT COUNT(*) FROM accounts WHERE entity_id = ?1", [e.id], |r| r.get(0)).unwrap();
+    let accounts_after: i64 = raw.query_row("SELECT COUNT(*) FROM accounts WHERE entity_id = ?1", [1], |r| r.get(0)).unwrap();
     assert_eq!(accounts_before, accounts_after);
     let broken: i64 = raw.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0)).unwrap();
     assert_eq!(broken, 0);
@@ -159,4 +165,9 @@ fn migration_28_keeps_entities_and_their_references() {
     // The child tables still reference the rebuilt table.
     let refs: String = raw.query_row("SELECT sql FROM sqlite_master WHERE name = 'accounts'", [], |r| r.get(0)).unwrap();
     assert!(refs.contains("REFERENCES entities(id)"), "{refs}");
+    // Two active entities cannot share a name. An archived entity can share it.
+    let twin = "INSERT INTO entities (uid, name, currency, created_at, updated_at) VALUES ('e-2', 'Woodgrove Ltd', 'GBP', 'now', 'now')";
+    assert!(raw.execute(twin, []).is_err());
+    raw.execute("UPDATE entities SET archived_at = 'now' WHERE id = 1", []).unwrap();
+    raw.execute(twin, []).unwrap();
 }

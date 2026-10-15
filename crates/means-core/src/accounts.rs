@@ -13,7 +13,7 @@ use crate::{new_uid, now_ts, Error, Result};
 
 const SELECT: &str = "SELECT a.id, a.uid, a.entity_id, a.parent_id, a.code, a.name, a.type, a.subtype, a.commodity_id, c.code, c.precision,
         a.system_role, a.placeholder, a.in_net_worth, a.credit_limit, a.statement_day, a.due_day, a.external_ids, a.notes, a.position, a.closed_at, a.class,
-        a.statutory_code, a.tax_treatment, a.intercompany, a.country, a.iban, a.bic, a.institution, a.location
+        a.statutory_code, a.tax_treatment, a.intercompany, a.country, a.iban, a.bic, a.institution, a.location, a.counterparty_payee_id
      FROM accounts a JOIN commodities c ON c.id = a.commodity_id";
 
 fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
@@ -53,6 +53,7 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
         bic: r.get(27)?,
         institution: r.get(28)?,
         location: r.get(29)?,
+        counterparty_payee_id: r.get(30)?,
         balance: Decimal::ZERO,
         balance_functional: Decimal::ZERO,
         postings_count: 0,
@@ -396,6 +397,8 @@ pub struct AccountUpdate {
     pub bic: Option<String>,
     pub institution: Option<String>,
     pub location: Option<String>,
+    /// A payee of the same entity. `Some(None)` clears the counterparty.
+    pub counterparty_payee_id: Option<Option<i64>>,
 }
 
 /// Check an IBAN: the country code, the check digits, the length and the mod-97 checksum.
@@ -526,6 +529,17 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
     if let Some(v) = upd.location {
         a.location = v.trim().to_string();
     }
+    if let Some(v) = upd.counterparty_payee_id {
+        if let Some(pid) = v {
+            let owner: Option<i64> = conn.query_row("SELECT entity_id FROM payees WHERE id = ?1", [pid], |r| r.get(0)).optional()?;
+            match owner {
+                None => return Err(Error::NotFound(format!("payee {pid}"))),
+                Some(e) if e != a.entity_id => return Err(Error::Invalid("the counterparty must be a payee of the entity of the account".into())),
+                Some(_) => {}
+            }
+        }
+        a.counterparty_payee_id = v;
+    }
     if let Some(v) = upd.placeholder {
         if v && before.postings_count_db(conn)? > 0 {
             return Err(Error::Invalid("an account with postings cannot become a placeholder".into()));
@@ -545,7 +559,8 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
     conn.execute(
         "UPDATE accounts SET parent_id = ?2, code = ?3, name = ?4, subtype = ?5, in_net_worth = ?6, credit_limit = ?7, statement_day = ?8,
             due_day = ?9, notes = ?10, position = ?11, external_ids = ?12, placeholder = ?13, commodity_id = ?14, updated_at = ?15, class = ?16,
-            statutory_code = ?17, tax_treatment = ?18, intercompany = ?19, country = ?20, iban = ?21, bic = ?22, institution = ?23, location = ?24 WHERE id = ?1",
+            statutory_code = ?17, tax_treatment = ?18, intercompany = ?19, country = ?20, iban = ?21, bic = ?22, institution = ?23, location = ?24,
+            counterparty_payee_id = ?25 WHERE id = ?1",
         params![
             id,
             a.parent_id,
@@ -570,7 +585,8 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
             a.iban,
             a.bic,
             a.institution,
-            a.location
+            a.location,
+            a.counterparty_payee_id
         ],
     )
     .map_err(|e| if crate::is_constraint_violation(&e) { Error::Conflict("an account with that name already exists under this parent".into()) } else { Error::from(e) })?;

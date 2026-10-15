@@ -146,6 +146,9 @@ pub struct Account {
     /// Free text for the place of the asset, for example a state, or ''.
     #[serde(default)]
     pub location: String,
+    /// The payee at the other side of the account, a payee of the same entity, or None.
+    #[serde(default)]
+    pub counterparty_payee_id: Option<i64>,
     // Derived when listing:
     pub balance: Decimal,
     pub balance_functional: Decimal,
