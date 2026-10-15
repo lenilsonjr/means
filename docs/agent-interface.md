@@ -22,7 +22,7 @@ The commands have three output styles:
 | Style | Commands | Success | Refusal |
 | --- | --- | --- | --- |
 | Compact | `entry`, `policy`, `rates set\|list\|import`, `close`, `filing`, `invoice`, `intervault`, `report` (except `expenses`) | One line of JSON with `--json`. Text without it. `entry draft`, `entry propose`, `entry confirm` and `entry void` always print JSON. | Always one line of JSON with an error object. |
-| Indented | `entity set\|classify\|facts`, `group`, `party`, `payee set`, `account set`, `tax` | Always JSON. Indented by default, one line with `--json`. | Always JSON with an error object. |
+| Indented | `entity set\|archive\|unarchive\|classify\|facts`, `group`, `party`, `payee set`, `account set`, `tax` | Always JSON. Indented by default, one line with `--json`. | Always JSON with an error object. |
 | Evidence | `doc`, `export --format snapshot`, `export verify` | JSON with `--json`, text without it. | The error object with `--json`. A text error on stderr without it. |
 
 A refusal exits with code 1. See [Errors](#errors). Command-line usage errors, such as a missing argument, come from the argument parser. They print text and exit with code 2.
@@ -37,7 +37,7 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 | --- | --- | --- |
 | `means entry list --entity <e> [--status draft\|unreviewed\|posted\|void] [--since D] [--until D] [--limit N \| --all] [--json]` | Nothing | Allowed |
 | `means entry show <uid> [--json]` | Nothing | Allowed |
-| `means entity list [--json]` | Nothing | Allowed |
+| `means entity list [--all] [--json]` | Nothing | Allowed |
 | `means entity facts <entity> [--as-of D] [--json]` | Nothing | Allowed |
 | `means group list [--json]` | Nothing | Allowed |
 | `means group show <group> [--as-of D] [--json]` | Nothing | Allowed |
@@ -48,7 +48,7 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 | `means status [--json]` | Nothing | Allowed |
 | `means verify` | Nothing | Allowed |
 
-`<e>` and `<entity>` take an entity id, name or uid. `D` is a date `YYYY-MM-DD`.
+`<e>` and `<entity>` take an entity id, name or uid. A name matches an active entity before an archived entity with the same name. `D` is a date `YYYY-MM-DD`.
 
 `entry list` returns at most 2000 entries. `--all` removes the limit: the engine reads every matching entry, page by page. The `unreviewed` status selects posted entries that no human has confirmed. The snapshot export is the complete read of the books. Use it for a full copy.
 
@@ -58,7 +58,7 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 
 `party missing` lists the payees of the entity that have entries (except void entries) or invoices, but no tax id under `--need`, for example `GST`, `VAT` or `EIN`. The key ignores case. It returns `entity`, `need` and `parties`. Each party has the fields of `party list` without the relationships, and `entry_count`, `invoice_count` and `last_date`.
 
-`accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany`, `country`, `iban`, `bic`, `institution`, `location` and `balance`. `entity list --json` returns an array. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`. `status` prints one JSON object, with or without `--json`. `entries --json` prints one JSON object per line and the count on stderr.
+`accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany`, `country`, `iban`, `bic`, `institution`, `location` and `balance`. `entity list --json` returns an array of the active entities. `--all` adds the archived entities, after the active ones. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`. `status` prints one JSON object, with or without `--json`. `entries --json` prints one JSON object per line and the count on stderr.
 
 ## Entity facts, groups and parties
 
@@ -66,7 +66,9 @@ These commands describe the books. They never change postings. See [entity facts
 
 | Command | Writes | `MEANS_AGENT=1` |
 | --- | --- | --- |
-| `means entity set <entity> [--legal-form T] [--fye MM-DD] [--incorporated-on D] [--registration KEY=VALUE]... [--address KEY=VALUE]... [--flag KEY=VALUE]... [--from D] [--json]` | Entity facts, the address, the flags and audit events | Allowed |
+| `means entity set <entity> [--name N] [--legal-form T] [--fye MM-DD] [--incorporated-on D] [--registration KEY=VALUE]... [--address KEY=VALUE]... [--flag KEY=VALUE]... [--from D] [--json]` | Entity facts, the address, the flags and audit events | Allowed |
+| `means entity archive <entity> --actor A --reason R [--json]` | The archive time and an audit event | Refused |
+| `means entity unarchive <entity> --actor A --reason R [--name N] [--json]` | The archive time, the name and an audit event | Refused |
 | `means entity classify <entity> --jurisdiction J --classification C --from D [--to D] [--note T] [--json]` | A classification and an audit event | Allowed |
 | `means group add <name> [--json]` | A group | Allowed |
 | `means group member add --group G --entity <e> [--parent <e>] [--ownership-bp N] [--no-control] [--from D] [--json]` | A membership | Allowed |
@@ -77,9 +79,11 @@ These commands describe the books. They never change postings. See [entity facts
 | `means party relate --payee P --entity <e> --kind K --from D [--ownership-bp N] [--basis T] [--json]` | A relationship | Allowed |
 | `means party unrelate --payee P --entity <e> --kind K --to D [--json]` | The end of a relationship | Allowed |
 
-`entity set` returns `entity` and `flag_history`. Its `flags` are the values of today. `entity classify` returns `entity` and `classification`. `group add` returns `group`. `group member add` and `close` return `group` and `member`. `payee set` and `party set` return `payee`. `account set` returns `entity` and `account`. The account has `id`, `uid`, `path`, `type`, `commodity`, `country`, `iban`, `bic`, `institution`, `location` and `statutory_code`. `party relate` and `unrelate` return `relationship`. `--to` is the day after the last day of the period.
+`entity set` returns `entity` and `flag_history`. Its `flags` are the values of today. `entity archive` and `entity unarchive` return `entity` (`uid`, `name`, `kind`, `currency`, `archived` and `archived_at`), `actor`, `reason` and `audit_event_id`. An archive of an archived entity, or an unarchive of an active entity, is refused with `invalid_input`. See [archived entities](data-model.md#archived-entities). `entity classify` returns `entity` and `classification`. `group add` returns `group`. `group member add` and `close` return `group` and `member`. `payee set` and `party set` return `payee`. `account set` returns `entity` and `account`. The account has `id`, `uid`, `path`, `type`, `commodity`, `country`, `iban`, `bic`, `institution`, `location` and `statutory_code`. `party relate` and `unrelate` return `relationship`. `--to` is the day after the last day of the period.
 
 `entity set` changes all its facts in one transaction. A refusal changes nothing.
+
+- `--name N` renames the entity. Another active entity cannot have the name, ignoring case. An archived entity can.
 
 - `--address KEY=VALUE` sets one part of the address. The keys are `street`, `street2`, `city`, `region`, `postal_code` and `country`. `country` is an ISO 3166-1 alpha-2 code. Another key is refused. An empty value removes the part.
 - `--flag KEY=VALUE` sets one flag. A key has lowercase letters, digits, `_`, `.` and `-`, for example `sg.gst_registered`. `true` and `false` become booleans. An integer becomes a number. Any other value stays a string. See the [flag key convention](data-model.md#entity-address-and-flags).
@@ -387,9 +391,9 @@ Each report object has `report`, `entity` (`uid`, `name` and `currency`), `funct
 
 | Command | Writes | `MEANS_AGENT=1` |
 | --- | --- | --- |
-| `means export --format snapshot --output DIR [--entity <e>]... [--as-of D] [--json]` | A new snapshot directory. The ledger does not change. | Allowed |
+| `means export --format snapshot --output DIR [--entity <e>]... [--include-archived] [--as-of D] [--json]` | A new snapshot directory. The ledger does not change. | Allowed |
 | `means export verify DIR [--json]` | Nothing | Allowed |
-| `means export [--format beancount] [--output FILE] [--entity <e>]... [--as-of D]` | A new Beancount file, or stdout | Allowed |
+| `means export [--format beancount] [--output FILE] [--entity <e>]... [--include-archived] [--as-of D]` | A new Beancount file, or stdout | Allowed |
 
 `export --format snapshot --json` returns `output` and `counts`. `export verify --json` returns `ok`, `files_checked` and `problems`. `export verify` exits with code 1 when a check fails. A failed snapshot export with `--json` prints the error object and exits with code 1. A failed export without `--json` prints a text error on stderr and exits with code 1. See the [snapshot format](snapshot-format.md) and [Beancount export](export.md).
 
@@ -449,6 +453,7 @@ Every command group uses the same codes: the compact commands, the indented comm
 | `settled` | The invoice has settlements, so it cannot be cancelled. |
 | `close_blocked` | The close check found errors. Resolve them, or lock with `--force`. |
 | `filed_period` | A submitted or accepted filing covers a day that the unlock reopens. Unlock with `--amend`. |
+| `entity_archived` | The entity is archived, so its books refuse every write. Run `means entity unarchive` first. The older text commands print the same code at the start of their error text. |
 | `invalid_path` | A file name is not safe for the document store, or the snapshot directory exists already. |
 | `hash_mismatch` | A stored file does not have the hash that the ledger records. |
 | `io_error` | A file could not be read or written. |
@@ -469,6 +474,7 @@ Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses each
 - `refund link`
 - `chart remap` without `--dry-run`, and `chart merge`
 - `entity migrate-currency --apply` (a preview is allowed)
+- `entity archive` and `entity unarchive`
 - `policy set`
 - `close lock` and `close unlock`
 - `invoice cancel`

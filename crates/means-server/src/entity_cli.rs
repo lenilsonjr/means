@@ -1,4 +1,5 @@
-//! Commands for entity facts, addresses, flags, tax classifications and entity groups.
+//! Commands for entity names, archive state, facts, addresses, flags, tax classifications and
+//! entity groups.
 //!
 //! Each command prints one JSON object with `"schema_version": 1`. A failure prints
 //! `{"schema_version":1,"ok":false,"error":{"code":..,"message":..}}` and exits with code 1.
@@ -27,6 +28,9 @@ pub struct Output {
 pub struct SetArgs {
     /// Entity id, uid or name
     pub entity: String,
+    /// New name; it must be unique among the active entities
+    #[arg(long)]
+    pub name: Option<String>,
     /// Legal form, for example "Private company limited by shares"
     #[arg(long)]
     pub legal_form: Option<String>,
@@ -48,6 +52,37 @@ pub struct SetArgs {
     /// First day of the flag values (YYYY-MM-DD); it applies to every --flag of the command; omit it for undated flags
     #[arg(long, requires = "flags")]
     pub from: Option<String>,
+    #[command(flatten)]
+    pub output: Output,
+}
+
+#[derive(Args)]
+pub struct ArchiveArgs {
+    /// Entity id, uid or name
+    pub entity: String,
+    /// The person who archives the entity
+    #[arg(long)]
+    pub actor: String,
+    /// Why the books stop, for example "rebuilt as a new entity"
+    #[arg(long)]
+    pub reason: String,
+    #[command(flatten)]
+    pub output: Output,
+}
+
+#[derive(Args)]
+pub struct UnarchiveArgs {
+    /// Entity id, uid or name
+    pub entity: String,
+    /// The person who unarchives the entity
+    #[arg(long)]
+    pub actor: String,
+    /// Why the books open again
+    #[arg(long)]
+    pub reason: String,
+    /// New name, when an active entity has the name of the archived entity
+    #[arg(long)]
+    pub name: Option<String>,
     #[command(flatten)]
     pub output: Output,
 }
@@ -296,6 +331,7 @@ pub fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             let db = Db::open(path)?;
             let mut conn = db.conn();
             let entity = find_entity(&conn, &args.entity)?;
+            entities::ensure_active(&conn, entity.id)?;
             let registrations = args.registrations.iter().map(|s| entities::parse_pair(s)).collect::<means_core::Result<Vec<_>>>()?;
             let address = args.address.iter().map(|s| entity_flags::parse_address_pair(s)).collect::<means_core::Result<Vec<_>>>()?;
             let from = args.from.as_deref().map(date).transpose()?;
@@ -303,6 +339,10 @@ pub fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             let patch = EntityFactsPatch { legal_form: args.legal_form, fiscal_year_end: args.fye, incorporated_on: args.incorporated_on, registrations };
             // One transaction: the command changes all the facts or none of them.
             let tx = conn.transaction_with_behavior(means_core::rusqlite::TransactionBehavior::Immediate)?;
+            let entity = match args.name.as_deref() {
+                Some(name) => entities::rename_in(&tx, entity.id, name)?,
+                None => entity,
+            };
             let facts = entities::set_facts_in(&tx, entity.id, patch)?;
             entity_flags::set_address_in(&tx, entity.id, &address)?;
             entity_flags::set_flags_in(&tx, entity.id, &flags)?;
@@ -310,6 +350,46 @@ pub fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             let history = entity_flags::flag_history(&tx, entity.id)?;
             tx.commit()?;
             Ok(fields(json!({"entity": entity_json(&entity, &facts, &extras), "flag_history": history.iter().map(flag_period_json).collect::<Vec<_>>()})))
+        })(),
+    )
+}
+
+fn archive_json(outcome: &entities::ArchiveOutcome, actor: &str, reason: &str) -> Value {
+    let e = &outcome.entity;
+    json!({
+        "entity": {"uid": e.uid, "name": e.name, "kind": e.kind, "currency": e.currency, "archived": e.archived_at.is_some(), "archived_at": e.archived_at},
+        "actor": actor.trim(),
+        "reason": reason.trim(),
+        "audit_event_id": outcome.audit_event_id,
+    })
+}
+
+/// Archive an entity: a human action, refused while `MEANS_AGENT=1`.
+pub fn archive(path: PathBuf, args: ArchiveArgs) -> Result<()> {
+    crate::entry_cli::guard("entity archive");
+    emit(
+        args.output,
+        (|| -> Result<Map<String, Value>> {
+            let db = Db::open(path)?;
+            let mut conn = db.conn();
+            let entity = find_entity(&conn, &args.entity)?;
+            let outcome = entities::archive(&mut conn, entity.id, &args.actor, &args.reason)?;
+            Ok(fields(archive_json(&outcome, &args.actor, &args.reason)))
+        })(),
+    )
+}
+
+/// Unarchive an entity: a human action, refused while `MEANS_AGENT=1`.
+pub fn unarchive(path: PathBuf, args: UnarchiveArgs) -> Result<()> {
+    crate::entry_cli::guard("entity unarchive");
+    emit(
+        args.output,
+        (|| -> Result<Map<String, Value>> {
+            let db = Db::open(path)?;
+            let mut conn = db.conn();
+            let entity = find_entity(&conn, &args.entity)?;
+            let outcome = entities::unarchive(&mut conn, entity.id, &args.actor, &args.reason, args.name.as_deref())?;
+            Ok(fields(archive_json(&outcome, &args.actor, &args.reason)))
         })(),
     )
 }

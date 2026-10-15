@@ -40,7 +40,7 @@ The manifest has no `evidence_policy` field. That field was planned, but it is n
 ## Rules
 
 - One read transaction gives every record, the counts and the totals. The export reads every row. It has no page limit.
-- The scope is every entity, or the entities of the repeated `--entity`. `--as-of DATE` limits entries, drafts, tax events, statement lines and documents to that date. The manifest records the date in `scope.as_of`. Archived entities and closed accounts are in the snapshot when their entity is in scope.
+- The scope is every active entity, or the entities of the repeated `--entity`. `--include-archived` adds the archived entities to a scope without `--entity`. When the ledger has an archived entity, the manifest lists the active entities in `scope.entity_uids`. `--as-of DATE` limits entries, drafts, tax events, statement lines and documents to that date. The manifest records the date in `scope.as_of`. An archived entity named with `--entity` is in the snapshot. Closed accounts are in the snapshot when their entity is in scope.
 - The export writes the files into `DIR.tmp-<uid>` and syncs each file. It writes the manifest last. Then it renames the directory to `DIR`. It refuses an existing `DIR`. A failure removes the temporary directory.
 - `control_totals` has, for each entity, the sum of the positive functional amounts (debits) and the sum of the negative functional amounts as a positive number (credits). It reads the booked entries in scope. `chain_heads` comes from the last chained entry of each entity.
 - `means export verify DIR` hashes every file again and checks the manifest, the counts and the control totals. See [Verify](#verify).

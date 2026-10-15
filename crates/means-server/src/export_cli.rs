@@ -20,11 +20,19 @@ pub enum Command {
     },
 }
 
-pub fn run(db_path: &Path, command: Option<Command>, format: &str, output: Option<PathBuf>, entity: &[String], as_of: Option<&str>, json: bool) -> Result<()> {
+/// The entities of an export.
+pub struct Scope<'a> {
+    /// Entity keys from `--entity`. Empty selects every active entity.
+    pub entity: &'a [String],
+    /// With an empty `entity`, also select the archived entities.
+    pub include_archived: bool,
+}
+
+pub fn run(db_path: &Path, command: Option<Command>, format: &str, output: Option<PathBuf>, scope: &Scope<'_>, as_of: Option<&str>, json: bool) -> Result<()> {
     if let Some(Command::Verify { dir, json }) = command {
         return verify(&dir, json);
     }
-    let outcome = export(db_path, format, output, entity, as_of, json);
+    let outcome = export(db_path, format, output, scope, as_of, json);
     match outcome {
         // A snapshot with --json prints the error object, like every other JSON command.
         Err(e) if json && format == "snapshot" => crate::entry_cli::fail(error_code(&e), &e.to_string()),
@@ -48,11 +56,22 @@ fn error_code(e: &anyhow::Error) -> &'static str {
     "invalid_input"
 }
 
-fn export(db_path: &Path, format: &str, output: Option<PathBuf>, entity: &[String], as_of: Option<&str>, json: bool) -> Result<()> {
+fn export(db_path: &Path, format: &str, output: Option<PathBuf>, scope: &Scope<'_>, as_of: Option<&str>, json: bool) -> Result<()> {
     let as_of = as_of.map(means_core::parse_date).transpose()?;
     let db = Db::open(db_path)?;
     let mut conn = db.conn();
-    let entity_uids = entity.iter().map(|key| crate::entity_cli::find_entity(&conn, key).map(|e| e.uid)).collect::<means_core::Result<Vec<_>>>()?;
+    let mut entity_uids = scope.entity.iter().map(|key| crate::entity_cli::find_entity(&conn, key).map(|e| e.uid)).collect::<means_core::Result<Vec<_>>>()?;
+    // Without --entity, the export has every active entity. An empty list means every entity,
+    // so name the active entities when an archived entity exists.
+    if entity_uids.is_empty() && !scope.include_archived {
+        let all = means_core::entities::list_entities(&conn, true)?;
+        if all.iter().any(|e| e.archived_at.is_some()) {
+            entity_uids = all.into_iter().filter(|e| e.archived_at.is_none()).map(|e| e.uid).collect();
+            if entity_uids.is_empty() {
+                bail!("every entity is archived; give --entity or --include-archived");
+            }
+        }
+    }
     match format {
         "snapshot" => {
             let Some(dir) = output else { bail!("a snapshot needs --output DIR") };

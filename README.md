@@ -147,7 +147,8 @@ means rates fetch --from 2021-01-01               # ECB reference rates, then re
 means rates set --date 2026-03-02 --base EUR --quote USD --rate 1.0850 --json   # 1 EUR = 1.0850 USD; offline
 means rates import rates.csv                      # columns date,base,quote,rate; all rows or none
 means rates list --base EUR --quote USD --from 2026-03-01 --to 2026-03-31 --json
-means entity list --json                          # id, uid, name, kind, country, currency, fiscal_year_end, lock_date
+means entity list --json                          # id, uid, name, kind, country, currency, fiscal_year_end, lock_date, archived
+means entity list --all                           # also the archived entities
 means accounts --entity 1
 means accounts --entity 1 --json                  # each account with its id (for import --account) and uid
 means reconcile --account 12                      # statement versus ledger, unmatched lines and unreconciled postings
@@ -170,6 +171,9 @@ means chart apply --entity "Personal" charts/personal-nomad.json          # crea
 means chart remap --dry-run charts/remap/example.json            # preview a remap plan; drop --dry-run to apply it atomically
 means chart new --entity LLC "Assets:Bank:Example Bank EUR" --currency EUR  # the root name sets the kind; --currency sets the account commodity
 means entity set LLC --fye 12-31 --registration EIN=00-0000000   # legal facts; entity classify, group and party record the rest
+means entity set "LLC (rebuilt)" --name LLC                        # rename; the name is unique among the active entities
+means entity archive "LLC (first attempt)" --actor "Sample Person" --reason "rebuilt as a new entity"   # hide the books and refuse writes
+means entity unarchive "LLC (first attempt)" --actor "Sample Person" --reason "keep both books" [--name N]   # reverse an archive
 means entity set LLC --address city=Springfield --flag us.contractor_payments=true --from 2026-01-01   # address and dated flags
 means account set Assets:Bank:Operating --entity LLC --country US --institution "Example Bank"   # account identifiers
 means account set Assets:Bank:Operating --entity LLC --statutory-code 572   # the code in a national chart; "" clears it
@@ -182,7 +186,7 @@ means invoice list --entity LLC --open --json
 means intervault exceptions --entity LLC --from 2026-01-01 --to 2026-03-31 --json   # intercompany postings without a link
 means entry draft --entity LLC --json-file draft.json            # an agent drafts; a human confirms with means entry confirm
 means close check --entity LLC --from 2026-01-01 --to 2026-03-31
-means export --format snapshot --output books-2026-q1 --as-of 2026-03-31 --json
+means export --format snapshot --output books-2026-q1 --as-of 2026-03-31 --json   # active entities; --include-archived adds the archived ones
 means export verify books-2026-q1
 ```
 

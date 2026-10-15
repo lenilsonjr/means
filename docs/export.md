@@ -1,6 +1,6 @@
 # Beancount export
 
-Export every entity in one read transaction:
+Export every active entity in one read transaction:
 
 ```sh
 means export --format beancount --output books.beancount
@@ -12,7 +12,7 @@ Omit `--output` to write to stdout. An output path must be new; means refuses to
 
 The export uses **book values**: every posting contains its stored amount in the entity’s functional currency. Each entity’s trial balance therefore matches means. Foreign quantities and currencies remain available as `means-quantity` and `means-commodity` posting metadata. Use native quantities as metadata when inspecting foreign movements.
 
-Posted entries, voided originals, and their reversals are included. Drafts are excluded. Archived entities and closed accounts remain included, and the export has no journal UI row limit. It reads stored book values in one read transaction and writes nothing to the ledger.
+Posted entries, voided originals, and their reversals are included. Drafts are excluded. Closed accounts remain included, and the export has no journal UI row limit. Archived entities are excluded by default. `--include-archived` includes them, and `--entity` includes an archived entity by name. It reads stored book values in one read transaction and writes nothing to the ledger.
 
 Accounts are grouped by type and entity, with numeric entity/account IDs in their names to prevent collisions. Original entity names and full account paths are retained in metadata. Names are sanitized for Beancount; unsupported currency identifiers (and the reserved `MEANSX` prefix) use an unambiguous hexadecimal escape, with the original code in commodity metadata. Entry IDs, UIDs, status, reversal links, notes, tags, and posting IDs/memos are retained as metadata. Keep a separate ledger backup alongside this report.
 
@@ -23,7 +23,7 @@ Accounts are grouped by type and entity, with numeric entity/account IDs in thei
 A snapshot gives external tools the complete books in one directory:
 
 ```sh
-means export --format snapshot --output DIR [--entity E]... [--as-of YYYY-MM-DD]
+means export --format snapshot --output DIR [--entity E]... [--include-archived] [--as-of YYYY-MM-DD]
 means export verify DIR --json
 ```
 

@@ -8,6 +8,19 @@ The sections follow the schema: entities and their facts, accounts, the journal,
 
 A vault is one entity’s set of books. The `entities` table holds each entity with its kind (`person` or `company`), country, functional currency and lock date. Personal and company vaults report their own balances. Overview shows the selected vault; consolidated reports are an explicit reporting choice.
 
+An entity name is unique among the active entities. `means entity set <e> --name N` renames an entity, and the audit log records the names before and after.
+
+### Archived entities
+
+`entities.archived_at` marks an archived entity. Use an archive for a set of books that a new entity replaces, for example after a first attempt that went wrong. `means entity archive <e> --actor A --reason R` sets the time. `means entity unarchive <e> --actor A --reason R [--name N]` clears it. Each one writes an audit event with the actor and the reason. Both are human actions: an agent session cannot run them.
+
+An archived entity:
+
+- Is absent from `means entity list` (`--all` shows it), from the TUI pickers and from `means export`. `--include-archived` or `--entity` puts it back in an export.
+- Keeps its books readable. Reports, `entry show`, `accounts` and `means verify` read it, and `verify` checks its hash chain.
+- Refuses every write with the error code `entity_archived`. Triggers in the schema (migration 29) refuse an insert, an update or a delete of a row of the entity: the entity row, accounts, entries, postings, payees, statement lines, imports, documents, tax records, invoices, filings, inter-vault links, rules, templates, budgets, relationships, classifications, flags and group memberships. The guard applies to every route: the CLI, gRPC and the TUI. `means rates` does not revalue its postings.
+- Keeps its name. A new active entity can take the same name. To unarchive an entity whose name an active entity has, give `--name`.
+
 Historical changes to a vault’s functional currency use the [currency migration workflow](currency-migration.md). It preserves native account quantities and requires a reviewed preview and backup.
 
 ## Entity facts, groups and parties

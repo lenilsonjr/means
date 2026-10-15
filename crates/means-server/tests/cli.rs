@@ -1350,3 +1350,111 @@ fn chart_new_currency_sets_the_leaf_commodity_and_keeps_parents_in_the_entity_cu
     assert!(refused.contains("SGD") && refused.contains("EUR"), "{refused}");
     ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--currency", "not a code", "Assets:Other"]);
 }
+
+/// One JSON object from stdout.
+fn json_of(text: &str) -> serde_json::Value {
+    serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+}
+
+/// The error code of a JSON refusal on stdout, after an orderly exit 1.
+fn refusal_code(out: &std::process::Output) -> String {
+    assert_eq!(out.status.code(), Some(1), "expected a refusal: {}", String::from_utf8_lossy(&out.stdout));
+    let value = json_of(&String::from_utf8_lossy(&out.stdout));
+    assert_eq!(value["ok"], false);
+    value["error"]["code"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn entity_set_name_renames_within_the_active_entities() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let first = entities::create_entity(&mut db.conn(), "Contoso Studio", "company", "PT", "EUR").unwrap();
+    entities::create_entity(&mut db.conn(), "Contoso Studio v2", "company", "PT", "EUR").unwrap();
+    assert_eq!(refusal_code(&ledger.run(&["entity", "set", "Contoso Studio v2", "--name", "contoso studio", "--json"])), "invalid_input");
+    let renamed = json_of(&ledger.ok(&["entity", "set", "Contoso Studio", "--name", "Contoso Studio (first books)", "--json"]));
+    assert_eq!(renamed["entity"]["name"], "Contoso Studio (first books)");
+    assert_eq!(renamed["entity"]["uid"], first.uid.as_str());
+    let renamed = json_of(&ledger.ok(&["entity", "set", "Contoso Studio v2", "--name", "Contoso Studio", "--legal-form", "Sociedade por quotas", "--json"]));
+    assert_eq!((renamed["entity"]["name"].as_str(), renamed["entity"]["legal_form"].as_str()), (Some("Contoso Studio"), Some("Sociedade por quotas")));
+}
+
+#[test]
+fn entity_archive_hides_the_books_refuses_writes_and_unarchive_reverses_it() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let mut conn = db.conn();
+    let old = entities::create_entity(&mut conn, "Northwind Trading LLC", "company", "US", "USD").unwrap();
+    let bank = accounts::ensure_account(&conn, old.id, AccountType::Asset, &["Bank", "Operating"], "bank", "USD").unwrap();
+    let fees = accounts::ensure_account(&conn, old.id, AccountType::Expense, &["Bank fees"], "expense", "USD").unwrap();
+    let mut input = EntryInput::new(old.id, date("2026-01-10"));
+    input.postings = vec![PostingInput::new(bank.id, d("-5")), PostingInput::balancing(fees.id)];
+    journal::create_entry(&mut conn, input).unwrap();
+    entities::create_entity(&mut conn, "Northwind Trading LLC (rebuilt)", "company", "US", "USD").unwrap();
+    drop(conn);
+
+    // An archive is a human action.
+    let agent = Command::new(env!("CARGO_BIN_EXE_means"))
+        .arg("--db")
+        .arg(&ledger.path)
+        .args(["entity", "archive", "Northwind Trading LLC", "--actor", "Agent", "--reason", "test", "--json"])
+        .env("MEANS_AGENT", "1")
+        .output()
+        .unwrap();
+    assert_eq!(refusal_code(&agent), "agent_not_allowed");
+    let archived = json_of(&ledger.ok(&["entity", "archive", "Northwind Trading LLC", "--actor", "Test User", "--reason", "rebuilt as a new entity", "--json"]));
+    assert_eq!((archived["entity"]["archived"].as_bool(), archived["actor"].as_str()), (Some(true), Some("Test User")));
+    assert!(archived["audit_event_id"].is_i64());
+
+    // It leaves the list, unless --all.
+    let listed: serde_json::Value = serde_json::from_str(&ledger.ok(&["entity", "list", "--json"])).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["name"], "Northwind Trading LLC (rebuilt)");
+    let all: serde_json::Value = serde_json::from_str(&ledger.ok(&["entity", "list", "--all", "--json"])).unwrap();
+    assert_eq!(all.as_array().unwrap().len(), 2);
+    assert_eq!(all[1]["archived"], true);
+    assert_eq!(ledger.ok(&["entity", "list"]).lines().count(), 1);
+    assert!(ledger.ok(&["entity", "list", "--all"]).contains("(archived)"));
+
+    // Its books stay readable and verifiable.
+    let verified = ledger.ok(&["verify"]);
+    assert!(verified.contains("Northwind Trading LLC (archived): 1 entries verified"), "{verified}");
+    let accounts_json: serde_json::Value = serde_json::from_str(&ledger.ok(&["accounts", "--entity", &old.id.to_string(), "--json"])).unwrap();
+    assert!(accounts_json.as_array().unwrap().iter().any(|a| a["path"] == "Assets:Bank:Operating" && a["balance"] == "-5.00"));
+
+    // Every write is refused with entity_archived.
+    assert_eq!(refusal_code(&ledger.run(&["entity", "set", "Northwind Trading LLC", "--legal-form", "LLC", "--json"])), "entity_archived");
+    assert_eq!(refusal_code(&ledger.run(&["account", "set", "Assets:Bank:Operating", "--entity", "Northwind Trading LLC", "--institution", "Example Bank", "--json"])), "entity_archived");
+    let draft = std::env::temp_dir().join(format!("means-archive-draft-{}.json", std::process::id()));
+    std::fs::write(&draft, r#"{"date":"2026-02-01","postings":[{"account":"Bank:Operating","quantity":"-1"},{"account":"Expenses:Bank fees"}]}"#).unwrap();
+    let drafted = ledger.run(&["entry", "draft", "--entity", "Northwind Trading LLC", "--json-file", draft.to_str().unwrap()]);
+    let _ = std::fs::remove_file(&draft);
+    assert_eq!(refusal_code(&drafted), "entity_archived");
+    let said = ledger.refused(&["chart", "new", "--entity", "Northwind Trading LLC", "Assets:Bank:Second"]);
+    assert!(said.contains("entity_archived"), "{said}");
+
+    // The export leaves it out by default.
+    let out = std::env::temp_dir().join(format!("means-archive-snapshot-{}-{}", std::process::id(), LEDGERS.fetch_add(1, Ordering::SeqCst)));
+    ledger.ok(&["export", "--format", "snapshot", "--output", out.to_str().unwrap(), "--json"]);
+    let names: Vec<String> = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(out.join("entities.json")).unwrap())
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["Northwind Trading LLC (rebuilt)"]);
+    let _ = std::fs::remove_dir_all(&out);
+    ledger.ok(&["export", "--format", "snapshot", "--include-archived", "--output", out.to_str().unwrap(), "--json"]);
+    let entities_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out.join("entities.json")).unwrap()).unwrap();
+    assert_eq!(entities_json.as_array().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&out);
+    let beancount = ledger.ok(&["export"]);
+    assert!(!beancount.contains("Northwind Trading LLC\""), "the default Beancount export leaves the archived entity out");
+
+    // An unarchive reverses it.
+    let back = json_of(&ledger.ok(&["entity", "unarchive", "Northwind Trading LLC", "--actor", "Test User", "--reason", "keep both books", "--json"]));
+    assert_eq!(back["entity"]["archived"], false);
+    ledger.ok(&["account", "set", "Assets:Bank:Operating", "--entity", "Northwind Trading LLC", "--institution", "Example Bank", "--json"]);
+    let listed: serde_json::Value = serde_json::from_str(&ledger.ok(&["entity", "list", "--json"])).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+}

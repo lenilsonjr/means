@@ -110,9 +110,12 @@ enum Command {
         /// Write to a new file (beancount) or a new directory (snapshot); refuses to overwrite
         #[arg(long)]
         output: Option<PathBuf>,
-        /// Export only this entity (name, id or uid); repeat for more (default: all)
+        /// Export only this entity (name, id or uid); repeat for more (default: every active entity)
         #[arg(long)]
         entity: Vec<String>,
+        /// Also export the archived entities when no --entity is given
+        #[arg(long)]
+        include_archived: bool,
         /// Export only the entries dated on or before this day (YYYY-MM-DD)
         #[arg(long)]
         as_of: Option<String>,
@@ -403,14 +406,21 @@ enum EntityCommand {
         #[arg(long, default_value = "")]
         country: String,
     },
-    /// List entities
+    /// List the active entities; --all adds the archived entities
     List {
-        /// Emit a JSON array: id, uid, name, kind, country, currency, fiscal year end and lock date of each entity
+        /// Emit a JSON array: id, uid, name, kind, country, currency, fiscal year end, lock date and archive state of each entity
         #[arg(long)]
         json: bool,
+        /// Also list the archived entities
+        #[arg(long)]
+        all: bool,
     },
-    /// Set the legal form, fiscal year end, incorporation date, registrations, address and flags
+    /// Set the name, legal form, fiscal year end, incorporation date, registrations, address and flags
     Set(entity_cli::SetArgs),
+    /// Archive an entity: it leaves the lists, the pickers and the default export, and its books become read-only
+    Archive(entity_cli::ArchiveArgs),
+    /// Make an archived entity active again
+    Unarchive(entity_cli::UnarchiveArgs),
     /// Record a tax classification in a jurisdiction from a date
     Classify(entity_cli::ClassifyArgs),
     /// Show all facts, the address, the flags, classifications and group membership on a date
@@ -1133,7 +1143,9 @@ async fn main() -> Result<()> {
     }
     match cli.command.unwrap_or(Command::Serve { listen: "127.0.0.1:7770".parse().unwrap(), inbox: None }) {
         Command::Share(args) => sharing::run(db_path, args).await,
-        Command::Export { command, format, output, entity, as_of, json } => export_cli::run(&db_path, command, &format, output, &entity, as_of.as_deref(), json),
+        Command::Export { command, format, output, entity, include_archived, as_of, json } => {
+            export_cli::run(&db_path, command, &format, output, &export_cli::Scope { entity: &entity, include_archived }, as_of.as_deref(), json)
+        }
         Command::Serve { listen, inbox } => serve(db_path, listen, inbox).await,
         Command::Tui { server } => means_tui::run(&server).await,
         Command::Import { source, account, entity, map, date_format, decimal_comma, file, command } => match command {
@@ -1307,12 +1319,12 @@ async fn main() -> Result<()> {
             println!("entity #{} {} ({}, {})", e.id, e.name, e.kind, e.currency);
             Ok(())
         }
-        Command::Entity { command: EntityCommand::List { json } } => {
+        Command::Entity { command: EntityCommand::List { json, all } } => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
             if json {
                 let mut rows = Vec::new();
-                for e in means_core::entities::list_entities(&conn, true)? {
+                for e in means_core::entities::list_entities(&conn, all)? {
                     let facts = means_core::entities::get_facts(&conn, e.id)?;
                     rows.push(serde_json::json!({
                         "id": e.id,
@@ -1329,12 +1341,14 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
                 return Ok(());
             }
-            for e in means_core::entities::list_entities(&conn, true)? {
+            for e in means_core::entities::list_entities(&conn, all)? {
                 println!("#{:<3} {:<24} {:<8} {}{}", e.id, e.name, e.kind, e.currency, if e.archived_at.is_some() { " (archived)" } else { "" });
             }
             Ok(())
         }
         Command::Entity { command: EntityCommand::Set(args) } => entity_cli::set(db_path, args),
+        Command::Entity { command: EntityCommand::Archive(args) } => entity_cli::archive(db_path, args),
+        Command::Entity { command: EntityCommand::Unarchive(args) } => entity_cli::unarchive(db_path, args),
         Command::Entity { command: EntityCommand::Classify(args) } => entity_cli::classify(db_path, args),
         Command::Entity { command: EntityCommand::Facts(args) } => entity_cli::facts(db_path, args),
         Command::Group { command } => entity_cli::group(db_path, command),
@@ -1384,11 +1398,13 @@ async fn main() -> Result<()> {
         Command::Verify => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
+            // Archived entities stay in the check: their books stay verifiable.
             for e in means_core::entities::list_entities(&conn, true)? {
                 let r = means_core::hashchain::verify(&conn, e.id)?;
+                let name = if e.archived_at.is_some() { format!("{} (archived)", e.name) } else { e.name.clone() };
                 match r.first_bad_seq {
-                    None => println!("{}: {} entries verified, head {}", e.name, r.checked, r.head.unwrap_or_default()),
-                    Some(seq) => println!("{}: chain BROKEN at seq {seq} (entry #{})", e.name, r.first_bad_entry_id.unwrap_or(0)),
+                    None => println!("{name}: {} entries verified, head {}", r.checked, r.head.unwrap_or_default()),
+                    Some(seq) => println!("{name}: chain BROKEN at seq {seq} (entry #{})", r.first_bad_entry_id.unwrap_or(0)),
                 }
             }
             Ok(())
