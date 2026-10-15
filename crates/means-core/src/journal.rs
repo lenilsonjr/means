@@ -717,8 +717,9 @@ pub(crate) fn post_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i6
 }
 
 /// Void by reversal: a new posted entry with every posting negated, dated `date`.
+/// The void is refused while the entry has an inter-vault link that is not void.
 pub fn void_entry(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str) -> Result<JournalEntry> {
-    Ok(review_void(conn, id, date, reason, true)?.entry)
+    Ok(review_void(conn, id, date, reason, true, false)?.entry)
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -728,12 +729,34 @@ pub struct VoidReview {
     pub evidence_lines: i64,
     pub applied: bool,
     pub already_void: bool,
+    /// True when the caller asked to void the linked entries too.
+    pub cascade: bool,
+    /// The entries of other entities that the void reaches through inter-vault links.
+    pub linked_entries: Vec<crate::intervault::LinkedEntry>,
+    /// True when the entry has linked entries and the caller did not ask for cascade.
+    /// The apply is then refused.
+    pub needs_cascade: bool,
+}
+
+/// What a void does with the inter-vault links of the entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkMode {
+    /// Refuse the void while the entry has a link that is not void.
+    Refuse,
+    /// Void the posted linked entries too, and mark the links void.
+    Cascade,
+    /// Reverse this entry only and leave the links. Only a preview that rolls back uses it.
+    PreviewLeg,
 }
 
 /// Compute the full reversal inside one transaction. Preview rolls it back.
 /// A preview returns the stored entry and `applied: false`.
 /// Drafts are never deleted by a void request.
-pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str, apply: bool) -> Result<VoidReview> {
+///
+/// An entry with inter-vault links that are not void needs `cascade` to apply: the engine then
+/// voids the posted linked entries in the same transaction. Without `cascade`, the apply is
+/// refused and the preview lists the linked entries and reverses this entry only.
+pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str, apply: bool, cascade: bool) -> Result<VoidReview> {
     let tx = conn.transaction()?;
     let before = get_entry(&tx, id)?;
     if before.status == EntryStatus::Draft {
@@ -742,23 +765,43 @@ pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reas
     if before.status == EntryStatus::Void {
         let reversal_id = before.reversed_by_id.ok_or_else(|| Error::Invalid(format!("void entry #{id} has no reversal")))?;
         let reversal = get_entry(&tx, reversal_id)?;
-        return Ok(VoidReview { entry: before, reversal, evidence_lines: 0, applied: false, already_void: true });
+        return Ok(VoidReview { entry: before, reversal, evidence_lines: 0, applied: false, already_void: true, cascade, linked_entries: Vec::new(), needs_cascade: false });
     }
     let evidence_lines = tx.query_row("SELECT COUNT(*) FROM statement_lines WHERE journal_entry_id=?1", [id], |r| r.get(0))?;
-    let entry = void_entry_in_transaction(&tx, id, date, reason)?;
+    let mut linked_entries = crate::intervault::linked_entries(&tx, id, date)?;
+    let needs_cascade = !cascade && !linked_entries.is_empty();
+    let mode = match (cascade, apply) {
+        (true, _) => LinkMode::Cascade,
+        (false, true) => LinkMode::Refuse,
+        (false, false) => LinkMode::PreviewLeg,
+    };
+    let entry = void_in_transaction(&tx, id, date, reason, mode, None)?;
     let reversal = get_entry(&tx, entry.reversed_by_id.ok_or_else(|| Error::Invalid("void did not create a reversal".into()))?)?;
     if apply {
+        for linked in &mut linked_entries {
+            linked.voided = get_entry(&tx, linked.entry_id)?.status == EntryStatus::Void;
+        }
         tx.commit()?;
-        return Ok(VoidReview { entry, reversal, evidence_lines, applied: true, already_void: false });
+        return Ok(VoidReview { entry, reversal, evidence_lines, applied: true, already_void: false, cascade, linked_entries, needs_cascade });
     }
     tx.rollback()?;
     // A preview saves nothing. It returns the stored entry with its real status, not the
-    // entry as the void would leave it.
-    Ok(VoidReview { entry: before, reversal, evidence_lines, applied: false, already_void: false })
+    // entry as the void would leave it. It still lists the linked entries.
+    Ok(VoidReview { entry: before, reversal, evidence_lines, applied: false, already_void: false, cascade, linked_entries, needs_cascade })
 }
 
 /// Void a posted entry within a larger atomic operation (such as cross-source reconciliation).
+/// The void is refused while the entry has an inter-vault link that is not void.
 pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<NaiveDate>, reason: &str) -> Result<JournalEntry> {
+    void_in_transaction(tx, id, date, reason, LinkMode::Refuse, None)
+}
+
+/// Void a posted entry that a cascade reaches from the entry `from_uid`.
+pub(crate) fn void_cascaded(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<NaiveDate>, reason: &str, from_uid: &str) -> Result<JournalEntry> {
+    void_in_transaction(tx, id, date, reason, LinkMode::Cascade, Some(from_uid))
+}
+
+fn void_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<NaiveDate>, reason: &str, mode: LinkMode, cascaded_from: Option<&str>) -> Result<JournalEntry> {
     let entry = get_entry(tx, id)?;
     if entry.status != EntryStatus::Posted {
         return Err(Error::Conflict(format!("entry #{id} is not posted")));
@@ -767,6 +810,13 @@ pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64,
     let requested_date = date;
     let date = date.unwrap_or(entry.date);
     check_lock(&entity, date)?;
+    let linked = match mode {
+        LinkMode::PreviewLeg => Vec::new(),
+        LinkMode::Refuse | LinkMode::Cascade => crate::intervault::linked_entries(tx, id, requested_date)?,
+    };
+    if mode == LinkMode::Refuse && !linked.is_empty() {
+        return Err(Error::Conflict(crate::intervault::refusal(&entry, &linked)));
+    }
     let mut input = EntryInput::new(entry.entity_id, date);
     input.payee = entry.payee.clone();
     input.description = if reason.trim().is_empty() { format!("Reversal of #{}", entry.id) } else { format!("Reversal of #{}: {}", entry.id, reason.trim()) };
@@ -792,9 +842,19 @@ pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64,
     tx.execute("UPDATE journal_entries SET status = 'void', updated_at = ?2 WHERE id = ?1", params![id, now_ts()])?;
     // Statement lines that evidenced the voided entry go back to the queue.
     tx.execute("UPDATE statement_lines SET status = 'unmatched', posting_id = NULL, journal_entry_id = NULL, note = 'entry voided' WHERE journal_entry_id = ?1", [id])?;
-    crate::audit::log(tx, "journal_entries", id, "void", None, Some(serde_json::json!({"reversal": reversal.id, "reason": reason})))?;
-    // A void of one linked entry voids the other entry of the pair in this transaction.
-    crate::intervault::on_void(tx, id, requested_date, reason)?;
+    let mut event = serde_json::json!({"reversal": reversal.id, "reason": reason});
+    if mode == LinkMode::Cascade && !linked.is_empty() {
+        event["cascade"] = serde_json::json!(true);
+        event["linked_entry_uids"] = serde_json::json!(linked.iter().map(|l| l.entry_uid.as_str()).collect::<Vec<_>>());
+    }
+    if let Some(from) = cascaded_from {
+        event["cascaded_from"] = serde_json::json!(from);
+    }
+    crate::audit::log(tx, "journal_entries", id, "void", None, Some(event))?;
+    // A cascade voids the other posted entries of the link group in this transaction.
+    if mode == LinkMode::Cascade {
+        crate::intervault::on_void_cascade(tx, id, &entry.uid, requested_date, reason)?;
+    }
     get_entry(tx, id)
 }
 

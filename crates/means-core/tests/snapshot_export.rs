@@ -107,7 +107,7 @@ fn fixture(name: &str) -> Fixture {
     let sale = journal::create_entry(&mut c, sale).unwrap();
 
     let voided = simple(&mut c, child, "2026-01-30", "Sample Cloud", cbank, software, "49.00", EntryStatus::Posted);
-    let reversal = journal::review_void(&mut c, voided.id, Some(day("2026-02-02")), "duplicate charge", true).unwrap().reversal;
+    let reversal = journal::review_void(&mut c, voided.id, Some(day("2026-02-02")), "duplicate charge", true, false).unwrap().reversal;
     let draft = simple(&mut c, child, "2026-01-20", "Sample Cloud", cbank, software, "12.00", EntryStatus::Draft);
     let to_confirm = simple(&mut c, child, "2026-01-21", "Sample Cloud", cbank, software, "15.00", EntryStatus::Draft);
     let digest = proposal::propose(&c, to_confirm.id).unwrap().proposal_digest;

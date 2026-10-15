@@ -50,6 +50,12 @@ pub enum Command {
         /// Reversal date, YYYY-MM-DD (default: the original date)
         #[arg(long)]
         date: Option<String>,
+        /// Also void the linked entries of other entities (inter-vault links)
+        #[arg(long)]
+        cascade: bool,
+        /// Preview the void and the linked entries; save nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// List the entries of one entity, newest first
     List {
@@ -144,7 +150,7 @@ fn execute(db_path: &Path, command: Command) -> AgentResult<Output> {
         Command::Draft { entity, json_file, stdin } => draft(db_path, &entity, json_file.as_deref(), stdin),
         Command::Propose { uid } => propose(db_path, &uid),
         Command::Confirm { uid, digest, actor } => confirm(db_path, &uid, &digest, actor),
-        Command::Void { uid, reason, date } => void(db_path, &uid, &reason, date.as_deref()),
+        Command::Void { uid, reason, date, cascade, dry_run } => void(db_path, &uid, &reason, date.as_deref(), cascade, dry_run),
         Command::List { entity, status, since, until, limit, all, json } => list(db_path, &entity, status.as_deref(), since.as_deref(), until.as_deref(), (!all).then_some(limit), json),
         Command::Show { uid, json } => show(db_path, &uid, json),
     }
@@ -275,8 +281,11 @@ fn confirm(db_path: &Path, uid: &str, digest: &str, actor: Option<String>) -> Ag
     })))
 }
 
-fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>) -> AgentResult<Output> {
-    refuse_agent("entry void")?;
+/// A void writes a reversal. `--dry-run` previews it and saves nothing, so an agent can run it.
+fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>, cascade: bool, dry_run: bool) -> AgentResult<Output> {
+    if !dry_run {
+        refuse_agent("entry void")?;
+    }
     if reason.trim().is_empty() {
         return Err(AgentError::new("invalid_input", "give a reason for the void"));
     }
@@ -284,11 +293,20 @@ fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>) -> AgentRes
     let db = open(db_path)?;
     let mut conn = db.conn();
     let id = proposal::entry_id_by_uid(&conn, uid)?;
-    let review = journal::review_void(&mut conn, id, date, reason, true)?;
+    let review = journal::review_void(&mut conn, id, date, reason, !dry_run, cascade)?;
+    // A preview rolls back: the entry keeps its status, and the reversal does not exist.
+    let saved = review.applied || review.already_void;
+    let entry = if saved { review.entry.clone() } else { journal::get_entry(&conn, id)? };
+    let reversal = if saved { entry_ref(&conn, &review.reversal)? } else { json!({"uid": null, "status": "posted", "date": review.reversal.date.to_string()}) };
+    let linked = review.linked_entries.iter().map(|l| serde_json::to_value(l).map_err(|e| AgentError::from(means_core::Error::from(e)))).collect::<AgentResult<Vec<_>>>()?;
     Ok(Output::Json(json!({
-        "entry": entry_ref(&conn, &review.entry)?,
-        "reversal": entry_ref(&conn, &review.reversal)?,
+        "entry": entry_ref(&conn, &entry)?,
+        "reversal": reversal,
         "already_void": review.already_void,
+        "applied": review.applied,
+        "cascade": review.cascade,
+        "needs_cascade": review.needs_cascade,
+        "linked_entries": linked,
         "evidence_lines_returned": review.evidence_lines,
     })))
 }

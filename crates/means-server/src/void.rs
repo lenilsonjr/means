@@ -19,7 +19,10 @@ pub struct Args {
     /// Explicit preview (also the default)
     #[arg(long, conflicts_with = "yes")]
     dry_run: bool,
-    /// Print the original entry, reversal, evidence count and `applied` as JSON
+    /// Also void the linked entries of other entities (inter-vault links)
+    #[arg(long)]
+    cascade: bool,
+    /// Print the original entry, reversal, linked entries, evidence count and `applied` as JSON
     #[arg(long)]
     json: bool,
 }
@@ -29,7 +32,7 @@ pub fn run(path: PathBuf, args: Args) -> Result<()> {
         crate::entry_cli::guard("void --yes");
     }
     let db = Db::open(path)?;
-    let result = journal::review_void(&mut db.conn(), args.id, args.date, &args.reason, args.yes)?;
+    let result = journal::review_void(&mut db.conn(), args.id, args.date, &args.reason, args.yes, args.cascade)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
@@ -46,10 +49,35 @@ pub fn run(path: PathBuf, args: Args) -> Result<()> {
         println!("  {}: {} {} {} (booked {} {})", posting.account_path, side, posting.quantity.major().abs(), posting.quantity.commodity(), posting.amount.major(), posting.amount.commodity());
     }
     println!("{} statement line(s) {} to unmatched. Original postings are retained.", result.evidence_lines, if result.applied { "returned" } else { "will return" });
+    print!("{}", linked_text(&result));
     if result.applied {
         println!("Created reversal #{}.", result.reversal.id);
+    } else if result.needs_cascade {
+        println!("No changes saved. Repeat with --yes --cascade to void the linked entries too.");
+        println!("To void only this entry, remove each link first: means intervault unlink <link uid> --actor <name> --reason <text>.");
     } else {
-        println!("No changes saved. Repeat with --yes to apply to the current entry.");
+        println!("No changes saved. Repeat with --yes{} to apply to the current entry.", if result.cascade { " --cascade" } else { "" });
     }
     Ok(())
+}
+
+/// The linked entries of other entities that the void reaches, one line each.
+fn linked_text(result: &journal::VoidReview) -> String {
+    if result.linked_entries.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("Linked entries in other entities ({}):\n", result.linked_entries.len());
+    for l in &result.linked_entries {
+        let effect = match (result.applied, l.voided, l.cascade_action.as_str()) {
+            (true, true, _) => "voided".to_string(),
+            (true, false, _) => "kept as a draft; link void".to_string(),
+            (false, _, "void") if result.cascade => "will be voided".to_string(),
+            (false, _, "void") => "--cascade voids it".to_string(),
+            _ if result.cascade => "stays a draft; the link becomes void".to_string(),
+            _ => "stays a draft; --cascade marks the link void".to_string(),
+        };
+        let lock = if l.locked { "; its period is locked" } else { "" };
+        out.push_str(&format!("  {} via link {} ({}): {}{lock}\n", l.describe(), l.link_uid, l.link_kind, effect));
+    }
+    out
 }

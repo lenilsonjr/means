@@ -118,13 +118,69 @@ fn a_link_of_posted_entries_is_posted_and_warns_without_intercompany_postings() 
     assert_eq!(link.amount_a.minor(), 2500);
 }
 
+/// A void with cascade: the entry and every linked entry of other entities.
+fn void_cascade(b: &Books, entry: &JournalEntry, date: Option<NaiveDate>, reason: &str) -> means_core::Result<journal::VoidReview> {
+    journal::review_void(&mut b.db.conn(), entry.id, date, reason, true, true)
+}
+
 #[test]
-fn a_void_of_one_side_voids_the_other_and_the_link() {
+fn a_void_preview_lists_the_linked_entry_of_the_other_entity() {
     let b = books();
     let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
     let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
     let link = b.link(&a, &s, "loan").unwrap();
-    journal::void_entry(&mut b.db.conn(), a.id, None, "wrong lender").unwrap();
+
+    let preview = journal::review_void(&mut b.db.conn(), a.id, None, "wrong lender", false, false).unwrap();
+    assert!(!preview.applied);
+    assert!(preview.needs_cascade);
+    assert_eq!(preview.linked_entries.len(), 1);
+    let other = &preview.linked_entries[0];
+    assert_eq!((other.entity_name.as_str(), other.entry_id, other.entry_uid.as_str()), ("Blue Harbor LLC", s.id, s.uid.as_str()));
+    assert_eq!(other.date, day("2026-03-03"));
+    assert_eq!((other.amount.minor(), other.amount.commodity()), (-100000, "USD"));
+    assert_eq!((other.link_uid.as_str(), other.cascade_action.as_str(), other.locked, other.voided), (link.uid.as_str(), "void", false, false));
+    // The preview reverses entry A only and saves nothing.
+    assert_eq!(preview.reversal.entity_id, b.parent);
+    assert_eq!(b.get(&a).status, EntryStatus::Posted);
+    assert_eq!(b.get(&s).status, EntryStatus::Posted);
+    assert_eq!(b.status_of(&link), "posted");
+}
+
+#[test]
+fn a_void_without_cascade_is_refused_when_a_linked_entry_belongs_to_another_entity() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
+    let link = b.link(&a, &s, "loan").unwrap();
+    let audit_before: i64 = b.db.conn().query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0)).unwrap();
+
+    let err = journal::void_entry(&mut b.db.conn(), a.id, None, "wrong lender").unwrap_err();
+    match &err {
+        Error::Conflict(m) => {
+            assert!(m.contains("Blue Harbor LLC") && m.contains(&s.uid) && m.contains("2026-03-03") && m.contains("-1000 USD"), "{m}");
+            assert!(m.contains("cascade"), "{m}");
+        }
+        other => panic!("expected a conflict, got {other:?}"),
+    }
+    assert_eq!(proposal::AgentError::from(err).code, "invalid_input");
+    // The refusal writes nothing.
+    assert_eq!(b.get(&a).status, EntryStatus::Posted);
+    assert_eq!(b.get(&s).status, EntryStatus::Posted);
+    assert_eq!(b.status_of(&link), "posted");
+    let audit_after: i64 = b.db.conn().query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0)).unwrap();
+    assert_eq!(audit_before, audit_after);
+}
+
+#[test]
+fn a_void_with_cascade_voids_the_other_side_and_records_it() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
+    let link = b.link(&a, &s, "loan").unwrap();
+    let review = void_cascade(&b, &a, None, "wrong lender").unwrap();
+    assert!(review.applied && review.cascade && !review.needs_cascade);
+    assert_eq!(review.linked_entries.len(), 1);
+    assert!(review.linked_entries[0].voided);
 
     let s = b.get(&s);
     assert_eq!(s.status, EntryStatus::Void);
@@ -133,17 +189,32 @@ fn a_void_of_one_side_voids_the_other_and_the_link() {
     assert!(reversal.description.contains("wrong lender"), "{}", reversal.description);
     assert_eq!(b.get(&a).status, EntryStatus::Void);
     assert_eq!(b.status_of(&link), "void");
+
+    // The audit events say that the void was a cascade, and from which entry.
+    let event = |id: i64| -> serde_json::Value {
+        let history = audit::history(&b.db.conn(), "journal_entries", id).unwrap();
+        serde_json::from_str(history.iter().rev().find(|h| h.action == "void").unwrap().after.as_deref().unwrap()).unwrap()
+    };
+    let first = event(a.id);
+    assert_eq!(first["cascade"], true);
+    assert_eq!(first["linked_entry_uids"], json!([s.uid]));
+    assert_eq!(event(s.id)["cascaded_from"], a.uid.as_str());
+    let link_event = audit::history(&b.db.conn(), "intervault_links", link.id).unwrap().pop().unwrap();
+    let after: serde_json::Value = serde_json::from_str(link_event.after.as_deref().unwrap()).unwrap();
+    assert_eq!((after["status"].as_str(), after["cascade"].as_bool(), after["voided_from"].as_str()), (Some("void"), Some(true), Some(a.uid.as_str())));
 }
 
 #[test]
-fn a_void_is_refused_when_the_other_period_is_locked() {
+fn a_cascade_void_is_refused_when_the_other_period_is_locked() {
     let b = books();
     let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
     let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
     let link = b.link(&a, &s, "loan").unwrap();
     b.lock(b.subsidiary, "2026-03-31");
 
-    let err = journal::void_entry(&mut b.db.conn(), a.id, None, "wrong lender").unwrap_err();
+    let preview = journal::review_void(&mut b.db.conn(), a.id, None, "wrong lender", false, false).unwrap();
+    assert!(preview.linked_entries[0].locked);
+    let err = void_cascade(&b, &a, None, "wrong lender").unwrap_err();
     match &err {
         Error::Locked(m) => assert!(m.contains("Blue Harbor LLC"), "{m}"),
         other => panic!("expected a locked error, got {other:?}"),
@@ -155,7 +226,7 @@ fn a_void_is_refused_when_the_other_period_is_locked() {
     assert_eq!(b.status_of(&link), "posted");
 
     // A void date after the lock date of the other entity is accepted.
-    journal::void_entry(&mut b.db.conn(), a.id, Some(day("2026-04-01")), "wrong lender").unwrap();
+    void_cascade(&b, &a, Some(day("2026-04-01")), "wrong lender").unwrap();
     assert_eq!(b.get(&s).status, EntryStatus::Void);
 }
 

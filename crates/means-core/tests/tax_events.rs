@@ -257,7 +257,7 @@ fn void_creates_mirror_events() {
     let both = tax::tax_summary(&c, b.entity.id, d("2026-01-01"), d("2026-12-31")).unwrap();
     assert_eq!((both[0].base.minor(), both[0].tax.minor(), both[0].count), (0, 0, 2));
     // A second void request changes nothing.
-    journal::review_void(&mut c, original.id, None, "again", true).unwrap();
+    journal::review_void(&mut c, original.id, None, "again", true, false).unwrap();
     assert_eq!(tax::tax_events_for_entry(&c, reversal.id).unwrap().len(), 1);
 }
 

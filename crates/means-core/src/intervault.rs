@@ -5,8 +5,11 @@
 //! lifecycle:
 //!
 //! - The link is `draft` while either entry is a draft. It becomes `posted` when both are posted.
-//! - A void of one entry voids the other entry in the same transaction and marks the link `void`.
-//!   The engine refuses the void when the period of the other entity is locked.
+//! - A void of one entry is refused while the entry has a link that is not void. A void with
+//!   cascade voids the other posted entries of the link group in the same transaction and marks
+//!   the links `void`. The engine refuses a cascade when the period of another entity is locked.
+//! - To void one entry only, remove the link first. A human can remove the link of posted
+//!   entries with an actor and a reason.
 //! - A deleted draft deletes its links.
 //!
 //! `counterpart_id` on a journal entry stays as it is. A transfer between entities sets it and
@@ -113,6 +116,84 @@ pub struct UnlinkedPosting {
     pub quantity: Money,
     pub amount: Money,
     pub memo: String,
+}
+
+/// One entry of another entity that a void reaches through inter-vault links.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LinkedEntry {
+    /// The link that leads to the entry.
+    pub link_uid: String,
+    pub link_kind: String,
+    pub entity_uid: String,
+    pub entity_name: String,
+    pub entry_id: i64,
+    pub entry_uid: String,
+    pub date: NaiveDate,
+    pub status: EntryStatus,
+    /// The native amount of the intercompany side of the entry now.
+    pub amount: Money,
+    /// What a void with cascade does to the entry: `void` for a posted entry, `keep` for a
+    /// draft. The link becomes `void` in both cases.
+    pub cascade_action: String,
+    /// True when a cascade reversal of this entry falls on or before the lock date of its
+    /// entity. A cascade is then refused.
+    pub locked: bool,
+    /// True when this void voided the entry.
+    pub voided: bool,
+}
+
+impl LinkedEntry {
+    /// One line for messages: entity, id, uid, date, amount and status.
+    pub fn describe(&self) -> String {
+        format!("{} entry #{} ({}) on {}, {} {}, {}", self.entity_name, self.entry_id, self.entry_uid, self.date, money::plain(self.amount.major()), self.amount.commodity(), self.status.as_str())
+    }
+}
+
+/// The entries of other entities that a void of `entry_id` reaches through links that are not
+/// void. The walk follows the links of each posted entry that a cascade would void, so the
+/// list is the whole link group. `date` is the requested reversal date: without it, each entry
+/// reverses on its own date.
+pub fn linked_entries(conn: &Connection, entry_id: i64, date: Option<NaiveDate>) -> Result<Vec<LinkedEntry>> {
+    let mut seen = HashSet::from([entry_id]);
+    let mut queue = vec![entry_id];
+    let mut out = Vec::new();
+    while let Some(id) = queue.pop() {
+        for link in links_for_entry(conn, id)?.into_iter().filter(|l| l.status != "void") {
+            let other_id = if link.entry_a_id == id { link.entry_b_id } else { link.entry_a_id };
+            if !seen.insert(other_id) {
+                continue;
+            }
+            let other = journal::get_entry(conn, other_id)?;
+            let entity = entities::get_entity(conn, other.entity_id)?;
+            let (amount, _) = side_amount(conn, &other)?;
+            let posted = other.status == EntryStatus::Posted;
+            let day = date.unwrap_or(other.date);
+            if posted {
+                queue.push(other_id);
+            }
+            out.push(LinkedEntry {
+                link_uid: link.uid,
+                link_kind: link.kind,
+                entity_uid: entity.uid,
+                entity_name: entity.name,
+                entry_id: other.id,
+                entry_uid: other.uid,
+                date: other.date,
+                status: other.status,
+                amount,
+                cascade_action: if posted { "void" } else { "keep" }.into(),
+                locked: posted && entity.lock_date.is_some_and(|lock| day <= lock),
+                voided: false,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// The message of a void that the links refuse.
+pub(crate) fn refusal(entry: &JournalEntry, linked: &[LinkedEntry]) -> String {
+    let list: Vec<String> = linked.iter().map(LinkedEntry::describe).collect();
+    format!("entry #{} ({}) has inter-vault links to entries of other entities: {}; void them too with cascade, or remove the link first to void only this entry", entry.id, entry.uid, list.join("; "))
 }
 
 const LINK_SELECT: &str = "SELECT l.id, l.uid, l.entry_a_id, ea.uid, l.entry_b_id, eb.uid, l.kind,
@@ -321,12 +402,22 @@ pub(crate) fn on_post(conn: &Connection, entry_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// An entry was voided: void each linked entry that is posted, with the same reason, and mark
-/// the links `void`. A linked draft stays a draft. `date` is the reversal date that the caller
-/// asked for; without it, each linked entry reverses on its own date.
-pub(crate) fn on_void(tx: &rusqlite::Transaction<'_>, entry_id: i64, date: Option<NaiveDate>, reason: &str) -> Result<()> {
+/// An entry was voided with cascade: void each linked entry that is posted, with the same
+/// reason, and mark the links `void`. A linked draft stays a draft. `date` is the reversal date
+/// that the caller asked for; without it, each linked entry reverses on its own date.
+pub(crate) fn on_void_cascade(tx: &rusqlite::Transaction<'_>, entry_id: i64, entry_uid: &str, date: Option<NaiveDate>, reason: &str) -> Result<()> {
     for link in links_for_entry(tx, entry_id)?.into_iter().filter(|l| l.status != "void") {
-        set_status(tx, &link, "void", "void", reason)?;
+        tx.execute("UPDATE intervault_links SET status = 'void', updated_at = ?2 WHERE id = ?1", params![link.id, now_ts()])?;
+        audit::log_by(
+            tx,
+            "intervault_links",
+            link.id,
+            "void",
+            Some(serde_json::json!({"status": link.status})),
+            Some(serde_json::json!({"status": "void", "cascade": true, "voided_from": entry_uid})),
+            "",
+            reason,
+        )?;
         let other_id = if link.entry_a_id == entry_id { link.entry_b_id } else { link.entry_a_id };
         let other = journal::get_entry(tx, other_id)?;
         if other.status != EntryStatus::Posted {
@@ -342,7 +433,7 @@ pub(crate) fn on_void(tx: &rusqlite::Transaction<'_>, entry_id: i64, date: Optio
                 )));
             }
         }
-        journal::void_entry_in_transaction(tx, other_id, Some(day), reason)?;
+        journal::void_cascaded(tx, other_id, Some(day), reason, entry_uid)?;
     }
     Ok(())
 }
