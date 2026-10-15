@@ -134,8 +134,10 @@ Account Tracker backups open a per-account mapping screen. Use `e` to cycle the 
 means import retry 42                           # resume unfinished/error bank lines from stored evidence
 means rematch 42 --cross-source --preview        # inspect exact CSV/API overlaps; apply with the returned token
 means draft delete 123                          # drafts only; bank evidence remains unmatched
-means void 4213 --reason "Duplicate purchase"     # preview a posted-entry reversal
+means void 4213 --reason "Duplicate purchase"     # preview a posted-entry reversal and its linked entries
 means void 4213 --reason "Duplicate purchase" --yes  # apply; optional --date YYYY-MM-DD
+means void 4213 --reason "Wrong lender" --yes --cascade  # also void the linked entries of other entities
+means intervault unlink <link uid> --actor "A. Reviewer" --reason "Wrong lender"  # remove the link of posted entries; add --force-locked for a locked period
 means entity add Personal --currency EUR --country PT
 means entity add LLC --currency USD --kind company --country US
 means import --entity 1 backup.atb                # Account Tracker into one entity

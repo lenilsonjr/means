@@ -314,12 +314,17 @@ The audit log records every new link, every status change and every removal.
 | Link, when either entry is a draft | The link is `draft`. |
 | Link, when both entries are posted | The link is `posted`. |
 | Post one entry of a draft link | The link stays `draft` until the other entry is posted too. Then it becomes `posted`. |
-| Void one entry | The engine voids the other posted entry in the same transaction, with the same reason. The link becomes `void`. A linked draft stays a draft. |
-| Void, when the period of the other entity is locked | The engine refuses the void with `locked_period` and names the entity. Nothing changes. Give a void date after the lock date, or unlock the period. |
+| Void one entry, without cascade | The engine refuses the void with `invalid_input` and names each linked entry. Nothing changes. The preview lists the linked entries with the entity, the id, the date and the amount. |
+| Void one entry, with cascade | The engine voids the other posted entries of the link group in the same transaction, with the same reason. The links become `void`. A linked draft stays a draft. The audit events record the cascade. |
+| Void with cascade, when the period of another entity is locked | The engine refuses the void with `locked_period` and names the entity. Nothing changes. Give a void date after the lock date, or unlock the period. |
 | Delete a linked draft | The engine deletes the link. |
-| Unlink | Allowed only while both entries are drafts. It needs a reason. For posted entries, void the pair. |
+| Unlink two drafts | It needs a reason. |
+| Unlink, when an entry is posted or void | A human action. It needs an actor and a reason. It is refused when such an entry is in a locked period of its entity, unless the caller forces it. The audit event records the actor, the reason, both entry uids and the forced lock. |
+| Void one entry after unlink | The engine voids that entry only. The lock date of the other entity does not apply. |
 
-A void without a date reverses each entry on its own date. A void with a date reverses both entries on that date.
+A void without a date reverses each entry on its own date. A void with a date reverses every entry of the cascade on that date.
+
+Without the link, both entries are not reconciled for intercompany purposes. The close check reports them in `intercompany_out_of_balance`.
 
 `create_transfer` between two entities writes a link. Its kind is `transfer`, unless the caller gives another kind. A transfer inside one entity has no link. Transfers from before migration 25 keep `counterpart_id` and have no link. Link them with `means intervault link` when a group report needs them.
 
@@ -332,7 +337,8 @@ The exception list of an entity shows posted postings on intercompany accounts w
 | Command | Result |
 | --- | --- |
 | `means intervault link --a <entry uid> --b <entry uid> --kind loan [--note T]` | Links two entries. |
-| `means intervault unlink <link uid> --reason R` | Removes a link of two drafts. |
+| `means intervault unlink <link uid> --reason R [--actor A] [--force-locked]` | Removes a link. A posted or void entry needs `--actor`. An entry in a locked period needs `--force-locked`. |
+| `means void <ID> [--cascade] [--yes]` | Previews a void and lists the linked entries. `--yes --cascade` also voids them. |
 | `means intervault list [--group G \| --entity E] --from D --to D [--status S]` | Lists the links with an entry in the period, with the `reconciled` flag. A group keeps the links where an entity is a member on the date of its entry. |
 | `means intervault exceptions --entity E --from D --to D` | Lists the unlinked intercompany postings. |
 

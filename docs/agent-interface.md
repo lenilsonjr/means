@@ -96,7 +96,7 @@ These commands describe the books. They never change postings. See [entity facts
 | `means entry draft --entity <e> (--json-file <path> \| --stdin)` | A draft, its tax events, an optional inter-vault link and an audit event | Allowed |
 | `means entry propose <uid>` | Nothing | Allowed |
 | `means entry confirm <uid> --digest <proposal_digest> [--actor <name>]` | Posts the draft, the review mark and an audit event | Refused |
-| `means entry void <uid> --reason <text> [--date D]` | A reversal | Refused |
+| `means entry void <uid> --reason <text> [--date D] [--cascade] [--dry-run]` | A reversal. With `--cascade`, also the reversals of the linked entries. With `--dry-run`, nothing. | Refused, except with `--dry-run` |
 | `means rates set --date D --base B --quote Q --rate R [--source S] [--no-revalue] [--json]` | A rate and revalued postings | Allowed |
 | `means rates list [--base B] [--quote Q] [--from D] [--to D] [--limit N] [--json]` | Nothing | Allowed |
 | `means rates list --derive B/Q --date D [--json]` | Nothing | Allowed |
@@ -117,7 +117,7 @@ These commands describe the books. They never change postings. See [entity facts
 
 `confirm` returns `entry`, `actor`, `proposal_digest` and `audit_event_id`. The audit event records the actor, the action and the digest. The entry gets its review mark.
 
-`void` returns `entry`, `reversal`, `already_void` and `evidence_lines_returned`.
+`void` returns `entry`, `reversal`, `already_void`, `applied`, `cascade`, `needs_cascade`, `linked_entries` and `evidence_lines_returned`. A `--dry-run` result has `applied` false, the entry as it is now, and a `reversal` with the date only (its `uid` is null). See [void of a linked entry](#void-of-a-linked-entry).
 
 `means void <id> --json` returns `entry`, `reversal`, `evidence_lines`, `applied` and `already_void`. Without `--yes`, the command is a preview and saves nothing. `applied` is then false, and `entry` is the stored entry with its real status. `reversal` shows the entry that `--yes` creates, but the preview does not save it. With `--yes`, `applied` is true, and `entry` has the status `void` and `reversed_by_id`.
 
@@ -303,13 +303,36 @@ The document can carry an `intervault` block at the top level. The engine then l
 | Command | Writes | `MEANS_AGENT=1` |
 | --- | --- | --- |
 | `means intervault link --a <entry uid> --b <entry uid> [--kind K] [--note T] [--json]` | A link and an audit event | Allowed |
-| `means intervault unlink <link uid> --reason R [--json]` | Removes a link of two drafts, and an audit event | Allowed |
+| `means intervault unlink <link uid> --reason R [--actor A] [--force-locked] [--json]` | Removes a link, and an audit event | Allowed for two drafts. Refused with `--actor` or `--force-locked`. |
 | `means intervault list --from D --to D [--group G \| --entity <e>] [--status draft\|posted\|void] [--json]` | Nothing | Allowed |
 | `means intervault exceptions --entity <e> --from D --to D [--json]` | Nothing | Allowed |
 
 `K` is one of the kinds of the [inter-vault block](#inter-vault-block). The default is `transfer`.
 
-`link` returns `link`. `list` returns `from`, `to`, `count`, `reconciled_count` and `links`. A link has `uid`, `kind`, `status`, `rate`, `note`, `entry_a`, `entry_b`, `reconciled`, `created_at` and `updated_at`. `link` and the draft result also have `warnings`. Each side has `entry_uid`, `entity_uid`, `entity_name`, `date`, `entry_status`, `amount` (stored with the link) and `current_amount` (on the entry now). `unlink` returns the removed `link` with `entry_a_uid`, `entry_b_uid`, `amount_a` and `amount_b`, and the `reason`. `exceptions` returns `entity_uid`, `from`, `to`, `count` and `postings`. Each posting has `entry_uid`, `posting_uid`, `date`, `payee`, `account_uid`, `account_path`, `quantity`, `amount` and `memo`.
+`link` returns `link`. `list` returns `from`, `to`, `count`, `reconciled_count` and `links`. A link has `uid`, `kind`, `status`, `rate`, `note`, `entry_a`, `entry_b`, `reconciled`, `created_at` and `updated_at`. `link` and the draft result also have `warnings`. Each side has `entry_uid`, `entity_uid`, `entity_name`, `date`, `entry_status`, `amount` (stored with the link) and `current_amount` (on the entry now). `unlink` returns the removed `link` with `entry_a_uid`, `entry_b_uid`, `amount_a` and `amount_b`, and `reason`, `actor`, `force_locked`, `locked_entry_uids` and `audit_event_id`. `exceptions` returns `entity_uid`, `from`, `to`, `count` and `postings`. Each posting has `entry_uid`, `posting_uid`, `date`, `payee`, `account_uid`, `account_path`, `quantity`, `amount` and `memo`.
+
+### Remove a link
+
+`unlink` needs `--reason`. While both entries are drafts, it needs nothing more. When an entry is posted or void, the removal is a human action:
+
+- Give `--actor A`. Without it, the command fails with `invalid_input`.
+- When a posted or void entry is dated on or before the lock date of its entity, the command fails with `locked_period`. Give `--force-locked` to remove the link anyway. `locked_entry_uids` then names those entries.
+- The audit event of the link records the actor, the reason, both entry uids, `force_locked` and `locked_entry_uids`.
+
+The entries keep their postings. Without the link, they are not reconciled for intercompany purposes: `close check` reports them in `intercompany_out_of_balance`, and `intervault exceptions` lists their intercompany postings. A void of one entry then does not touch the other.
+
+### Void of a linked entry
+
+A void of an entry with an inter-vault link that is not void reaches the other entries of the link group. The group can include entries of more than one other entity.
+
+- The preview (`means void <ID>` without `--yes`, or `means entry void <uid> --dry-run`) lists them in `linked_entries`. It reverses the requested entry only, and `needs_cascade` is true.
+- Without `--cascade`, the apply fails with `invalid_input`. The message names each linked entry. Nothing changes.
+- With `--cascade`, the engine voids each posted linked entry in the same transaction, with the same reason, and marks the links `void`. A linked draft stays a draft. The lock date of each entity applies to its own reversal: a locked period fails with `locked_period` and names the entity.
+- To void one entry only, remove each link first with `means intervault unlink`. The lock date of the other entity then does not apply.
+
+Each linked entry has `link_uid`, `link_kind`, `entity_uid`, `entity_name`, `entry_id`, `entry_uid`, `date`, `status`, `amount` (the intercompany side now), `cascade_action` (`void` for a posted entry, `keep` for a draft), `locked` (a cascade reversal falls in a locked period) and `voided` (this void voided the entry).
+
+The audit event of a cascade void has `cascade` true and `linked_entry_uids`. The void event of each linked entry has `cascaded_from`, and the event of each link has `cascade` true and `voided_from`.
 
 ## Close and filings
 
@@ -412,11 +435,11 @@ Every command group uses the same codes: the compact commands, the indented comm
 
 | Code | Meaning |
 | --- | --- |
-| `invalid_input` | The input is not valid. The message tells you why. This code includes a lock that does not move the lock date forward, a filing status change that the steps do not permit, and a record that exists already outside invoices and documents. |
+| `invalid_input` | The input is not valid. The message tells you why. This code includes a void of an entry with inter-vault links without `--cascade`, a lock that does not move the lock date forward, a filing status change that the steps do not permit, and a record that exists already outside invoices and documents. |
 | `not_found` | The entry, the entity or another record does not exist. |
 | `unbalanced` | The postings do not sum to zero in the functional currency. |
 | `missing_rate` | A posting needs an exchange rate that the ledger does not have, or `rates list --derive` finds no rate. Add the rate, then revalue the draft. |
-| `locked_period` | The date is on or before the lock date of the entity. A void of a linked entry also gives this code when the period of the other entity is locked. The message names that entity. |
+| `locked_period` | The date is on or before the lock date of the entity. A void with `--cascade` also gives this code when the period of a linked entity is locked. `intervault unlink` gives it for an entry in a locked period without `--force-locked`. The message names the entity. |
 | `unknown_account` | The account does not exist in the entity. |
 | `not_leaf_account` | The account groups other accounts. |
 | `stale_proposal` | The draft changed after the proposal, or the digest is wrong. |
@@ -437,7 +460,7 @@ Older versions printed other codes. They map to this table: `invalid_argument`, 
 
 Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses each command that posts, voids, deletes or reverts, with `agent_not_allowed`. The refusal comes before the command opens the ledger. One check in the engine does this for every command:
 
-- `entry confirm` and `entry void`
+- `entry confirm` and `entry void` (a void with `--dry-run` is allowed)
 - `post`
 - `void --yes` (a preview without `--yes` is allowed)
 - `draft delete`
@@ -449,6 +472,7 @@ Set `MEANS_AGENT=1` in the environment of an agent. The engine then refuses each
 - `policy set`
 - `close lock` and `close unlock`
 - `invoice cancel`
+- `intervault unlink` with `--actor` or `--force-locked`
 - `filing record` and `filing status` with the status `submitted` or `accepted`
 
 The older commands print text on success. Their `MEANS_AGENT=1` refusal is the JSON error object. `entity set` has no lock date option, so the lock date moves only through `close lock` and `close unlock`.
