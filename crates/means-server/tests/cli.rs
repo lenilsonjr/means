@@ -1458,3 +1458,46 @@ fn entity_archive_hides_the_books_refuses_writes_and_unarchive_reverses_it() {
     let listed: serde_json::Value = serde_json::from_str(&ledger.ok(&["entity", "list", "--json"])).unwrap();
     assert_eq!(listed.as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn chart_new_sets_commodity_statutory_code_and_subtype_in_one_command() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let entity = entities::create_entity(&mut db.conn(), "Blue Harbor Pte. Ltd.", "company", "SG", "SGD").unwrap();
+    let said = ledger.ok(&[
+        "chart",
+        "new",
+        "--entity",
+        "Blue Harbor Pte. Ltd.",
+        "--commodity",
+        "EUR",
+        "--statutory-code",
+        "1.1.2",
+        "--subtype",
+        "Savings",
+        "Assets:Current assets:Bank:Example Bank EUR savings",
+    ]);
+    assert!(said.contains("· statutory 1.1.2 · savings · EUR"), "{said}");
+    let conn = db.conn();
+    let bank = accounts::find_by_path(&conn, entity.id, "Assets:Current assets:Bank:Example Bank EUR savings").unwrap().unwrap();
+    assert_eq!((bank.commodity.as_str(), bank.statutory_code.as_str(), bank.subtype.as_str()), ("EUR", "1.1.2", "savings"));
+    let parent = accounts::find_by_path(&conn, entity.id, "Assets:Current assets:Bank").unwrap().unwrap();
+    assert_eq!((parent.commodity.as_str(), parent.statutory_code.as_str(), parent.subtype.as_str()), ("SGD", "", "placeholder"));
+    drop(conn);
+
+    // Without the options: the entity currency, no statutory code and the default subtype.
+    ledger.ok(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "Liabilities:Amount due to related parties"]);
+    let due = accounts::find_by_path(&db.conn(), entity.id, "Liabilities:Amount due to related parties").unwrap().unwrap();
+    assert_eq!((due.commodity.as_str(), due.statutory_code.as_str(), due.subtype.as_str()), ("SGD", "", "card"));
+    // A second run on the existing leaf sets the subtype and the statutory code.
+    ledger.ok(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--subtype", "payable", "--statutory-code", "2.3", "Liabilities:Amount due to related parties"]);
+    let due = accounts::find_by_path(&db.conn(), entity.id, "Liabilities:Amount due to related parties").unwrap().unwrap();
+    assert_eq!((due.statutory_code.as_str(), due.subtype.as_str()), ("2.3", "payable"));
+
+    // A subtype must fit the kind, and nothing is created when it does not.
+    let refused = ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--subtype", "card", "Assets:Petty cash"]);
+    assert!(refused.contains("bank, savings, cash"), "{refused}");
+    assert!(accounts::find_by_path(&db.conn(), entity.id, "Assets:Petty cash").unwrap().is_none());
+    // A group account takes no subtype.
+    ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--subtype", "bank", "Assets:Current assets"]);
+}

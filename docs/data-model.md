@@ -83,7 +83,15 @@ Every account belongs to one entity and one of five types:
 | Income | Salary, sales | Credit |
 | Expense | Groceries, rent, software | Debit |
 
-Accounts form a hierarchy. Placeholder accounts group children; postings use leaf accounts. Spending categories are expense accounts. An expense account can have a class (`fixed`, `committed`, `discretionary`, `savings` or `not-spending`) for reports and budgets. A system role marks the accounts that the engine creates with the entity, such as `Uncategorized` and `FX gain/loss`.
+Accounts form a hierarchy. Placeholder accounts group children (subtype `placeholder`); postings use leaf accounts. The subtype of a leaf tells its use:
+
+| Type | Subtypes |
+| --- | --- |
+| Asset | `bank` (the default), `savings`, `cash`, `wallet`, `receivable`, `investment`, `crypto` |
+| Liability | `card` (the default), `loan`, `mortgage`, `payable` |
+| Equity, Income, Expense | `equity`, `income`, `expense` |
+
+The cash flow report reads `bank`, `cash`, `card` and `wallet` accounts. `means chart new --subtype` accepts only a subtype of the account type. Spending categories are expense accounts. An expense account can have a class (`fixed`, `committed`, `discretionary`, `savings` or `not-spending`) for reports and budgets. A system role marks the accounts that the engine creates with the entity, such as `Uncategorized` and `FX gain/loss`.
 
 Each account has a commodity. `commodities` holds each currency, security or crypto asset with its precision. `prices` holds the price of one commodity in another on a date, with its source. ECB rates (`means rates fetch`), hand-entered rates (`means rates set`) and CSV rates (`means rates import`) all go in this table. A posting in a commodity without a direct or an inverse rate takes a cross rate through a common quote, such as EUR. Its `rate_source` is then `cross:<SOURCE>`, for example `cross:ECB`. See [the rate lookup](agent-interface.md#drafting).
 
@@ -93,7 +101,7 @@ Three columns map an account to statutory reporting. They never change postings:
 - `tax_treatment`: a free-text tag for tax reports, for example `output_tax`, `input_tax` or `owner_capital`. Invoices use `input_tax` and `output_tax` to find the tax account.
 - `intercompany`: 1 when the account holds balances with a related party. Inter-vault links and the close check use it.
 
-A [chart template](../charts/README.md) sets these columns when it creates the accounts. `means account set --statutory-code` changes `statutory_code` of one account, and the change goes to the audit log.
+A [chart template](../charts/README.md) sets these columns when it creates the accounts. `means chart new --statutory-code C` sets the statutory code of one new account. Without it, the account has no statutory code. `means account set --statutory-code` changes `statutory_code` of one account, and the change goes to the audit log.
 
 Five columns identify an account for external tools. They never change postings:
 

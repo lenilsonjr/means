@@ -521,6 +521,7 @@ enum ChartCommand {
         file: PathBuf,
     },
     /// Create one account, missing parents become placeholders: chart new --entity Personal "Expenses:Food:Ramen" --code 6215
+    /// An existing leaf keeps its place and takes the given code, statutory code and subtype
     New {
         /// Entity id or name
         #[arg(long)]
@@ -533,8 +534,14 @@ enum ChartCommand {
         #[arg(long)]
         kind: Option<String>,
         /// Commodity of the new account, e.g. USD in an SGD entity (default: the entity currency); new parents keep the entity currency
-        #[arg(long)]
+        #[arg(long, visible_alias = "commodity")]
         currency: Option<String>,
+        /// Statutory code of the account: a code from a national chart or a reporting taxonomy (default: none)
+        #[arg(long)]
+        statutory_code: Option<String>,
+        /// Asset: bank | savings | cash | wallet | receivable | investment | crypto; liability: card | loan | mortgage | payable (default: bank or card)
+        #[arg(long)]
+        subtype: Option<String>,
     },
     /// Rename an account; children keep their place
     Rename {
@@ -714,9 +721,10 @@ fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {
             println!("{}: {} accounts created, {} already there{}", e.name, created, existing, if f.name.is_empty() { String::new() } else { format!(" ({})", f.name) });
             Ok(())
         }
-        ChartCommand::New { entity, path, code, kind, currency } => {
+        ChartCommand::New { entity, path, code, kind, currency, statutory_code, subtype } => {
             use means_core::model::AccountType;
             let e = resolve_entity(&conn, &entity)?;
+            means_core::entities::ensure_active(&conn, e.id)?;
             let mut segments: Vec<&str> = path.split(':').map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
             // A root segment that names a type sets the kind; an explicit --kind must agree with it.
             let root = segments.first().and_then(|first| {
@@ -735,26 +743,33 @@ fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {
             if segments.is_empty() {
                 anyhow::bail!("give the account a name");
             }
-            let subtype = match t {
-                AccountType::Income => "income",
-                AccountType::Expense => "expense",
-                AccountType::Asset => "bank",
-                AccountType::Liability => "card",
-                AccountType::Equity => "equity",
-            };
+            let given_subtype = subtype.as_deref().map(|s| means_core::accounts::check_subtype(t, s)).transpose()?;
+            let default_subtype = means_core::accounts::SUBTYPES.iter().find(|(k, _)| *k == t).map(|(_, v)| v[0]).unwrap_or("expense");
             let leaf_currency = currency.as_deref().unwrap_or(&e.currency);
-            let a = means_core::accounts::ensure_account_in(&conn, e.id, t, &segments, subtype, &e.currency, leaf_currency)?;
+            // One transaction: the account and its codes, or nothing.
+            let tx = conn.transaction()?;
+            let a = means_core::accounts::ensure_account_in(&tx, e.id, t, &segments, given_subtype.as_deref().unwrap_or(default_subtype), &e.currency, leaf_currency)?;
             if currency.is_some() && a.commodity != leaf_currency {
                 anyhow::bail!("{} already exists in {}, not {}", a.path, a.commodity, leaf_currency);
             }
-            if !code.trim().is_empty() {
-                means_core::accounts::update_account(&conn, a.id, means_core::accounts::AccountUpdate { code: Some(code.clone()), ..Default::default() })?;
+            if a.placeholder && (given_subtype.is_some() || statutory_code.is_some()) {
+                anyhow::bail!("{} is a group account; a subtype or a statutory code needs a leaf account", a.path);
             }
+            let upd = means_core::accounts::AccountUpdate {
+                code: (!code.trim().is_empty()).then(|| code.clone()),
+                statutory_code: statutory_code.clone(),
+                subtype: given_subtype.filter(|s| *s != a.subtype),
+                ..Default::default()
+            };
+            let a = if upd.code.is_some() || upd.statutory_code.is_some() || upd.subtype.is_some() { means_core::accounts::update_account(&tx, a.id, upd)? } else { a };
+            tx.commit()?;
             println!(
-                "{} #{}{}{}",
+                "{} #{}{}{}{}{}",
                 a.path,
                 a.id,
                 if code.trim().is_empty() { String::new() } else { format!(" · code {}", code.trim()) },
+                if a.statutory_code.is_empty() { String::new() } else { format!(" · statutory {}", a.statutory_code) },
+                if a.subtype == default_subtype { String::new() } else { format!(" · {}", a.subtype) },
                 if a.commodity == e.currency { String::new() } else { format!(" · {}", a.commodity) }
             );
             Ok(())

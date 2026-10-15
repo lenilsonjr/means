@@ -170,6 +170,7 @@ means verify                                      # recompute every entity's has
 means chart apply --entity "Personal" charts/personal-nomad.json          # create a chart template's accounts (existing ones kept, coded)
 means chart remap --dry-run charts/remap/example.json            # preview a remap plan; drop --dry-run to apply it atomically
 means chart new --entity LLC "Assets:Bank:Example Bank EUR" --currency EUR  # the root name sets the kind; --currency sets the account commodity
+means chart new --entity LLC "Assets:Bank:Example Bank EUR" --commodity EUR --statutory-code 1010 --subtype bank   # commodity (alias of --currency), statutory code and subtype in one command
 means entity set LLC --fye 12-31 --registration EIN=00-0000000   # legal facts; entity classify, group and party record the rest
 means entity set "LLC (rebuilt)" --name LLC                        # rename; the name is unique among the active entities
 means entity archive "LLC (first attempt)" --actor "Sample Person" --reason "rebuilt as a new entity"   # hide the books and refuse writes

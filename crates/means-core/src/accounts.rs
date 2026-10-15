@@ -60,6 +60,26 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
     })
 }
 
+/// The subtypes of a postable account, by account type. The first subtype of each type is the
+/// default for a new account of that type. `placeholder` marks a group account and is not here.
+pub const SUBTYPES: &[(AccountType, &[&str])] = &[
+    (AccountType::Asset, &["bank", "savings", "cash", "wallet", "receivable", "investment", "crypto"]),
+    (AccountType::Liability, &["card", "loan", "mortgage", "payable"]),
+    (AccountType::Equity, &["equity"]),
+    (AccountType::Income, &["income"]),
+    (AccountType::Expense, &["expense"]),
+];
+
+/// Check a subtype against the account type. The subtype becomes lowercase.
+pub fn check_subtype(t: AccountType, subtype: &str) -> Result<String> {
+    let s = subtype.trim().to_ascii_lowercase();
+    let allowed = SUBTYPES.iter().find(|(k, _)| *k == t).map(|(_, v)| *v).unwrap_or(&[]);
+    if allowed.contains(&s.as_str()) {
+        return Ok(s);
+    }
+    Err(Error::Invalid(format!("subtype {s:?} does not fit an {} account; use one of {}", t.as_str(), allowed.join(", "))))
+}
+
 /// All accounts of an entity (or all entities when `entity_id` is None), with paths, ordered as a tree.
 pub fn list_accounts(conn: &Connection, entity_id: Option<i64>, include_closed: bool) -> Result<Vec<Account>> {
     let sql = format!("{SELECT} WHERE (?1 IS NULL OR a.entity_id = ?1) AND (?2 = 1 OR a.closed_at IS NULL) ORDER BY a.entity_id, a.type, a.position, a.name");
