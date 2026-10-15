@@ -1058,6 +1058,22 @@ fn entity_group_and_party_commands_print_versioned_json() {
 }
 
 #[test]
+fn entity_set_json_prints_the_stored_facts_as_entity_facts_does() {
+    let ledger = Ledger::new();
+    seed(&ledger);
+    let json = |args: &[&str]| -> serde_json::Value { serde_json::from_str(&ledger.ok(args)).unwrap() };
+    let set = json(&["entity", "set", "Personal", "--legal-form", "Sole trader", "--fye", "12-31", "--incorporated-on", "2020-01-02", "--registration", "nif=000000000", "--json"]);
+    let e = &set["entity"];
+    assert_eq!((e["legal_form"].as_str(), e["fiscal_year_end"].as_str(), e["incorporated_on"].as_str()), (Some("Sole trader"), Some("12-31"), Some("2020-01-02")), "{set}");
+    assert_eq!(e["registrations"], serde_json::json!({"NIF": "000000000"}), "{set}");
+    assert_eq!(set["entity"], json(&["entity", "facts", "Personal", "--json"])["entity"]);
+    // A later command that changes only the address prints the stored facts too.
+    let address = json(&["entity", "set", "Personal", "--address", "city=Springfield", "--json"]);
+    assert_eq!(address["entity"]["legal_form"], "Sole trader", "{address}");
+    assert_eq!(address["entity"], json(&["entity", "facts", "Personal", "--json"])["entity"]);
+}
+
+#[test]
 fn accounts_and_entities_list_identifiers_as_json() {
     let ledger = Ledger::new();
     let books = seed(&ledger);
