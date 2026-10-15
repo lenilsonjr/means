@@ -67,6 +67,7 @@ fn status(e: means_core::Error) -> Status {
         E::Invalid(m) | E::Parse(m) => Status::invalid_argument(m),
         E::Locked(m) | E::Unbalanced(m) => Status::failed_precondition(m),
         E::NeedsCascade(m) => Status::failed_precondition(m),
+        E::Archived(m) => Status::failed_precondition(format!("entity_archived: {m}")),
         E::Conflict(m) => Status::already_exists(m),
         E::Db(e) => Status::internal(format!("database: {e}")),
         E::Json(e) => Status::internal(format!("json: {e}")),

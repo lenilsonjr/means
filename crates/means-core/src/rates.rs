@@ -349,10 +349,15 @@ pub struct Revalued {
 
 /// Recompute functional amounts of postings that were booked without a rate, now that prices exist.
 /// Entries are re-balanced through their functional-currency postings, or the FX account as a last resort.
-/// Hash chains are recomputed once per entity at the end.
+/// Hash chains are recomputed once per entity at the end. Archived entities keep their books as
+/// they are.
 pub fn revalue_missing(conn: &mut Connection) -> Result<Revalued> {
     let ids: Vec<(i64, i64, Option<i64>)> = {
-        let mut stmt = conn.prepare("SELECT DISTINCT e.id, e.entity_id, e.seq FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id WHERE p.rate_source = 'missing' ORDER BY e.id")?;
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT e.id, e.entity_id, e.seq FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id
+             JOIN entities en ON en.id = e.entity_id
+             WHERE p.rate_source = 'missing' AND en.archived_at IS NULL ORDER BY e.id",
+        )?;
         let v: Vec<(i64, i64, Option<i64>)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
         v
     };

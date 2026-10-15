@@ -105,6 +105,7 @@ pub fn error_code(e: &Error) -> &'static str {
         Error::NeedsCascade(_) => "invalid_input",
         Error::Unbalanced(_) => "unbalanced",
         Error::Locked(_) => "locked_period",
+        Error::Archived(_) => "entity_archived",
         Error::Db(_) | Error::Other(_) => "io_error",
     }
 }

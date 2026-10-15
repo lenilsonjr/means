@@ -343,10 +343,7 @@ pub fn create_account(conn: &Connection, input: NewAccount) -> Result<Account> {
             ts
         ],
     )
-    .map_err(|e| match e {
-        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => Error::Conflict(format!("an account named {name:?} already exists under this parent")),
-        other => Error::Db(other),
-    })?;
+    .map_err(|e| if crate::is_constraint_violation(&e) { Error::Conflict(format!("an account named {name:?} already exists under this parent")) } else { Error::from(e) })?;
     let id = conn.last_insert_rowid();
     crate::audit::log(conn, "accounts", id, "create", None, Some(serde_json::json!({"name": name, "type": t.as_str(), "commodity": commodity_code})))?;
     get_account(conn, id)
@@ -556,10 +553,7 @@ pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<
             a.location
         ],
     )
-    .map_err(|e| match e {
-        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => Error::Conflict("an account with that name already exists under this parent".into()),
-        other => Error::Db(other),
-    })?;
+    .map_err(|e| if crate::is_constraint_violation(&e) { Error::Conflict("an account with that name already exists under this parent".into()) } else { Error::from(e) })?;
     let after = get_account(conn, id)?;
     crate::audit::log(conn, "accounts", id, "update", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
     Ok(after)

@@ -11,10 +11,12 @@ use crate::model::{AccountType, Commodity, Entity, NewAccount};
 use crate::money;
 use crate::{new_uid, now_ts, Error, Result};
 
+/// The entities, the active ones first and then by id. A name lookup that walks this list finds
+/// the active entity before an archived entity with the same name.
 pub fn list_entities(conn: &Connection, include_archived: bool) -> Result<Vec<Entity>> {
     let mut stmt = conn.prepare(
         "SELECT id, uid, name, kind, country, currency, lock_date, archived_at, created_at
-         FROM entities WHERE (?1 = 1 OR archived_at IS NULL) ORDER BY id",
+         FROM entities WHERE (?1 = 1 OR archived_at IS NULL) ORDER BY archived_at IS NOT NULL, id",
     )?;
     let rows = stmt.query_map([include_archived as i64], row_to_entity)?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -60,10 +62,7 @@ pub fn create_entity(conn: &mut Connection, name: &str, kind: &str, country: &st
         "INSERT INTO entities (uid, name, kind, country, currency, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
         params![new_uid(), name, kind, country.trim().to_ascii_uppercase(), currency, ts],
     )
-    .map_err(|e| match e {
-        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => Error::Conflict(format!("an entity named {name:?} already exists")),
-        other => Error::Db(other),
-    })?;
+    .map_err(|e| if crate::is_constraint_violation(&e) { Error::Conflict(format!("an active entity named {name:?} already exists")) } else { Error::from(e) })?;
     let id = tx.last_insert_rowid();
     create_system_accounts(&tx, id, kind, &currency)?;
     crate::audit::log(&tx, "entities", id, "create", None, Some(serde_json::json!({"name": name, "kind": kind, "currency": currency})))?;
@@ -98,6 +97,108 @@ pub fn update_entity(conn: &mut Connection, id: i64, name: &str, kind: &str, cou
     let after = get_entity(conn, id)?;
     crate::audit::log(conn, "entities", id, "update", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
     Ok(after)
+}
+
+/// Refuse a change to the books of an archived entity. The archive guard triggers refuse the
+/// write too; this check gives a message that names the entity.
+pub fn ensure_active(conn: &Connection, id: i64) -> Result<Entity> {
+    let entity = get_entity(conn, id)?;
+    if let Some(at) = &entity.archived_at {
+        return Err(Error::Archived(format!("{} is archived since {at}; run `means entity unarchive {}` before you change its books", entity.name, entity.uid)));
+    }
+    Ok(entity)
+}
+
+/// Refuse a name that another active entity has. The comparison ignores case.
+fn check_active_name(conn: &Connection, id: i64, name: &str) -> Result<()> {
+    if let Some(other) = list_entities(conn, false)?.into_iter().find(|e| e.id != id && e.name.eq_ignore_ascii_case(name)) {
+        return Err(Error::Conflict(format!("the active entity #{} already has the name {:?}", other.id, other.name)));
+    }
+    Ok(())
+}
+
+/// Give an entity a new name inside the caller's transaction. The name must be unique among
+/// the active entities. The audit log records the names before and after.
+pub fn rename_in(tx: &Connection, id: i64, name: &str) -> Result<Entity> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(Error::Invalid("entity name is required".into()));
+    }
+    let before = ensure_active(tx, id)?;
+    if before.name == name {
+        return Ok(before);
+    }
+    check_active_name(tx, id, name)?;
+    tx.execute("UPDATE entities SET name = ?2, updated_at = ?3 WHERE id = ?1", params![id, name, now_ts()])?;
+    crate::audit::log(tx, "entities", id, "rename", Some(serde_json::json!({"name": before.name})), Some(serde_json::json!({"name": name})))?;
+    get_entity(tx, id)
+}
+
+/// The result of an archive or an unarchive.
+#[derive(Debug, Clone, Serialize)]
+pub struct ArchiveOutcome {
+    pub entity: Entity,
+    pub audit_event_id: i64,
+}
+
+fn require(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        return Err(Error::Invalid(format!("give the {field}")));
+    }
+    Ok(())
+}
+
+/// Archive an entity. Its books stay readable and verifiable. The engine refuses every write to
+/// them until an unarchive. The audit event records the actor and the reason.
+pub fn archive(conn: &mut Connection, id: i64, actor: &str, reason: &str) -> Result<ArchiveOutcome> {
+    require("name of the person who archives the entity", actor)?;
+    require("reason for the archive", reason)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let before = get_entity(&tx, id)?;
+    if let Some(at) = &before.archived_at {
+        return Err(Error::Invalid(format!("{} is archived already, since {at}", before.name)));
+    }
+    let ts = now_ts();
+    tx.execute("UPDATE entities SET archived_at = ?2, updated_at = ?2 WHERE id = ?1", params![id, ts])?;
+    let audit_event_id = crate::audit::log_by(&tx, "entities", id, "archive", Some(serde_json::json!({"archived_at": null})), Some(serde_json::json!({"archived_at": ts})), actor, reason)?;
+    let entity = get_entity(&tx, id)?;
+    tx.commit()?;
+    Ok(ArchiveOutcome { entity, audit_event_id })
+}
+
+/// Make an archived entity active again. `new_name` renames it in the same step, for an
+/// archived entity whose name an active entity has taken. The audit event records the actor
+/// and the reason.
+pub fn unarchive(conn: &mut Connection, id: i64, actor: &str, reason: &str, new_name: Option<&str>) -> Result<ArchiveOutcome> {
+    require("name of the person who unarchives the entity", actor)?;
+    require("reason for the unarchive", reason)?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let before = get_entity(&tx, id)?;
+    let Some(archived_at) = before.archived_at.clone() else {
+        return Err(Error::Invalid(format!("{} is not archived", before.name)));
+    };
+    let name = new_name.map(str::trim).unwrap_or(&before.name).to_string();
+    if name.is_empty() {
+        return Err(Error::Invalid("entity name is required".into()));
+    }
+    check_active_name(&tx, id, &name).map_err(|e| match e {
+        Error::Conflict(m) => Error::Conflict(format!("{m}; give the archived entity another name with --name")),
+        other => other,
+    })?;
+    tx.execute("UPDATE entities SET archived_at = NULL, name = ?2, updated_at = ?3 WHERE id = ?1", params![id, name, now_ts()])?;
+    let audit_event_id = crate::audit::log_by(
+        &tx,
+        "entities",
+        id,
+        "unarchive",
+        Some(serde_json::json!({"archived_at": archived_at, "name": before.name})),
+        Some(serde_json::json!({"archived_at": null, "name": name})),
+        actor,
+        reason,
+    )?;
+    let entity = get_entity(&tx, id)?;
+    tx.commit()?;
+    Ok(ArchiveOutcome { entity, audit_event_id })
 }
 
 /// Legal and tax facts of an entity. They describe the books and never change postings.

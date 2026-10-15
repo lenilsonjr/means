@@ -69,12 +69,44 @@ pub enum Error {
     NeedsCascade(String),
     #[error("parse error: {0}")]
     Parse(String),
+    /// The entity is archived. Its books are read-only until an unarchive.
+    #[error("entity_archived: {0}")]
+    Archived(String),
     #[error("database error: {0}")]
-    Db(#[from] rusqlite::Error),
+    Db(rusqlite::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Other(#[from] anyhow::Error),
+}
+
+/// The prefix of the trigger message that refuses a write to an archived entity.
+/// Migration 29 raises it.
+pub const ARCHIVED_PREFIX: &str = "entity_archived:";
+
+impl From<rusqlite::Error> for Error {
+    /// A write that an archive guard trigger refuses becomes `Error::Archived`. Every other
+    /// database error stays `Error::Db`.
+    fn from(e: rusqlite::Error) -> Error {
+        match archived_message(&e) {
+            Some(m) => Error::Archived(m),
+            None => Error::Db(e),
+        }
+    }
+}
+
+/// The message of an archive guard refusal, without its prefix.
+pub fn archived_message(e: &rusqlite::Error) -> Option<String> {
+    match e {
+        rusqlite::Error::SqliteFailure(_, Some(m)) => m.strip_prefix(ARCHIVED_PREFIX).map(|rest| rest.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// True for a constraint violation of the schema, such as a unique key. An archive guard
+/// refusal is not one: it maps to `Error::Archived`.
+pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation) && archived_message(e).is_none()
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

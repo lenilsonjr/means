@@ -8,9 +8,12 @@ use rusqlite::Connection;
 use crate::Result;
 
 /// A migration is a script, or code when a row needs a decision that SQL cannot make.
+/// `Rebuild` is a script that recreates a table. It runs with foreign keys off, as the SQLite
+/// procedure for a table rebuild requires, and checks every foreign key before the commit.
 enum Migration {
     Sql(&'static str),
     Code(fn(&Connection) -> Result<()>),
+    Rebuild(&'static str),
 }
 
 const MIGRATIONS: &[(i64, Migration)] = &[
@@ -39,6 +42,8 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (25, Migration::Sql(include_str!("../migrations/0025_intervault_links.sql"))),
     (26, Migration::Sql(include_str!("../migrations/0026_invoices.sql"))),
     (27, Migration::Sql(include_str!("../migrations/0027_entity_flags.sql"))),
+    (28, Migration::Rebuild(include_str!("../migrations/0028_entity_active_names.sql"))),
+    (29, Migration::Sql(include_str!("../migrations/0029_archive_guards.sql"))),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.
@@ -147,26 +152,51 @@ pub fn migrate_to(conn: &Connection, target: i64) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     for (version, migration) in MIGRATIONS {
         if *version > current && *version <= target {
-            // Another process can open the same file at the same time. Take the write lock first,
-            // then read the version again, so each migration runs once.
-            conn.execute_batch("BEGIN IMMEDIATE")?;
-            let now: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            if now >= *version {
-                conn.execute_batch("COMMIT")?;
-                continue;
+            let rebuild = matches!(migration, Migration::Rebuild(_));
+            // PRAGMA foreign_keys has no effect inside a transaction, so set it before BEGIN.
+            if rebuild {
+                conn.execute_batch("PRAGMA foreign_keys = OFF")?;
             }
-            let applied = match migration {
-                Migration::Sql(sql) => conn.execute_batch(sql).map_err(Into::into),
-                Migration::Code(f) => f(conn),
-            };
-            if let Err(e) = applied {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(e);
+            let outcome = apply_one(conn, *version, migration);
+            if rebuild {
+                conn.execute_batch("PRAGMA foreign_keys = ON")?;
             }
-            conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
-            conn.execute_batch("COMMIT")?;
-            tracing::info!(version, "applied migration");
+            outcome?;
         }
+    }
+    Ok(())
+}
+
+/// Apply one migration in its own transaction.
+fn apply_one(conn: &Connection, version: i64, migration: &Migration) -> Result<()> {
+    // Another process can open the same file at the same time. Take the write lock first,
+    // then read the version again, so each migration runs once.
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let now: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if now >= version {
+        conn.execute_batch("COMMIT")?;
+        return Ok(());
+    }
+    let applied = match migration {
+        Migration::Sql(sql) => conn.execute_batch(sql).map_err(Into::into),
+        Migration::Code(f) => f(conn),
+        Migration::Rebuild(sql) => conn.execute_batch(sql).map_err(Into::into).and_then(|_| foreign_keys_hold(conn)),
+    };
+    if let Err(e) = applied {
+        let _ = conn.execute_batch("ROLLBACK");
+        return Err(e);
+    }
+    conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+    conn.execute_batch("COMMIT")?;
+    tracing::info!(version, "applied migration");
+    Ok(())
+}
+
+/// Refuse a rebuild that leaves a foreign key without its parent row.
+fn foreign_keys_hold(conn: &Connection) -> Result<()> {
+    let broken: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+    if broken > 0 {
+        return Err(crate::Error::Invalid(format!("the table rebuild left {broken} foreign key(s) without a parent row")));
     }
     Ok(())
 }

@@ -46,6 +46,7 @@ pub const ERROR_CODES: &[&str] = &[
     "settled",
     "close_blocked",
     "filed_period",
+    "entity_archived",
     "invalid_path",
     "hash_mismatch",
     "io_error",
@@ -73,6 +74,7 @@ pub fn error_code(e: &Error) -> &'static str {
         Error::NeedsCascade(_) => "invalid_input",
         Error::Locked(_) => "locked_period",
         Error::Unbalanced(_) => "unbalanced",
+        Error::Archived(_) => "entity_archived",
         Error::Db(_) | Error::Other(_) => "internal",
     }
 }
@@ -81,7 +83,7 @@ impl From<Error> for AgentError {
     fn from(e: Error) -> AgentError {
         let code = error_code(&e);
         let message = match e {
-            Error::NotFound(m) | Error::Invalid(m) | Error::Parse(m) | Error::Conflict(m) | Error::Locked(m) | Error::Unbalanced(m) => m,
+            Error::NotFound(m) | Error::Invalid(m) | Error::Parse(m) | Error::Conflict(m) | Error::Locked(m) | Error::Unbalanced(m) | Error::Archived(m) => m,
             Error::NeedsCascade(m) => m,
             Error::Json(e) => e.to_string(),
             Error::Db(e) => format!("database: {e}"),
@@ -93,7 +95,7 @@ impl From<Error> for AgentError {
 
 impl From<rusqlite::Error> for AgentError {
     fn from(e: rusqlite::Error) -> AgentError {
-        Error::Db(e).into()
+        Error::from(e).into()
     }
 }
 

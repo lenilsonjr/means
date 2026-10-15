@@ -62,8 +62,11 @@ fn export_is_not_capped_at_the_journal_ui_limit() {
     let (db, _) = fixture();
     let mut conn = db.conn();
     // A large balanced journal without spending this test on hash-chain generation.
+    // The fixture archives its entities, and an archived entity refuses writes, so the
+    // test makes entity 1 active before it writes.
     conn.execute_batch(
-        "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2001)
+        "UPDATE entities SET archived_at = NULL WHERE id = 1;
+      WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2001)
       INSERT INTO journal_entries(uid,entity_id,date,payee,description,notes,status,origin,created_at,updated_at)
       SELECT 'export-test-'||x, 1, '2026-01-03', '', '', '', 'posted', 'manual', '', '' FROM n;
       INSERT INTO postings(uid,journal_entry_id,account_id,quantity,amount,rate_source,memo,metadata,position)

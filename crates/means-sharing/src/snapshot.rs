@@ -238,6 +238,16 @@ pub fn install(db: &Db, snapshot: &Snapshot, vault: &str, head: &str, count: u64
     let mut c = db.conn();
     let tx = c.transaction()?;
     tx.execute_batch("PRAGMA defer_foreign_keys=ON; DELETE FROM prices; DELETE FROM commodities;")?;
+    // The archive guards refuse writes to an archived entity. A replica is read-only, and the
+    // install must write the rows of a vault that its owner archived.
+    let guards = {
+        let mut q = tx.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'archive_guard_%'")?;
+        let out = q.query_map([], |r| r.get::<_, String>(0))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        out
+    };
+    for name in guards {
+        tx.execute_batch(&format!("DROP TRIGGER \"{name}\""))?;
+    }
     tx.execute_batch("CREATE TABLE replica_references(entry_uid TEXT NOT NULL,field TEXT NOT NULL,target_uid TEXT NOT NULL,PRIMARY KEY(entry_uid,field));")?;
     for spec in SPECS {
         let table = tables[spec.table];
