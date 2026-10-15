@@ -905,8 +905,20 @@ pub fn delete_entry(conn: &mut Connection, id: i64) -> Result<()> {
 
 /// Re-value postings booked without a rate now that prices exist. Returns true when something changed.
 pub fn revalue_entry(conn: &mut Connection, id: i64, rechain: bool) -> Result<bool> {
+    revalue(conn, id, rechain, false)
+}
+
+/// Re-value a draft at the rates stored now, also when its postings already have a rate. A draft
+/// is not in the hash chain, so a better rate can replace the old one. Returns true when a value
+/// changed. An entry that is not a draft changes only when it has a posting without a rate.
+pub fn revalue_draft(conn: &mut Connection, id: i64) -> Result<bool> {
+    revalue(conn, id, false, true)
+}
+
+fn revalue(conn: &mut Connection, id: i64, rechain: bool, drafts: bool) -> Result<bool> {
     let entry = get_entry(conn, id)?;
-    if entry.status == EntryStatus::Void || !entry.postings.iter().any(|p| p.rate_source == "missing") {
+    let missing = entry.postings.iter().any(|p| p.rate_source == "missing");
+    if entry.status == EntryStatus::Void || !(missing || drafts && entry.status == EntryStatus::Draft) {
         return Ok(false);
     }
     check_mutation_lock(conn, &entry)?;
@@ -943,6 +955,10 @@ pub fn revalue_entry(conn: &mut Connection, id: i64, rechain: bool) -> Result<bo
     let keep_closed: std::collections::HashSet<i64> = entry.postings.iter().map(|p| p.account_id).collect();
     let mut prepared = prepare(conn, &entity, entry.date, &inputs, !has_balance, &keep_closed)?;
     if prepared.iter().any(|p| p.rate_source == "missing") {
+        return Ok(false);
+    }
+    let same = |p: &Posting, q: &Prepared| p.account_id == q.account.id && p.quantity == q.quantity && p.amount == q.amount && p.rate == q.rate && p.rate_source == q.rate_source;
+    if !missing && entry.postings.len() == prepared.len() && entry.postings.iter().zip(&prepared).all(|(p, q)| same(p, q)) {
         return Ok(false);
     }
     let tx = conn.transaction()?;

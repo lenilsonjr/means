@@ -144,7 +144,7 @@ means import --entity 1 backup.atb                # Account Tracker into one ent
 means import --account 12 statement.csv           # bank file into account 12, source auto-detected
 means import --account 12 --from 2026-01-01 all-time.csv   # lines outside --from/--to stay as skipped lines, without drafts
 means import --source generic_csv --account 12 --map date=Booked,amount=Value,description=Text,counterparty=Name,external_id=Ref --date-format %d/%m/%Y --decimal-comma export.csv
-means rates fetch --from 2021-01-01               # ECB reference rates, then revalue postings booked without a rate
+means rates fetch --from 2021-01-01               # ECB reference rates, then revalue postings booked without a rate, and drafts
 means rates set --date 2026-03-02 --base EUR --quote USD --rate 1.0850 --json   # 1 EUR = 1.0850 USD; offline
 means rates import rates.csv                      # columns date,base,quote,rate; all rows or none
 means rates list --base EUR --quote USD --from 2026-03-01 --to 2026-03-31 --json
@@ -194,7 +194,7 @@ means export --format snapshot --output books-2026-q1 --as-of 2026-03-31 --json 
 means export verify books-2026-q1
 ```
 
-`means rates set` stores one row in the prices table: one unit of the base costs `rate` units of the quote on that day. The default source is `manual`; `--source` changes it. The rate lookup uses the row directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. For example, the ECB stores USD in EUR, so a USD posting in a EUR entity uses a recent ECB row before a manual `--base EUR --quote USD` row. To override the ECB for that posting, enter `--base USD --quote EUR`. `set` and `import` then revalue postings booked without a rate, as `fetch` does; `--no-revalue` skips this step.
+`means rates set` stores one row in the prices table: one unit of the base costs `rate` units of the quote on that day. The default source is `manual`; `--source` changes it. The rate lookup uses the row directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. For example, the ECB stores USD in EUR, so a USD posting in a EUR entity uses a recent ECB row before a manual `--base EUR --quote USD` row. To override the ECB for that posting, enter `--base USD --quote EUR`. `set` and `import` then revalue postings booked without a rate, as `fetch` does. All three also revalue drafts at the rates stored now, also a draft that already has a rate, for example a cross rate. Drafts are not in the hash chain, so this is safe. Posted entries that have a rate stay unchanged. The summary counts both, for example `2 entries revalued, 5 drafts revalued`. `--no-revalue` skips this step.
 
 `means import --map` reads a CSV file as `generic_csv` and builds the same column mapping as the TUI. A column is a header name or a 1-based column number. `counterparty` adds its column to the description. `external_id` fills the line reference, which detects duplicates. The keys `debit`, `credit`, `balance` and `currency` are also accepted. `--date-format` takes a strftime pattern; without it, the parser detects the format. `--decimal-comma` reads `1.234,56`.
 

@@ -32,7 +32,7 @@ pub struct SetArgs {
     /// Where the rate comes from
     #[arg(long, default_value = "manual")]
     source: String,
-    /// Store the rate without changing existing entry book values
+    /// Store the rate without changing existing entry or draft book values
     #[arg(long)]
     no_revalue: bool,
     #[arg(long)]
@@ -73,7 +73,7 @@ pub struct ImportArgs {
     /// The source written on each row
     #[arg(long, default_value = "manual")]
     source: String,
-    /// Store the rates without changing existing entry book values
+    /// Store the rates without changing existing entry or draft book values
     #[arg(long)]
     no_revalue: bool,
     #[arg(long)]
@@ -96,13 +96,14 @@ fn price_json(p: &means_core::model::Price) -> Value {
     json!({"id": p.id, "date": p.on.to_string(), "base": p.commodity, "quote": p.currency, "rate": money::plain(p.price), "source": p.source})
 }
 
-/// Revalue the postings that were booked without a rate. Returns the number of fixed entries.
+/// Revalue the postings that were booked without a rate, and the drafts at the new rates.
+/// Returns the number of fixed entries and of revalued drafts.
 fn revalue(conn: &mut means_core::rusqlite::Connection, skip: bool) -> AgentResult<Value> {
     if skip {
-        return Ok(json!({"fixed": 0, "failed": 0, "first_error": null}));
+        return Ok(json!({"fixed": 0, "drafts": 0, "failed": 0, "first_error": null}));
     }
     let r = rates::revalue_missing(conn)?;
-    Ok(json!({"fixed": r.fixed, "failed": r.failed, "first_error": r.first_error}))
+    Ok(json!({"fixed": r.fixed, "drafts": r.drafts, "failed": r.failed, "first_error": r.first_error}))
 }
 
 fn run_set(db_path: &Path, a: SetArgs) -> AgentResult<Output> {
@@ -118,13 +119,14 @@ fn run_set(db_path: &Path, a: SetArgs) -> AgentResult<Output> {
         return Ok(Output::Json(json!({"rate": rate, "revalued": revalued})));
     }
     Ok(Output::Text(format!(
-        "rate {} 1 {} = {} {} ({}); {} entries revalued\n",
+        "rate {} 1 {} = {} {} ({}); {} entries revalued, {} drafts revalued\n",
         on,
         a.base.trim().to_ascii_uppercase(),
         rate["rate"].as_str().unwrap_or_default(),
         a.quote.trim().to_ascii_uppercase(),
         a.source.trim(),
-        revalued["fixed"]
+        revalued["fixed"],
+        revalued["drafts"]
     )))
 }
 
@@ -178,5 +180,5 @@ fn run_import(db_path: &Path, a: ImportArgs) -> AgentResult<Output> {
     if a.json {
         return Ok(Output::Json(json!({"written": written, "source": a.source.trim(), "revalued": revalued})));
     }
-    Ok(Output::Text(format!("rates: {written} written, {} entries revalued\n", revalued["fixed"])))
+    Ok(Output::Text(format!("rates: {written} written, {} entries revalued, {} drafts revalued\n", revalued["fixed"], revalued["drafts"])))
 }

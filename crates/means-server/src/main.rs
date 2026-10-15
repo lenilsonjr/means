@@ -483,7 +483,7 @@ enum PluggyCommand {
 
 #[derive(Subcommand)]
 enum RatesCommand {
-    /// Fetch ECB reference rates (EUR against every ECB currency) and revalue postings booked without a rate
+    /// Fetch ECB reference rates (EUR against every ECB currency); revalue postings booked without a rate, and drafts
     Fetch {
         #[arg(long, default_value = "2020-01-01")]
         from: String,
@@ -493,11 +493,11 @@ enum RatesCommand {
         /// Also store cross rates for these pairs on each rate day of the range, for example USD/SGD,GBP/SGD
         #[arg(long)]
         pairs: Option<String>,
-        /// Store rates without changing existing entry book values
+        /// Store rates without changing existing entry or draft book values
         #[arg(long)]
         no_revalue: bool,
     },
-    /// Store one rate entered by hand: 1 base = rate quote on a date
+    /// Store one rate entered by hand: 1 base = rate quote on a date; revalue postings booked without a rate, and drafts
     Set(rates_cli::SetArgs),
     /// List stored rates, newest first
     List(rates_cli::ListArgs),
@@ -1357,9 +1357,9 @@ async fn main() -> Result<()> {
                 Some(pairs) => means_core::rates::store_cross_pairs(&mut db.conn(), pairs, from, to)?,
                 None => 0,
             };
-            let revalued = if no_revalue { 0 } else { revalue_logged(&mut db.conn())? };
+            let (revalued, drafts) = if no_revalue { (0, 0) } else { revalue_logged(&mut db.conn())? };
             let (_, latest) = means_core::rates::price_count(&db.conn())?;
-            println!("rates: {inserted} written, {derived} cross rates stored, {revalued} entries revalued, latest {}", latest.unwrap_or_default());
+            println!("rates: {inserted} written, {derived} cross rates stored, {revalued} entries revalued, {drafts} drafts revalued, latest {}", latest.unwrap_or_default());
             Ok(())
         }
         Command::Rates { command: RatesCommand::Set(args) } => rates_cli::set(db_path, args),
@@ -1583,7 +1583,8 @@ fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i
     Ok(())
 }
 
-/// Download the ECB history and store it; then revalue postings booked without a rate.
+/// Download the ECB history and store it; then revalue postings booked without a rate, and drafts.
+/// The second number counts the revalued entries and drafts together.
 pub async fn fetch_rates(db: &Db, from: Option<chrono::NaiveDate>) -> Result<(usize, usize, String)> {
     fetch_rates_with_revaluation(db, from, true).await
 }
@@ -1593,18 +1594,19 @@ async fn fetch_rates_with_revaluation(db: &Db, from: Option<chrono::NaiveDate>, 
     let xml = client.get(ECB_HIST_URL).send().await?.error_for_status()?.text().await?;
     let mut conn = db.conn();
     let inserted = means_core::rates::import_ecb_xml(&mut conn, &xml, from)?;
-    let fixed = if revalue { revalue_logged(&mut conn)? } else { 0 };
+    let (fixed, drafts) = if revalue { revalue_logged(&mut conn)? } else { (0, 0) };
     let (_, latest) = means_core::rates::price_count(&conn)?;
-    Ok((inserted, fixed, latest.unwrap_or_default()))
+    Ok((inserted, fixed + drafts, latest.unwrap_or_default()))
 }
 
-/// Revalue the postings booked without a rate, and log the entries that still fail.
-fn revalue_logged(conn: &mut means_core::rusqlite::Connection) -> Result<usize> {
+/// Revalue the postings booked without a rate and the drafts, and log the entries that still fail.
+/// Returns the number of fixed entries and of revalued drafts.
+fn revalue_logged(conn: &mut means_core::rusqlite::Connection) -> Result<(usize, usize)> {
     let revalued = means_core::rates::revalue_missing(conn)?;
     if revalued.failed > 0 {
         tracing::warn!(failed = revalued.failed, first = ?revalued.first_error, "some entries could not be revalued");
     }
-    Ok(revalued.fixed)
+    Ok((revalued.fixed, revalued.drafts))
 }
 
 /// The Pluggy channel's network half. means-core opens no socket, so the HTTP client lives here

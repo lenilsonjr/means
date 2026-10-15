@@ -1157,6 +1157,46 @@ fn rates_set_list_and_import_work_offline_and_value_drafts() {
 }
 
 #[test]
+fn rates_set_revalues_drafts_that_already_had_a_rate() {
+    let ledger = Ledger::new();
+    let file = ledger.path.with_extension("rates.csv");
+    std::fs::write(&file, "date,base,quote,rate\n2026-03-02,USD,EUR,0.90\n2026-03-02,SGD,EUR,0.60\n").unwrap();
+    ledger.ok(&["rates", "import", file.to_str().unwrap(), "--source", "ecb"]);
+    std::fs::remove_file(&file).unwrap();
+    let (usd, draft, posted) = {
+        let db = ledger.db();
+        let mut conn = db.conn();
+        let e = entities::create_entity(&mut conn, "Northwind Holdings", "company", "SG", "SGD").unwrap();
+        let usd = accounts::ensure_account(&conn, e.id, AccountType::Asset, &["Bank", "Example Bank USD"], "bank", "USD").unwrap().id;
+        let fees = accounts::ensure_account(&conn, e.id, AccountType::Expense, &["Fees"], "expense", "SGD").unwrap().id;
+        let mut ids = Vec::new();
+        for status in [EntryStatus::Draft, EntryStatus::Posted] {
+            let mut input = EntryInput::new(e.id, date("2026-03-02"));
+            input.status = status;
+            input.postings = vec![PostingInput::new(usd, d("-100.00")), PostingInput::balancing(fees)];
+            ids.push(journal::create_entry(&mut conn, input).unwrap().id);
+        }
+        (usd, ids[0], ids[1])
+    };
+    // No USD/SGD row exists yet: both entries take the cross rate through EUR, 1 USD = 1.5 SGD.
+    for id in [draft, posted] {
+        let p = posting_on(&entry(&ledger, id), usd).clone();
+        assert_eq!((p.amount.minor(), p.rate_source.as_str()), (-15000, "cross:ECB"));
+    }
+    let out = ledger.ok(&["rates", "set", "--date", "2026-03-02", "--base", "USD", "--quote", "SGD", "--rate", "1.35"]);
+    assert!(out.ends_with("0 entries revalued, 1 drafts revalued\n"), "{out}");
+    let p = posting_on(&entry(&ledger, draft), usd).clone();
+    assert_eq!((p.amount.minor(), p.rate_source.as_str()), (-13500, "exact"), "the draft takes the exact rate");
+    let p = posting_on(&entry(&ledger, posted), usd).clone();
+    assert_eq!((p.amount.minor(), p.rate_source.as_str()), (-15000, "cross:ECB"), "a posted entry with a rate stays");
+    let verified = ledger.ok(&["verify"]);
+    assert!(verified.contains("Northwind Holdings: 1 entries verified"), "the hash chain stays valid: {verified}");
+    // A second pass finds nothing to change.
+    let again: serde_json::Value = serde_json::from_str(&ledger.ok(&["rates", "set", "--date", "2026-03-02", "--base", "USD", "--quote", "SGD", "--rate", "1.35", "--json"])).unwrap();
+    assert_eq!((again["revalued"]["fixed"].as_i64(), again["revalued"]["drafts"].as_i64()), (Some(0), Some(0)), "{again}");
+}
+
+#[test]
 fn generic_csv_import_takes_a_column_map() {
     let ledger = Ledger::new();
     let books = seed(&ledger);

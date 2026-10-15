@@ -101,10 +101,10 @@ These commands describe the books. They never change postings. See [entity facts
 | `means entry propose <uid>` | Nothing | Allowed |
 | `means entry confirm <uid> --digest <proposal_digest> [--actor <name>]` | Posts the draft, the review mark and an audit event | Refused |
 | `means entry void <uid> --reason <text> [--date D] [--cascade [--actor A]] [--dry-run]` | A reversal. With `--cascade`, also the reversals of the linked entries. With `--dry-run`, nothing. | Refused, except with `--dry-run` |
-| `means rates set --date D --base B --quote Q --rate R [--source S] [--no-revalue] [--json]` | A rate and revalued postings | Allowed |
+| `means rates set --date D --base B --quote Q --rate R [--source S] [--no-revalue] [--json]` | A rate, revalued postings and revalued drafts | Allowed |
 | `means rates list [--base B] [--quote Q] [--from D] [--to D] [--limit N] [--json]` | Nothing | Allowed |
 | `means rates list --derive B/Q --date D [--json]` | Nothing | Allowed |
-| `means rates fetch [--from D] [--pairs B/Q,...] [--to D] [--no-revalue]` | ECB rates, stored cross rates and revalued postings | Allowed |
+| `means rates fetch [--from D] [--pairs B/Q,...] [--to D] [--no-revalue]` | ECB rates, stored cross rates, revalued postings and revalued drafts | Allowed |
 | `means rates import <csv> [--source S] [--no-revalue] [--json]` | Rates and revalued postings | Allowed |
 
 `--actor` defaults to `$USER`.
@@ -125,9 +125,9 @@ These commands describe the books. They never change postings. See [entity facts
 
 `means void <id> --json` returns `entry`, `reversal`, `evidence_lines`, `applied`, `already_void`, `cascade`, `needs_cascade` and `linked_entries`. Without `--yes`, the command is a preview and saves nothing. `applied` is then false, and `entry` is the stored entry with its real status. The preview rolls the reversal back, so `reversal` has no id and no uid: it is `{"uid": null, "status": "posted", "date": D}`, as in `means entry void --dry-run`. The preview also lists the linked entries in `linked_entries`. With `--yes`, `applied` is true, and `entry` has the status `void` and `reversed_by_id`.
 
-`rates set` stores one rate: one unit of the base costs `rate` units of the quote on the date. The row goes in the prices table, which `means rates fetch` also fills. The default source is `manual`. Drafts, imports and invoices find the row through the rate lookup: directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. `rates import` reads a CSV file with the header `date,base,quote,rate`. It writes all rows or none, and a refusal names the bad line. `set` and `import` then revalue the postings booked without a rate, unless you give `--no-revalue`.
+`rates set` stores one rate: one unit of the base costs `rate` units of the quote on the date. The row goes in the prices table, which `means rates fetch` also fills. The default source is `manual`. Drafts, imports and invoices find the row through the rate lookup: directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. `rates import` reads a CSV file with the header `date,base,quote,rate`. It writes all rows or none, and a refusal names the bad line. `set` and `import` then revalue the postings booked without a rate, unless you give `--no-revalue`. They also revalue each draft at the rates stored now, also a draft whose postings already have a rate that the lookup found. A draft is not in the hash chain. A rate given by hand in a posting stays. `rates fetch` does the same.
 
-`rates set` returns `rate` and `revalued`. A rate has `id`, `date`, `base`, `quote`, `rate` (a decimal string) and `source`. `revalued` has `fixed`, `failed` and `first_error`. `rates list` returns `count` and `rates`, newest first. `rates import` returns `written`, `source` and `revalued`.
+`rates set` returns `rate` and `revalued`. A rate has `id`, `date`, `base`, `quote`, `rate` (a decimal string) and `source`. `revalued` has `fixed` (entries booked without a rate that now have one), `drafts` (drafts that now have another rate), `failed` and `first_error`. `rates list` returns `count` and `rates`, newest first. `rates import` returns `written`, `source` and `revalued`.
 
 The rate lookup uses the latest row on or before the date. A row older than 400 days does not count. When the ledger has no direct row and no inverse row, the lookup derives a cross rate through a currency that quotes both sides. EUR comes first, because ECB rates quote EUR. Each leg uses its latest row within the same 400 days. A missing leg gives no rate, and the posting gets `rate_source` `missing`. A cross rate has the `rate_source` `cross:<SOURCE>`, where `<SOURCE>` is the source of the legs in capitals, for example `cross:ECB`. Two legs with different sources give `cross:<A>+<B>`.
 

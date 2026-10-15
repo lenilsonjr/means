@@ -342,15 +342,19 @@ fn attr(tag: &str, name: &str) -> Option<String> {
 /// What a revaluation pass did.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Revalued {
+    /// Entries booked without a rate that now have one.
     pub fixed: usize,
+    /// Drafts that had a rate and now have another one, for example an exact rate instead of a cross rate.
+    pub drafts: usize,
     pub failed: usize,
     pub first_error: Option<String>,
 }
 
 /// Recompute functional amounts of postings that were booked without a rate, now that prices exist.
 /// Entries are re-balanced through their functional-currency postings, or the FX account as a last resort.
-/// Hash chains are recomputed once per entity at the end. Archived entities keep their books as
-/// they are.
+/// Hash chains are recomputed once per entity at the end. Then revalue the drafts in other
+/// commodities at the rates stored now: drafts are not in the hash chain. Archived entities keep
+/// their books as they are.
 pub fn revalue_missing(conn: &mut Connection) -> Result<Revalued> {
     let ids: Vec<(i64, i64, Option<i64>)> = {
         let mut stmt = conn.prepare(
@@ -375,19 +379,41 @@ pub fn revalue_missing(conn: &mut Connection) -> Result<Revalued> {
                 }
             }
             Ok(false) => {}
-            Err(e) => {
-                report.failed += 1;
-                if report.first_error.is_none() {
-                    report.first_error = Some(format!("entry #{id}: {e}"));
-                }
-                tracing::warn!(entry = id, "revaluation failed: {e}");
-            }
+            Err(e) => report.fail(id, e),
         }
     }
     for (entity_id, seq) in min_seq {
         crate::hashchain::rechain(conn, entity_id, seq)?;
     }
+    // A rate that the lookup found (exact, nearest, inverse or cross) can change when a new rate
+    // arrives. Rates given by hand ("input") and rates of a currency migration stay.
+    let drafts: Vec<i64> = {
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT e.id FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id
+             WHERE e.status = 'draft' AND p.rate_source NOT IN ('', 'same', 'input', 'missing', 'currency_migration')
+               AND NOT EXISTS (SELECT 1 FROM postings m WHERE m.journal_entry_id = e.id AND m.rate_source = 'missing') ORDER BY e.id",
+        )?;
+        let v: Vec<i64> = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        v
+    };
+    for id in drafts {
+        match crate::journal::revalue_draft(conn, id) {
+            Ok(true) => report.drafts += 1,
+            Ok(false) => {}
+            Err(e) => report.fail(id, e),
+        }
+    }
     Ok(report)
+}
+
+impl Revalued {
+    fn fail(&mut self, id: i64, e: Error) {
+        self.failed += 1;
+        if self.first_error.is_none() {
+            self.first_error = Some(format!("entry #{id}: {e}"));
+        }
+        tracing::warn!(entry = id, "revaluation failed: {e}");
+    }
 }
 
 #[cfg(test)]
