@@ -193,7 +193,12 @@ pub fn linked_entries(conn: &Connection, entry_id: i64, date: Option<NaiveDate>)
 /// The message of a void that the links refuse.
 pub(crate) fn refusal(entry: &JournalEntry, linked: &[LinkedEntry]) -> String {
     let list: Vec<String> = linked.iter().map(LinkedEntry::describe).collect();
-    format!("entry #{} ({}) has inter-vault links to entries of other entities: {}; void them too with cascade, or remove the link first to void only this entry", entry.id, entry.uid, list.join("; "))
+    format!(
+        "entry #{} ({}) has inter-vault links to entries of other entities: {}; void them too with --cascade, or remove each link first with `means intervault unlink` to void only this entry",
+        entry.id,
+        entry.uid,
+        list.join("; ")
+    )
 }
 
 const LINK_SELECT: &str = "SELECT l.id, l.uid, l.entry_a_id, ea.uid, l.entry_b_id, eb.uid, l.kind,
@@ -365,23 +370,65 @@ pub(crate) fn link_in_transaction(conn: &Connection, entry_a_id: i64, entry_b_id
     Ok(link)
 }
 
-/// Remove a link while both entries are drafts. Returns the removed link.
-pub fn unlink(conn: &mut Connection, link_uid: &str, reason: &str) -> Result<Link> {
+/// A removed link and the facts of its audit event.
+#[derive(Debug, Clone, Serialize)]
+pub struct Unlinked {
+    pub link: Link,
+    pub actor: String,
+    pub reason: String,
+    /// The entries that are dated on or before the lock date of their entity. The list is
+    /// empty unless the caller gave `force_locked`.
+    pub locked_entry_uids: Vec<String>,
+    /// True when the removal went through a locked period.
+    pub force_locked: bool,
+    pub audit_event_id: i64,
+}
+
+/// Remove a link. Returns the removed link.
+///
+/// The removal needs a reason. While both entries are drafts, it needs nothing more. When an
+/// entry is posted or void, the removal is a human action: it needs the actor, and it is
+/// refused when that entry is dated on or before the lock date of its entity, unless the
+/// caller gives `force_locked`.
+///
+/// The entries keep their postings. Without the link, each entry is not reconciled for
+/// intercompany purposes: the close check counts it in `intercompany_out_of_balance`, and the
+/// exception list shows its intercompany postings. A void of one entry then leaves the other.
+pub fn unlink(conn: &mut Connection, link_uid: &str, actor: &str, reason: &str, force_locked: bool) -> Result<Unlinked> {
     if reason.trim().is_empty() {
         return Err(Error::Invalid("give a reason to remove the link".into()));
     }
     let tx = conn.transaction()?;
     let link = get_link_by_uid(&tx, link_uid)?;
-    for id in [link.entry_a_id, link.entry_b_id] {
-        let entry = journal::get_entry(&tx, id)?;
-        if entry.status != EntryStatus::Draft {
-            return Err(Error::Invalid(format!("entry {} is {}; a link can only be removed while both entries are drafts; void the pair instead", entry.uid, entry.status.as_str())));
+    let a = journal::get_entry(&tx, link.entry_a_id)?;
+    let b = journal::get_entry(&tx, link.entry_b_id)?;
+    let booked: Vec<&JournalEntry> = [&a, &b].into_iter().filter(|e| e.status != EntryStatus::Draft).collect();
+    if let Some(first) = booked.first() {
+        if actor.trim().is_empty() {
+            return Err(Error::Invalid(format!("entry {} is {}; the removal of a link of a posted entry is a human action, so give --actor", first.uid, first.status.as_str())));
+        }
+    }
+    let mut locked = Vec::new();
+    for entry in booked {
+        let entity = entities::get_entity(&tx, entry.entity_id)?;
+        if let Some(lock) = entity.lock_date.filter(|lock| entry.date <= *lock) {
+            if !force_locked {
+                return Err(Error::Locked(format!("entry {} of {} is dated {}, on or before its lock date {lock}; give --force-locked to remove the link anyway", entry.uid, entity.name, entry.date)));
+            }
+            locked.push(entry.uid.clone());
         }
     }
     tx.execute("DELETE FROM intervault_links WHERE id = ?1", [link.id])?;
-    audit::log_by(&tx, "intervault_links", link.id, "unlink", Some(serde_json::to_value(&link)?), None, "", reason)?;
+    let after = serde_json::json!({
+        "entry_a_uid": link.entry_a_uid,
+        "entry_b_uid": link.entry_b_uid,
+        "intercompany_reconciled": false,
+        "force_locked": !locked.is_empty(),
+        "locked_entry_uids": locked,
+    });
+    let audit_event_id = audit::log_by(&tx, "intervault_links", link.id, "unlink", Some(serde_json::to_value(&link)?), Some(after), actor, reason)?;
     tx.commit()?;
-    Ok(link)
+    Ok(Unlinked { link, actor: actor.trim().into(), reason: reason.trim().into(), force_locked: !locked.is_empty(), locked_entry_uids: locked, audit_event_id })
 }
 
 fn set_status(conn: &Connection, link: &Link, status: &str, action: &str, reason: &str) -> Result<()> {

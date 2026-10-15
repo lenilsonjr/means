@@ -11,7 +11,7 @@ use means_core::proposal::{AgentError, AgentResult};
 use means_core::rusqlite::Connection;
 use serde_json::{json, Value};
 
-use crate::entry_cli::{emit, open, parse_date, resolve_entity, Output};
+use crate::entry_cli::{emit, open, parse_date, refuse_agent, resolve_entity, Output};
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -32,12 +32,18 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Remove a link while both entries are drafts
+    /// Remove a link. A link of a posted entry needs --actor (a human action).
     Unlink {
         uid: String,
         /// Why the link goes; saved in the audit trail
         #[arg(long)]
         reason: String,
+        /// The person who removes the link of a posted entry; saved in the audit trail
+        #[arg(long)]
+        actor: Option<String>,
+        /// Remove the link although an entry is in a locked period of its entity (audited)
+        #[arg(long)]
+        force_locked: bool,
         #[arg(long)]
         json: bool,
     },
@@ -84,7 +90,7 @@ pub fn run(db_path: PathBuf, command: Command) -> anyhow::Result<()> {
 fn execute(db_path: &Path, command: Command) -> AgentResult<Output> {
     match command {
         Command::Link { a, b, kind, note, json } => link(db_path, &a, &b, &kind, &note, json),
-        Command::Unlink { uid, reason, json } => unlink(db_path, &uid, &reason, json),
+        Command::Unlink { uid, reason, actor, force_locked, json } => unlink(db_path, &uid, &reason, actor.as_deref(), force_locked, json),
         Command::List { group, entity, from, to, status, json } => list(db_path, group.as_deref(), entity.as_deref(), &from, &to, status.as_deref(), json),
         Command::Exceptions { entity, from, to, json } => exceptions(db_path, &entity, &from, &to, json),
     }
@@ -134,14 +140,31 @@ fn link(db_path: &Path, a: &str, b: &str, kind: &str, note: &str, json: bool) ->
     Ok(Output::Json(json!({"link": link_json(&conn, &link)?})))
 }
 
-fn unlink(db_path: &Path, uid: &str, reason: &str, json: bool) -> AgentResult<Output> {
+/// `--actor` and `--force-locked` mark the human action on a posted entry. An agent session
+/// refuses them before the command opens the ledger.
+fn unlink(db_path: &Path, uid: &str, reason: &str, actor: Option<&str>, force_locked: bool, json: bool) -> AgentResult<Output> {
+    if actor.is_some() || force_locked {
+        refuse_agent("intervault unlink --actor")?;
+    }
     let db = open(db_path)?;
     let mut conn = db.conn();
-    let link = intervault::unlink(&mut conn, uid, reason)?;
+    let out = intervault::unlink(&mut conn, uid, actor.unwrap_or(""), reason, force_locked)?;
     if !json {
-        return Ok(Output::Text(format!("removed link {} between {} and {}\n", link.uid, link.entry_a_uid, link.entry_b_uid)));
+        let mut text = format!("removed link {} between {} and {}\n", out.link.uid, out.link.entry_a_uid, out.link.entry_b_uid);
+        if !out.locked_entry_uids.is_empty() {
+            text.push_str(&format!("  forced through the lock date: {}\n", out.locked_entry_uids.join(", ")));
+        }
+        text.push_str("  both entries are now not reconciled for intercompany purposes\n");
+        return Ok(Output::Text(text));
     }
-    Ok(Output::Json(json!({"link": to_value(&link)?, "reason": reason.trim()})))
+    Ok(Output::Json(json!({
+        "link": to_value(&out.link)?,
+        "reason": out.reason,
+        "actor": out.actor,
+        "force_locked": out.force_locked,
+        "locked_entry_uids": out.locked_entry_uids,
+        "audit_event_id": out.audit_event_id,
+    })))
 }
 
 fn list(db_path: &Path, group: Option<&str>, entity: Option<&str>, from: &str, to: &str, status: Option<&str>, json: bool) -> AgentResult<Output> {

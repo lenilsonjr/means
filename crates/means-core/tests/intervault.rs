@@ -236,16 +236,76 @@ fn unlink_needs_two_drafts_and_a_reason() {
     let a = b.parent_loan_entry("2026-03-02", EntryStatus::Draft);
     let s = b.sub_loan_entry("2026-03-03", EntryStatus::Draft);
     let link = b.link(&a, &s, "loan").unwrap();
-    assert!(matches!(intervault::unlink(&mut b.db.conn(), &link.uid, " "), Err(Error::Invalid(_))));
-    intervault::unlink(&mut b.db.conn(), &link.uid, "linked by mistake").unwrap();
+    assert!(matches!(intervault::unlink(&mut b.db.conn(), &link.uid, "", " ", false), Err(Error::Invalid(_))));
+    intervault::unlink(&mut b.db.conn(), &link.uid, "", "linked by mistake", false).unwrap();
     assert!(intervault::links_for_entry(&b.db.conn(), a.id).unwrap().is_empty());
     let history = audit::history(&b.db.conn(), "intervault_links", link.id).unwrap();
     assert_eq!(history.last().unwrap().reason, "linked by mistake");
 
+    // A posted entry makes the removal a human action: it needs the actor.
     let link = b.link(&a, &s, "loan").unwrap();
     journal::post_entry(&mut b.db.conn(), a.id).unwrap();
-    assert!(matches!(intervault::unlink(&mut b.db.conn(), &link.uid, "late change"), Err(Error::Invalid(_))));
+    assert!(matches!(intervault::unlink(&mut b.db.conn(), &link.uid, "", "late change", false), Err(Error::Invalid(m)) if m.contains("--actor")));
     assert_eq!(b.status_of(&link), "draft");
+}
+
+#[test]
+fn unlink_of_posted_entries_is_audited_and_reopens_the_close_warning() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-02", EntryStatus::Posted);
+    let link = b.link(&a, &s, "loan").unwrap();
+    assert!(finding(&parent_close(&b), "intercompany_out_of_balance").is_none());
+
+    let out = intervault::unlink(&mut b.db.conn(), &link.uid, "Sample Reviewer", "booked against the wrong lender", false).unwrap();
+    assert_eq!((out.actor.as_str(), out.force_locked), ("Sample Reviewer", false));
+    assert!(intervault::get_link_by_uid(&b.db.conn(), &link.uid).is_err());
+
+    // The audit event has the actor, the reason and both entry uids.
+    let event = audit::get(&b.db.conn(), out.audit_event_id).unwrap();
+    assert_eq!((event.table_name.as_str(), event.row_id, event.action.as_str()), ("intervault_links", link.id, "unlink"));
+    assert_eq!((event.actor.as_str(), event.reason.as_str()), ("Sample Reviewer", "booked against the wrong lender"));
+    let after: serde_json::Value = serde_json::from_str(event.after.as_deref().unwrap()).unwrap();
+    assert_eq!(after["entry_a_uid"], a.uid.as_str());
+    assert_eq!(after["entry_b_uid"], s.uid.as_str());
+    assert_eq!(after["intercompany_reconciled"], false);
+    assert_eq!(after["force_locked"], false);
+
+    // Both entries keep their postings and are not reconciled for intercompany purposes now.
+    assert_eq!(b.get(&a).status, EntryStatus::Posted);
+    assert_eq!(b.get(&s).status, EntryStatus::Posted);
+    let report = parent_close(&b);
+    let warning = finding(&report, "intercompany_out_of_balance").unwrap();
+    assert_eq!(warning.amount.unwrap().minor(), 135000);
+    assert!(finding(&report, "intercompany_linked").is_none());
+    let sub_report = means_core::close::close_check(&b.db.conn(), b.subsidiary, day("2026-03-01"), day("2026-03-31")).unwrap();
+    assert_eq!(finding(&sub_report, "intercompany_out_of_balance").unwrap().amount.unwrap().minor(), -100000);
+}
+
+#[test]
+fn a_leg_only_void_after_unlink_ignores_the_lock_of_the_other_entity() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
+    let link = b.link(&a, &s, "loan").unwrap();
+    b.lock(b.subsidiary, "2026-03-31");
+
+    // The entry of the subsidiary is in a locked period: the removal needs force_locked.
+    let err = intervault::unlink(&mut b.db.conn(), &link.uid, "Sample Reviewer", "wrong lender", false).unwrap_err();
+    assert!(matches!(&err, Error::Locked(m) if m.contains("Blue Harbor LLC") && m.contains("--force-locked")), "{err:?}");
+    assert_eq!(b.status_of(&link), "posted");
+    let out = intervault::unlink(&mut b.db.conn(), &link.uid, "Sample Reviewer", "wrong lender", true).unwrap();
+    assert!(out.force_locked);
+    assert_eq!(out.locked_entry_uids, vec![s.uid.clone()]);
+    let after: serde_json::Value = serde_json::from_str(audit::get(&b.db.conn(), out.audit_event_id).unwrap().after.as_deref().unwrap()).unwrap();
+    assert_eq!(after["force_locked"], true);
+    assert_eq!(after["locked_entry_uids"], json!([s.uid]));
+
+    // Without the link, the void of A touches A only, and the lock of the subsidiary does not block.
+    let review = journal::review_void(&mut b.db.conn(), a.id, None, "wrong lender", true, false).unwrap();
+    assert!(review.linked_entries.is_empty() && !review.needs_cascade);
+    assert_eq!(b.get(&a).status, EntryStatus::Void);
+    assert_eq!(b.get(&s).status, EntryStatus::Posted);
 }
 
 #[test]
