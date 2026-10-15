@@ -27,7 +27,7 @@ The commands have three output styles:
 
 A refusal exits with code 1. See [Errors](#errors). Command-line usage errors, such as a missing argument, come from the argument parser. They print text and exit with code 2.
 
-`accounts`, `entity list`, `status`, `entries`, `report expenses`, `budget list`, `import lines` and `refund` are older commands. Their JSON has no `schema_version`. `import`, `post`, `void`, `rule`, `chart` and the bank pull commands print text. They are not part of this contract, except for their `MEANS_AGENT=1` refusal, which is the JSON error object.
+`accounts`, `entity list`, `status`, `entries --jsonl`, `report expenses`, `budget list`, `import lines` and `refund` are older commands. Their JSON has no `schema_version`. `import`, `post`, `void`, `rule`, `chart` and the bank pull commands print text. They are not part of this contract, except for their `MEANS_AGENT=1` refusal, which is the JSON error object.
 
 In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses the command in an agent session. See [Agent sessions](#agent-sessions).
 
@@ -44,7 +44,7 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 | `means party list --entity <e> [--as-of D] [--related-only] [--json]` | Nothing | Allowed |
 | `means party missing --entity <e> --need KEY [--json]` | Nothing | Allowed |
 | `means accounts [--entity <id>] [--json]` | Nothing | Allowed |
-| `means entries [--entity <e>] [--account <path>] [--status S] [--from D] [--to D] [--search T] [--limit N] [--json]` | Nothing | Allowed |
+| `means entries [--entity <e>] [--account <path>] [--status S] [--from D] [--to D] [--search T] [--limit N] [--json \| --jsonl]` | Nothing | Allowed |
 | `means status [--json]` | Nothing | Allowed |
 | `means verify` | Nothing | Allowed |
 
@@ -58,7 +58,7 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 
 `party missing` lists the payees of the entity that have entries (except void entries) or invoices, but no tax id under `--need`, for example `GST`, `VAT` or `EIN`. The key ignores case. It returns `entity`, `need` and `parties`. Each party has the fields of `party list` without the relationships, and `entry_count`, `invoice_count` and `last_date`.
 
-`accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany`, `country`, `iban`, `bic`, `institution`, `location` and `balance`. `entity list --json` returns an array of the active entities. `--all` adds the archived entities, after the active ones. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`. `status` prints one JSON object, with or without `--json`. `entries --json` prints one JSON object per line and the count on stderr.
+`accounts --json` returns an array. Each account has `id` (the integer that `import --account` takes), `uid`, `entity_id`, `path`, `code`, `type`, `subtype`, `placeholder`, `commodity`, `statutory_code`, `tax_treatment`, `intercompany`, `country`, `iban`, `bic`, `institution`, `location` and `balance`. `entity list --json` returns an array of the active entities. `--all` adds the archived entities, after the active ones. Each entity has `id`, `uid`, `name`, `kind`, `country`, `currency`, `fiscal_year_end`, `lock_date` and `archived`. `status` prints one JSON object, with or without `--json`. `entries --json` prints one JSON object: `{"ok": true, "entries": [...], "count": N, "total": T, "schema_version": 1}`. `count` is the number of entries in `entries`. `total` is the number of matching entries without `--limit`. `entries --jsonl` prints one JSON object per entry and line, and the count on stderr. A refusal of `entries` prints text on stderr.
 
 ## Entity facts, groups and parties
 

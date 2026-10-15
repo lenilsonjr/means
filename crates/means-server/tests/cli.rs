@@ -660,7 +660,21 @@ fn entries_json_emits_complete_filtered_objects_with_exact_amounts() {
     let books = seed(&ledger);
     let old = posted(&ledger, &books, "2026-01-01", "Old", "-1.00");
     let newest = posted(&ledger, &books, "2026-02-01", "Shop \"quoted\"\nsecond line", "-90071992547409.91");
+    // `--json` prints one object, like every other command.
     let out = ledger.run(&["entries", "--json", "--entity", "Personal", "--limit", "1"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(text.lines().count(), 1, "one JSON object on one line: {text}");
+    let object: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!((object["ok"].as_bool(), object["count"].as_i64(), object["total"].as_i64(), object["schema_version"].as_i64()), (Some(true), Some(1), Some(2), Some(1)));
+    assert_eq!(object["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(object["entries"][0], serde_json::to_value(entry(&ledger, newest.id)).unwrap());
+    assert!(out.stderr.is_empty());
+    let empty: serde_json::Value = serde_json::from_str(&ledger.ok(&["entries", "--json", "--search", "missing"])).unwrap();
+    assert_eq!((empty["count"].as_i64(), empty["entries"].as_array().map(Vec::len)), (Some(0), Some(0)));
+
+    // `--jsonl` keeps the line format: one object per entry, the count on stderr.
+    let out = ledger.run(&["entries", "--jsonl", "--entity", "Personal", "--limit", "1"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     let lines: Vec<_> = text.lines().collect();
@@ -669,14 +683,15 @@ fn entries_json_emits_complete_filtered_objects_with_exact_amounts() {
     assert_eq!(value, serde_json::to_value(entry(&ledger, newest.id)).unwrap());
     assert_eq!(value["postings"][0]["quantity"], serde_json::json!({"minor": "-9007199254740991", "commodity": "EUR", "precision": 2}));
     assert_eq!(String::from_utf8(out.stderr).unwrap().trim(), "1 of 2 entries");
-    let filtered = ledger.ok(&["entries", "--json", "--search", "Old", "--to", "2026-01-31", "--status", "posted"]);
+    let filtered = ledger.ok(&["entries", "--jsonl", "--search", "Old", "--to", "2026-01-31", "--status", "posted"]);
     let object: serde_json::Value = serde_json::from_str(&filtered).unwrap();
     assert_eq!(object["id"], old.id);
-    let empty = ledger.run(&["entries", "--json", "--search", "missing"]);
+    let empty = ledger.run(&["entries", "--jsonl", "--search", "missing"]);
     assert!(empty.status.success());
     assert!(empty.stdout.is_empty());
     assert_eq!(String::from_utf8(empty.stderr).unwrap().trim(), "0 of 0 entries");
     assert!(ledger.refused(&["entries", "--json", "--account", "Expenses:Food"]).contains("--account needs --entity"));
+    assert_eq!(ledger.run(&["entries", "--json", "--jsonl"]).status.code(), Some(2));
 }
 
 #[test]

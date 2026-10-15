@@ -154,7 +154,8 @@ means accounts --entity 1
 means accounts --entity 1 --json                  # each account with its id (for import --account) and uid
 means reconcile --account 12                      # statement versus ledger, unmatched lines and unreconciled postings
 means entries --entity Personal --status draft    # the journal, newest first, each entry with its postings
-means entries --entity Personal --json            # one JSON object per line; count on stderr
+means entries --entity Personal --json            # one JSON object: ok, entries, count, total, schema_version
+means entries --entity Personal --jsonl           # one JSON object per entry and line; count on stderr
 means report expenses --entity 1 --from 2026-09-01 --to 2026-09-30 --tag trip:porto --json
 means report expenses --entity 1 --group-by tag
 means budget create --entity 1 --name Porto --tag trip:porto --amount 600 --from 2026-09-01 --to 2026-11-30
@@ -200,7 +201,7 @@ means export verify books-2026-q1
 
 `means import --from D --to D` drafts only the lines dated from `--from` to `--to`, both days included. Each option is optional. The import keeps every other line as a statement line with the status `skipped` and a note such as `before --from 2026-01-01`, so the file stays auditable. The summary counts these lines as skipped. The range applies to every bank source. An Account Tracker backup refuses it.
 
-`means entries --json` emits posting quantities and booked amounts as structured Money objects, for example `{"minor":"125","commodity":"EUR","precision":2}` means EUR 1.25. Minor units are strings to preserve exact integers in JavaScript. Quantity uses the account commodity; amount uses the entity’s functional currency.
+`means entries --json` and `--jsonl` emit posting quantities and booked amounts as structured Money objects, for example `{"minor":"125","commodity":"EUR","precision":2}` means EUR 1.25. Minor units are strings to preserve exact integers in JavaScript. Quantity uses the account commodity; amount uses the entity’s functional currency.
 
 Overview shows net worth and recent entries for the selected vault. Press `e` to change vaults. Its default reporting currency is that vault’s accounting currency. Company balances do not count as personal assets just because both vaults are in the same file. The status counts are labelled **all vaults**.
 

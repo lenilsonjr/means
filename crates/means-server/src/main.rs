@@ -321,9 +321,12 @@ enum Command {
 
 #[derive(Args)]
 struct EntriesArgs {
-    /// Emit one JSON object per entry; the summary count goes to stderr
-    #[arg(long)]
+    /// Print one JSON object: ok, entries, count, total and schema_version
+    #[arg(long, conflicts_with = "jsonl")]
     json: bool,
+    /// Print one JSON object per entry and line; the summary count goes to stderr
+    #[arg(long)]
+    jsonl: bool,
     /// Entity id or name
     #[arg(long)]
     entity: Option<String>,
@@ -1019,6 +1022,11 @@ fn entries(db_path: PathBuf, a: EntriesArgs) -> Result<()> {
     };
     let (list, total) = means_core::journal::list_entries(&conn, &filter)?;
     if a.json {
+        let value = serde_json::json!({"ok": true, "entries": list, "count": list.len(), "total": total, "schema_version": entry_cli::SCHEMA_VERSION});
+        println!("{}", serde_json::to_string(&value)?);
+        return Ok(());
+    }
+    if a.jsonl {
         use std::io::Write;
         let mut stdout = std::io::stdout().lock();
         for entry in &list {
