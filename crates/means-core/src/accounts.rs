@@ -220,6 +220,12 @@ pub fn find_by_path(conn: &Connection, entity_id: i64, path: &str) -> Result<Opt
 
 /// Find or create an account under a parent by name. Creates intermediate parents as placeholders.
 pub fn ensure_account(conn: &Connection, entity_id: i64, t: AccountType, names: &[&str], subtype: &str, commodity: &str) -> Result<Account> {
+    ensure_account_in(conn, entity_id, t, names, subtype, commodity, commodity)
+}
+
+/// Like `ensure_account`, but a new leaf uses `leaf_commodity` and new placeholders use
+/// `placeholder_commodity`. Example: a USD bank account under SGD placeholders.
+pub fn ensure_account_in(conn: &Connection, entity_id: i64, t: AccountType, names: &[&str], subtype: &str, placeholder_commodity: &str, leaf_commodity: &str) -> Result<Account> {
     let mut parent: Option<i64> = None;
     let mut last: Option<i64> = None;
     for (i, name) in names.iter().enumerate() {
@@ -244,7 +250,7 @@ pub fn ensure_account(conn: &Connection, entity_id: i64, t: AccountType, names: 
                         name: name.to_string(),
                         r#type: Some(t),
                         subtype: if is_last { subtype.to_string() } else { "placeholder".to_string() },
-                        commodity: commodity.to_string(),
+                        commodity: if is_last { leaf_commodity } else { placeholder_commodity }.to_string(),
                         placeholder: !is_last,
                         in_net_worth: true,
                         ..Default::default()

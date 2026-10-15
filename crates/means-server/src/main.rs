@@ -515,13 +515,16 @@ enum ChartCommand {
         /// Entity id or name
         #[arg(long)]
         entity: String,
-        /// Full path; the root name (Income, Expenses, ...) is optional
+        /// Full path; the root name (Assets, Liabilities, Equity, Income, Expenses) is optional and sets the kind
         path: String,
         #[arg(long, default_value = "")]
         code: String,
-        /// asset | liability | equity | income | expense
-        #[arg(long, default_value = "expense")]
-        kind: String,
+        /// asset | liability | equity | income | expense (default: from the root name, else expense)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Commodity of the new account, e.g. USD in an SGD entity (default: the entity currency); new parents keep the entity currency
+        #[arg(long)]
+        currency: Option<String>,
     },
     /// Rename an account; children keep their place
     Rename {
@@ -701,30 +704,49 @@ fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {
             println!("{}: {} accounts created, {} already there{}", e.name, created, existing, if f.name.is_empty() { String::new() } else { format!(" ({})", f.name) });
             Ok(())
         }
-        ChartCommand::New { entity, path, code, kind } => {
+        ChartCommand::New { entity, path, code, kind, currency } => {
+            use means_core::model::AccountType;
             let e = resolve_entity(&conn, &entity)?;
-            let t = means_core::model::AccountType::parse(&kind)?;
             let mut segments: Vec<&str> = path.split(':').map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
-            if let Some(first) = segments.first() {
-                if first.eq_ignore_ascii_case(t.root_name()) {
-                    segments.remove(0);
-                }
+            // A root segment that names a type sets the kind; an explicit --kind must agree with it.
+            let root = segments.first().and_then(|first| {
+                [AccountType::Asset, AccountType::Liability, AccountType::Equity, AccountType::Income, AccountType::Expense].into_iter().find(|t| first.eq_ignore_ascii_case(t.root_name()))
+            });
+            let t = match (kind.as_deref().map(AccountType::parse).transpose()?, root) {
+                (Some(k), Some(r)) if k != r => anyhow::bail!("--kind {} contradicts the root {:?} of {:?}; omit --kind or change the path", k.as_str(), segments[0], path),
+                (Some(k), _) => k,
+                (None, Some(r)) => r,
+                (None, None) => AccountType::Expense,
+            };
+            if root.is_some() {
+                segments.remove(0);
             }
+            let currency = currency.as_deref().map(means_core::entities::normalize_code).transpose()?;
             if segments.is_empty() {
                 anyhow::bail!("give the account a name");
             }
             let subtype = match t {
-                means_core::model::AccountType::Income => "income",
-                means_core::model::AccountType::Expense => "expense",
-                means_core::model::AccountType::Asset => "bank",
-                means_core::model::AccountType::Liability => "card",
-                means_core::model::AccountType::Equity => "equity",
+                AccountType::Income => "income",
+                AccountType::Expense => "expense",
+                AccountType::Asset => "bank",
+                AccountType::Liability => "card",
+                AccountType::Equity => "equity",
             };
-            let a = means_core::accounts::ensure_account(&conn, e.id, t, &segments, subtype, &e.currency)?;
+            let leaf_currency = currency.as_deref().unwrap_or(&e.currency);
+            let a = means_core::accounts::ensure_account_in(&conn, e.id, t, &segments, subtype, &e.currency, leaf_currency)?;
+            if currency.is_some() && a.commodity != leaf_currency {
+                anyhow::bail!("{} already exists in {}, not {}", a.path, a.commodity, leaf_currency);
+            }
             if !code.trim().is_empty() {
                 means_core::accounts::update_account(&conn, a.id, means_core::accounts::AccountUpdate { code: Some(code.clone()), ..Default::default() })?;
             }
-            println!("{} #{}{}", a.path, a.id, if code.trim().is_empty() { String::new() } else { format!(" · code {}", code.trim()) });
+            println!(
+                "{} #{}{}{}",
+                a.path,
+                a.id,
+                if code.trim().is_empty() { String::new() } else { format!(" · code {}", code.trim()) },
+                if a.commodity == e.currency { String::new() } else { format!(" · {}", a.commodity) }
+            );
             Ok(())
         }
         ChartCommand::Rename { entity, path, new_name } => {

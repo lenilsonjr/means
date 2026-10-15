@@ -1280,3 +1280,53 @@ fn entity_flags_account_identifiers_party_residence_and_questions_cli() {
     let refused = ledger.run(&["close", "questions", "--entity", "Personal", "--jurisdiction", "XX", "--json"]);
     assert_eq!(refused.status.code(), Some(1));
 }
+
+#[test]
+fn chart_new_takes_the_kind_from_the_root_name() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let entity = entities::create_entity(&mut db.conn(), "Northwind Holdings", "company", "SG", "SGD").unwrap();
+    let said = ledger.ok(&["chart", "new", "--entity", "Northwind Holdings", "Assets:Current assets:Bank:Example Bank"]);
+    assert!(said.starts_with("Assets:Current assets:Bank:Example Bank #"), "{said}");
+    let bank = accounts::find_by_path(&db.conn(), entity.id, "Assets:Current assets:Bank:Example Bank").unwrap().unwrap();
+    assert_eq!(bank.r#type, AccountType::Asset);
+    ledger.ok(&["chart", "new", "--entity", "Northwind Holdings", "liabilities:Card"]);
+    assert_eq!(accounts::find_by_path(&db.conn(), entity.id, "Liabilities:Card").unwrap().unwrap().r#type, AccountType::Liability);
+    ledger.ok(&["chart", "new", "--entity", "Northwind Holdings", "--kind", "income", "Income:Consulting"]);
+    assert_eq!(accounts::find_by_path(&db.conn(), entity.id, "Income:Consulting").unwrap().unwrap().r#type, AccountType::Income);
+    // A root that names no type keeps the old default: an expense, root name optional.
+    ledger.ok(&["chart", "new", "--entity", "Northwind Holdings", "Office:Rent"]);
+    assert_eq!(accounts::find_by_path(&db.conn(), entity.id, "Expenses:Office:Rent").unwrap().unwrap().r#type, AccountType::Expense);
+    ledger.ok(&["chart", "new", "--entity", "Northwind Holdings", "--kind", "asset", "Deposits"]);
+    assert_eq!(accounts::find_by_path(&db.conn(), entity.id, "Assets:Deposits").unwrap().unwrap().r#type, AccountType::Asset);
+    let refused = ledger.refused(&["chart", "new", "--entity", "Northwind Holdings", "--kind", "expense", "Assets:Petty cash"]);
+    assert!(refused.contains("expense") && refused.contains("Assets"), "{refused}");
+    assert!(accounts::find_by_path(&db.conn(), entity.id, "Expenses:Assets:Petty cash").unwrap().is_none());
+    assert!(accounts::find_by_path(&db.conn(), entity.id, "Assets:Petty cash").unwrap().is_none());
+}
+
+#[test]
+fn chart_new_currency_sets_the_leaf_commodity_and_keeps_parents_in_the_entity_currency() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let entity = entities::create_entity(&mut db.conn(), "Blue Harbor Pte. Ltd.", "company", "SG", "SGD").unwrap();
+    assert!(entities::get_commodity_by_code(&db.conn(), "USD").is_err());
+    let said = ledger.ok(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--currency", "usd", "Assets:Current assets:Bank:Example Bank USD"]);
+    assert!(said.trim_end().ends_with("· USD"), "{said}");
+    let conn = db.conn();
+    assert_eq!(entities::get_commodity_by_code(&conn, "USD").unwrap().precision, 2);
+    let bank = accounts::find_by_path(&conn, entity.id, "Assets:Current assets:Bank:Example Bank USD").unwrap().unwrap();
+    assert_eq!((bank.r#type, bank.commodity.as_str(), bank.placeholder), (AccountType::Asset, "USD", false));
+    for parent in ["Assets:Current assets", "Assets:Current assets:Bank"] {
+        let p = accounts::find_by_path(&conn, entity.id, parent).unwrap().unwrap();
+        assert_eq!((p.commodity.as_str(), p.placeholder), ("SGD", true), "{parent}");
+    }
+    drop(conn);
+    // Without the flag the leaf takes the entity currency, as before.
+    ledger.ok(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "Assets:Current assets:Bank:Example Bank SGD"]);
+    assert_eq!(accounts::find_by_path(&db.conn(), entity.id, "Assets:Current assets:Bank:Example Bank SGD").unwrap().unwrap().commodity, "SGD");
+    // An existing account in another commodity is not silently returned.
+    let refused = ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--currency", "EUR", "Assets:Current assets:Bank:Example Bank SGD"]);
+    assert!(refused.contains("SGD") && refused.contains("EUR"), "{refused}");
+    ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--currency", "not a code", "Assets:Other"]);
+}

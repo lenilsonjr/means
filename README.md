@@ -166,6 +166,7 @@ means status                                      # JSON; --json gives the same 
 means verify                                      # recompute every entity's hash chain
 means chart apply --entity "Personal" charts/personal-nomad.json          # create a chart template's accounts (existing ones kept, coded)
 means chart remap --dry-run charts/remap/example.json            # preview a remap plan; drop --dry-run to apply it atomically
+means chart new --entity LLC "Assets:Bank:Example Bank EUR" --currency EUR  # the root name sets the kind; --currency sets the account commodity
 means entity set LLC --fye 12-31 --registration EIN=00-0000000   # legal facts; entity classify, group and party record the rest
 means entity set LLC --address city=Springfield --flag us.contractor_payments=true --from 2026-01-01   # address and dated flags
 means account set Assets:Bank:Operating --entity LLC --country US --institution "Example Bank"   # account identifiers
