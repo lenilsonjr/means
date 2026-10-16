@@ -104,6 +104,9 @@ fn the_void_preview_lists_the_other_leg_and_the_apply_needs_cascade() {
     assert!(out.status.success());
     let preview: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!((preview["applied"].as_bool(), preview["needs_cascade"].as_bool()), (Some(false), Some(true)));
+    // The preview shows the stored entry with its real status, not the entry as the void would leave it.
+    assert_eq!(preview["entry"]["status"], "posted");
+    assert!(preview["entry"]["reversed_by_id"].is_null(), "{preview}");
     let other = &preview["linked_entries"][0];
     assert_eq!(other["entity_name"], "Blue Harbor LLC");
     assert_eq!(other["entry_id"], f.b.id);
