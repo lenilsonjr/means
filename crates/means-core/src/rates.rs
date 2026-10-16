@@ -346,6 +346,9 @@ pub struct Revalued {
     pub fixed: usize,
     /// Drafts that had a rate and now have another one, for example an exact rate instead of a cross rate.
     pub drafts: usize,
+    /// Drafts with tax events that the pass left as they are. A tax event holds the base and the
+    /// tax in the functional currency of the draft, so a new value of the draft needs a review.
+    pub skipped_tax_events: Vec<i64>,
     pub failed: usize,
     pub first_error: Option<String>,
 }
@@ -387,17 +390,26 @@ pub fn revalue_missing(conn: &mut Connection) -> Result<Revalued> {
     }
     // A rate that the lookup found (exact, nearest, inverse or cross) can change when a new rate
     // arrives. Rates given by hand ("input") and rates of a currency migration stay. The drafts of
-    // an archived entity stay as they are, as its posted entries do.
-    let drafts: Vec<i64> = {
+    // an archived entity stay as they are, as its posted entries do. A draft with tax events stays
+    // too, and the report lists it.
+    let mut drafts: Vec<i64> = Vec::new();
+    {
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT e.id FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id
+            "SELECT DISTINCT e.id, EXISTS (SELECT 1 FROM tax_events t WHERE t.entry_id = e.id)
+             FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id
              JOIN entities en ON en.id = e.entity_id
              WHERE e.status = 'draft' AND en.archived_at IS NULL AND p.rate_source NOT IN ('', 'same', 'input', 'missing', 'currency_migration')
                AND NOT EXISTS (SELECT 1 FROM postings m WHERE m.journal_entry_id = e.id AND m.rate_source = 'missing') ORDER BY e.id",
         )?;
-        let v: Vec<i64> = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
-        v
-    };
+        for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)))? {
+            let (id, taxed) = row?;
+            if taxed {
+                report.skipped_tax_events.push(id);
+            } else {
+                drafts.push(id);
+            }
+        }
+    }
     for id in drafts {
         match crate::journal::revalue_draft(conn, id) {
             Ok(true) => report.drafts += 1,

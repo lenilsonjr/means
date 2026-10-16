@@ -1614,6 +1614,9 @@ fn revalue_logged(conn: &mut means_core::rusqlite::Connection) -> Result<(usize,
     if revalued.failed > 0 {
         tracing::warn!(failed = revalued.failed, first = ?revalued.first_error, "some entries could not be revalued");
     }
+    if !revalued.skipped_tax_events.is_empty() {
+        tracing::warn!(drafts = ?revalued.skipped_tax_events, "drafts with tax events were not revalued");
+    }
     Ok((revalued.fixed, revalued.drafts))
 }
 

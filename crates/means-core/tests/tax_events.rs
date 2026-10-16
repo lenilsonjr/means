@@ -401,3 +401,52 @@ fn migration_22_adds_empty_tax_tables() {
     assert!(tax::list_tax_codes(&conn, 1, None).unwrap().is_empty());
     assert!(tax::tax_summary(&conn, 1, d("2026-01-01"), d("2026-12-31")).unwrap().is_empty());
 }
+
+/// A draft dated after the only USD rate: its foreign posting has a rate that the lookup found.
+fn foreign_draft(c: &mut Connection, b: &Books, postings: Vec<PostingInput>) -> JournalEntry {
+    rates::set_price(c, "USD", "SGD", d("2026-03-01"), n("1.30"), "test").unwrap();
+    let mut input = entry(b, "2026-03-05", postings);
+    input.status = EntryStatus::Draft;
+    journal::create_entry(c, input).unwrap()
+}
+
+#[test]
+fn the_draft_revaluation_skips_a_draft_with_tax_events_and_lists_it() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let b = books(&mut c);
+    let draft = foreign_draft(&mut c, &b, vec![PostingInput::balancing(b.bank.id), taxed(b.export.id, "-100", "ZR")]);
+    assert!(!tax::tax_events_for_entry(&c, draft.id).unwrap().is_empty());
+    let before = amounts(&journal::get_entry(&c, draft.id).unwrap());
+
+    rates::set_price(&c, "USD", "SGD", d("2026-03-05"), n("1.35"), "test").unwrap();
+    let report = rates::revalue_missing(&mut c).unwrap();
+    assert_eq!(report.skipped_tax_events, vec![draft.id]);
+    assert_eq!((report.drafts, report.failed), (0, 0));
+    assert_eq!(amounts(&journal::get_entry(&c, draft.id).unwrap()), before);
+}
+
+#[test]
+fn the_draft_revaluation_keeps_rate_overrides_and_memos() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let b = books(&mut c);
+    let looked_up = PostingInput { memo: "invoice 7".into(), ..PostingInput::new(b.export.id, n("-100")) };
+    // An explicit book value is a rate override: 50 USD booked at 70 SGD.
+    let fixed = PostingInput { memo: "agreed rate".into(), amount: Some(n("-70")), ..PostingInput::new(b.export.id, n("-50")) };
+    let draft = foreign_draft(&mut c, &b, vec![looked_up, fixed, PostingInput { memo: "bank leg".into(), ..PostingInput::balancing(b.bank.id) }]);
+    let before = journal::get_entry(&c, draft.id).unwrap();
+    assert_eq!(before.postings[1].rate_source, "input");
+
+    rates::set_price(&c, "USD", "SGD", d("2026-03-05"), n("1.35"), "test").unwrap();
+    let report = rates::revalue_missing(&mut c).unwrap();
+    assert!(report.skipped_tax_events.is_empty());
+    assert_eq!(report.drafts, 1);
+    let after = journal::get_entry(&c, draft.id).unwrap();
+    let memos: Vec<&str> = after.postings.iter().map(|p| p.memo.as_str()).collect();
+    assert_eq!(memos, ["invoice 7", "agreed rate", "bank leg"]);
+    // The looked-up posting takes the new rate; the override keeps its book value and source.
+    assert_eq!(after.postings[0].amount.minor(), -13500);
+    assert_eq!((after.postings[1].amount.minor(), after.postings[1].rate_source.as_str()), (-7000, "input"));
+    assert_eq!(after.postings[2].amount.minor(), 20500);
+}
