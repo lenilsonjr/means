@@ -150,8 +150,25 @@ pub fn ensure_active(conn: &Connection, id: i64) -> Result<Entity> {
     Ok(entity)
 }
 
-/// Refuse migration 28 when two active entities have names that differ only in case. The
-/// unique index of migration 28 ignores case, as `check_active_name` does.
+/// Migration 31: repair migrations 28 and 29 on every ledger. The check refuses the migration
+/// when two active entities have names that differ only in case. The script makes the unique
+/// index of the active names ignore case and creates the archive guards again with literal
+/// messages. The migration also reports each archived entity with inter-vault links that are not
+/// void to entries of active entities.
+pub(crate) fn repair_names_and_guards(conn: &Connection) -> Result<()> {
+    refuse_case_twins(conn)?;
+    conn.execute_batch(include_str!("../migrations/0031_repair_names_and_guards.sql"))?;
+    for entity in list_entities(conn, true)?.into_iter().filter(|e| e.archived_at.is_some()) {
+        let links = live_links(conn, entity.id)?;
+        if !links.is_empty() {
+            tracing::warn!(entity = entity.name, links = ?links, "an archived entity has inter-vault links that are not void to entries of active entities");
+        }
+    }
+    Ok(())
+}
+
+/// Refuse migration 31 when two active entities have names that differ only in case. The
+/// unique index of migration 31 ignores case, as `check_active_name` does.
 pub(crate) fn refuse_case_twins(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare(
         "SELECT group_concat(printf('%Q (#%d)', name, id), ', ') FROM entities WHERE archived_at IS NULL
@@ -160,7 +177,7 @@ pub(crate) fn refuse_case_twins(conn: &Connection) -> Result<()> {
     let twins: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
     if !twins.is_empty() {
         return Err(Error::Invalid(format!(
-            "migration 28 makes active entity names unique without case, but these active entities differ only in case: {}; rename one entity of each group with the older means build that opened this ledger, then open the ledger again",
+            "migration 31 makes active entity names unique without case, but these active entities differ only in case: {}; rename one entity of each group with the older means build that opened this ledger, then open the ledger again",
             twins.join("; ")
         )));
     }
@@ -240,6 +257,20 @@ pub fn archive(conn: &mut Connection, id: i64, actor: &str, reason: &str) -> Res
 /// of active entities. The guards would then refuse a void with cascade from the other side.
 /// The message lists each link: the other entity, its entry id and the link uid.
 fn refuse_live_links(conn: &Connection, entity: &Entity) -> Result<()> {
+    let links = live_links(conn, entity.id)?;
+    if !links.is_empty() {
+        return Err(Error::Invalid(format!(
+            "{} has inter-vault links that are not void to entries of active entities: {}; void the linked entries with cascade, or remove each link first, then archive the entity",
+            entity.name,
+            links.join("; ")
+        )));
+    }
+    Ok(())
+}
+
+/// The inter-vault links that are not void between an entity and entries of active entities,
+/// one line each: the other entity, its entry id and the link uid.
+pub fn live_links(conn: &Connection, entity_id: i64) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT o.name, CASE WHEN ea.entity_id = ?1 THEN eb.id ELSE ea.id END, l.uid
          FROM intervault_links l
@@ -249,16 +280,9 @@ fn refuse_live_links(conn: &Connection, entity: &Entity) -> Result<()> {
          WHERE l.status <> 'void' AND ?1 IN (ea.entity_id, eb.entity_id) AND o.id <> ?1 AND o.archived_at IS NULL
          ORDER BY l.id",
     )?;
-    let links: Vec<String> =
-        stmt.query_map([entity.id], |r| Ok(format!("{} entry #{} via link {}", r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?.collect::<std::result::Result<_, _>>()?;
-    if !links.is_empty() {
-        return Err(Error::Invalid(format!(
-            "{} has inter-vault links that are not void to entries of active entities: {}; void the linked entries with cascade, or remove each link first, then archive the entity",
-            entity.name,
-            links.join("; ")
-        )));
-    }
-    Ok(())
+    let links =
+        stmt.query_map([entity_id], |r| Ok(format!("{} entry #{} via link {}", r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?.collect::<std::result::Result<_, _>>()?;
+    Ok(links)
 }
 
 /// Make an archived entity active again. `new_name` renames it in the same step, for an

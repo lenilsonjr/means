@@ -298,6 +298,8 @@ pub fn ensure_account_in(conn: &Connection, entity_id: i64, t: AccountType, name
 }
 
 pub fn create_account(conn: &Connection, input: NewAccount) -> Result<Account> {
+    // The archive guards refuse the write too; this check names the entity in the message.
+    crate::entities::ensure_active(conn, input.entity_id)?;
     let name = input.name.trim().to_string();
     if name.is_empty() {
         return Err(Error::Invalid("account name is required".into()));
@@ -454,6 +456,7 @@ pub fn normalize_bic(s: &str) -> Result<String> {
 
 pub fn update_account(conn: &Connection, id: i64, upd: AccountUpdate) -> Result<Account> {
     let before = get_account(conn, id)?;
+    crate::entities::ensure_active(conn, before.entity_id)?;
     let mut a = before.clone();
     if let Some(p) = upd.parent_id {
         if let Some(pid) = p {

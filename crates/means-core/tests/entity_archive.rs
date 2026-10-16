@@ -192,25 +192,6 @@ fn active_entity_names_are_unique_without_case() {
 }
 
 #[test]
-fn migration_28_refuses_active_names_that_differ_only_in_case() {
-    let raw = rusqlite::Connection::open_in_memory().unwrap();
-    db::migrate_to(&raw, 27).unwrap();
-    raw.execute_batch(
-        "INSERT INTO commodities (code, kind, name, precision) VALUES ('GBP', 'currency', 'Pound sterling', 2);
-         INSERT INTO entities (uid, name, currency, created_at, updated_at) VALUES ('e-1', 'Woodgrove Ltd', 'GBP', 'now', 'now');
-         INSERT INTO entities (uid, name, currency, created_at, updated_at) VALUES ('e-2', 'WOODGROVE LTD', 'GBP', 'now', 'now');",
-    )
-    .unwrap();
-    let err = db::migrate_to(&raw, 28).unwrap_err().to_string();
-    assert!(err.contains("'Woodgrove Ltd' (#1)") && err.contains("'WOODGROVE LTD' (#2)") && err.contains("differ only in case"), "{err}");
-    let version: i64 = raw.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-    assert_eq!(version, 27);
-    // A case twin that is archived does not block the migration.
-    raw.execute("UPDATE entities SET archived_at = 'now' WHERE id = 2", []).unwrap();
-    db::migrate_to(&raw, 28).unwrap();
-}
-
-#[test]
 fn update_entity_refuses_an_archive_change_and_checks_a_rename() {
     let db = Db::open_memory().unwrap();
     let mut c = db.conn();

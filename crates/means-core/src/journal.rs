@@ -316,7 +316,8 @@ pub fn create_entry(conn: &mut Connection, input: EntryInput) -> Result<JournalE
 }
 
 pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, input: EntryInput) -> Result<JournalEntry> {
-    let entity = entities::get_entity(conn, input.entity_id)?;
+    // The archive guards refuse the write too; this check names the entity in the message.
+    let entity = entities::ensure_active(conn, input.entity_id)?;
     if input.status == EntryStatus::Void {
         return Err(Error::Invalid("cannot create a void entry".into()));
     }
@@ -450,7 +451,7 @@ pub fn update_entry(conn: &mut Connection, id: i64, input: EntryInput) -> Result
 /// Replace an entry as part of a larger atomic workflow, with the same validation as an ordinary edit.
 pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i64, mut input: EntryInput) -> Result<JournalEntry> {
     let before = get_entry(conn, id)?;
-    let entity = entities::get_entity(conn, before.entity_id)?;
+    let entity = entities::ensure_active(conn, before.entity_id)?;
     if input.entity_id != before.entity_id {
         return Err(Error::Invalid("an entry cannot move between entities".into()));
     }
@@ -699,6 +700,7 @@ pub fn post_entry(conn: &mut Connection, id: i64) -> Result<JournalEntry> {
 /// Let reconciliation post a draft in the same transaction as its evidence link.
 pub(crate) fn post_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i64) -> Result<JournalEntry> {
     let entry = get_entry(conn, id)?;
+    entities::ensure_active(conn, entry.entity_id)?;
     match entry.status {
         EntryStatus::Posted => return Ok(entry),
         EntryStatus::Void => return Err(Error::Locked("a void entry cannot be posted".into())),
@@ -828,7 +830,7 @@ fn void_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<Nai
     if entry.status != EntryStatus::Posted {
         return Err(Error::Conflict(format!("entry #{id} is not posted")));
     }
-    let entity = entities::get_entity(tx, entry.entity_id)?;
+    let entity = entities::ensure_active(tx, entry.entity_id)?;
     let requested_date = date;
     let date = date.unwrap_or(entry.date);
     check_lock(&entity, date)?;
@@ -890,6 +892,7 @@ pub fn delete_entry(conn: &mut Connection, id: i64) -> Result<()> {
     if entry.status != EntryStatus::Draft {
         return Err(Error::Locked("only drafts can be deleted; void posted entries instead".into()));
     }
+    entities::ensure_active(conn, entry.entity_id)?;
     let tx = conn.transaction()?;
     tx.execute("UPDATE statement_lines SET status = 'unmatched', posting_id = NULL, journal_entry_id = NULL WHERE journal_entry_id = ?1", [id])?;
     crate::tax::delete_for_entry(&tx, id)?;

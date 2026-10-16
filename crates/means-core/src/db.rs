@@ -28,6 +28,12 @@ enum Migration {
 // - A `Sql` migration runs with the guards. A `Sql` migration that writes rows of an entity
 //   must be a `Code` migration, or it fails on a ledger with an archived entity.
 // - A migration that adds a table with rows of an entity adds its guards too.
+// - The runner recreates only the `archive_guard_*` triggers. It does not recreate a guard whose
+//   table the migration dropped and did not create again. A `Rebuild` of a table also drops the
+//   other triggers of that table, for example `account_counterparty_*` of migration 30 on
+//   `accounts`: the rebuild script must create them again itself.
+// - Never change a shipped migration file. A test pins the hash of each file. Repair an old
+//   migration with a new one, as migration 31 repairs 28 and 29.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (1, Migration::Sql(include_str!("../migrations/0001_init.sql"))),
     (2, Migration::Sql(include_str!("../migrations/0002_indexes.sql"))),
@@ -54,9 +60,10 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (25, Migration::Sql(include_str!("../migrations/0025_intervault_links.sql"))),
     (26, Migration::Sql(include_str!("../migrations/0026_invoices.sql"))),
     (27, Migration::Sql(include_str!("../migrations/0027_entity_flags.sql"))),
-    (28, Migration::Rebuild { sql: include_str!("../migrations/0028_entity_active_names.sql"), check: crate::entities::refuse_case_twins }),
+    (28, Migration::Rebuild { sql: include_str!("../migrations/0028_entity_active_names.sql"), check: no_check }),
     (29, Migration::Sql(include_str!("../migrations/0029_archive_guards.sql"))),
     (30, Migration::Sql(include_str!("../migrations/0030_account_counterparty.sql"))),
+    (31, Migration::Code(crate::entities::repair_names_and_guards)),
 ];
 
 /// Schema of version-1 signed snapshots. Keep this stable when owned-book migrations advance.
@@ -277,20 +284,37 @@ fn without_archive_guards(conn: &Connection, f: impl FnOnce() -> Result<()>) -> 
 }
 
 /// The number of foreign keys without a parent row.
-fn foreign_key_violations(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?)
+/// The rows with a foreign key without a parent row: the table, the row id and the parent table.
+fn foreign_key_violations(conn: &Connection) -> Result<std::collections::BTreeSet<(String, Option<i64>, String)>> {
+    let mut stmt = conn.prepare("SELECT \"table\", rowid, parent FROM pragma_foreign_key_check")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+    Ok(rows)
 }
 
-/// Refuse a rebuild that leaves more foreign keys without a parent row than before it. A ledger
-/// can have such rows from before the migration; the rebuild does not cause them.
-fn foreign_keys_hold(conn: &Connection, before: i64) -> Result<()> {
+/// Refuse a rebuild that leaves a row without a parent that was not there before it. A ledger
+/// can have such rows from before the migration; the rebuild does not cause them. The runner
+/// compares the rows, not their number, so a rebuild that repairs one row and breaks another
+/// fails too.
+fn foreign_keys_hold(conn: &Connection, before: std::collections::BTreeSet<(String, Option<i64>, String)>) -> Result<()> {
     let after = foreign_key_violations(conn)?;
-    if after > before {
-        return Err(crate::Error::Invalid(format!("the table rebuild left {} new foreign key(s) without a parent row ({before} existed before the rebuild, {after} after it)", after - before)));
+    let new: Vec<String> = after.difference(&before).map(|(table, rowid, parent)| format!("{table} row {} -> {parent}", rowid.map(|r| r.to_string()).unwrap_or_default())).collect();
+    if !new.is_empty() {
+        return Err(crate::Error::Invalid(format!(
+            "the table rebuild left {} new foreign key(s) without a parent row ({} existed before the rebuild, {} after it): {}",
+            new.len(),
+            before.len(),
+            after.len(),
+            new.join(", ")
+        )));
     }
-    if before > 0 {
-        tracing::warn!(count = before, "the ledger has foreign keys without a parent row from before the migration");
+    if !before.is_empty() {
+        tracing::warn!(count = before.len(), "the ledger has foreign keys without a parent row from before the migration");
     }
+    Ok(())
+}
+
+/// A rebuild without a check.
+fn no_check(_: &Connection) -> Result<()> {
     Ok(())
 }
 
@@ -317,11 +341,6 @@ pub fn latest_version() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A rebuild without a check.
-    fn no_check(_: &Connection) -> Result<()> {
-        Ok(())
-    }
 
     fn temp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("means-db-{name}-{}", crate::new_uid()));
