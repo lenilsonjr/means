@@ -102,6 +102,7 @@ pub fn error_code(e: &Error) -> &'static str {
         Error::Conflict(m) if m.starts_with(HASH_PREFIX) => "hash_mismatch",
         Error::Conflict(_) => "duplicate",
         Error::Invalid(_) | Error::Parse(_) | Error::Json(_) => "invalid_input",
+        Error::NeedsCascade(_) => "invalid_input",
         Error::Unbalanced(_) => "unbalanced",
         Error::Locked(_) => "locked_period",
         Error::Db(_) | Error::Other(_) => "io_error",

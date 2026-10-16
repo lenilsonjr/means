@@ -25,6 +25,23 @@ pub fn log_by(conn: &Connection, table: &str, row_id: i64, action: &str, before:
     Ok(conn.last_insert_rowid())
 }
 
+/// Record an event with the actor and the reason when the ledger has these columns. A ledger
+/// before migration 24 has no such columns: a code migration of such a ledger gets the event of
+/// version 1, without the actor and the reason.
+#[allow(clippy::too_many_arguments)]
+pub fn log_with(conn: &Connection, table: &str, row_id: i64, action: &str, before: Option<serde_json::Value>, after: Option<serde_json::Value>, actor: &str, reason: &str) -> Result<()> {
+    if has_actor(conn)? {
+        log_by(conn, table, row_id, action, before, after, actor, reason)?;
+    } else {
+        log(conn, table, row_id, action, before, after)?;
+    }
+    Ok(())
+}
+
+fn has_actor(conn: &Connection) -> Result<bool> {
+    Ok(conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('audit_log') WHERE name = 'actor')", [], |r| r.get(0))?)
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AuditRow {
     pub id: i64,
@@ -41,8 +58,7 @@ pub struct AuditRow {
 /// The columns of an event. A ledger before migration 24 has no actor or reason column; code
 /// migrations read the history of such a ledger, so the reader gives empty values there.
 fn columns(conn: &Connection) -> Result<&'static str> {
-    let has_actor: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('audit_log') WHERE name = 'actor')", [], |r| r.get(0))?;
-    Ok(if has_actor { "id, at, table_name, row_id, action, before, after, actor, reason" } else { "id, at, table_name, row_id, action, before, after, '', ''" })
+    Ok(if has_actor(conn)? { "id, at, table_name, row_id, action, before, after, actor, reason" } else { "id, at, table_name, row_id, action, before, after, '', ''" })
 }
 
 fn row_to_audit(r: &rusqlite::Row<'_>) -> rusqlite::Result<AuditRow> {

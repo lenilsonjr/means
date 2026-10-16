@@ -63,6 +63,10 @@ pub enum Error {
     Unbalanced(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A void of an entry with inter-vault links that are not void, without cascade. The CLI
+    /// gives `invalid_input`, and gRPC gives FAILED_PRECONDITION.
+    #[error("needs cascade: {0}")]
+    NeedsCascade(String),
     #[error("parse error: {0}")]
     Parse(String),
     #[error("database error: {0}")]

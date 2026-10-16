@@ -839,7 +839,7 @@ fn void_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<Nai
     };
     let linked = group.as_ref().map(|g| g.entries.as_slice()).unwrap_or_default();
     if mode == LinkMode::Refuse && !linked.is_empty() {
-        return Err(Error::Conflict(crate::intervault::refusal(&entry, linked)));
+        return Err(Error::NeedsCascade(crate::intervault::refusal(&entry, linked)));
     }
     let mut input = EntryInput::new(entry.entity_id, date);
     input.payee = entry.payee.clone();
@@ -874,13 +874,9 @@ fn void_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<Nai
     if let Some(from) = cascaded_from {
         event["cascaded_from"] = serde_json::json!(from);
     }
-    // A void without an actor writes the event of version 1, so a code migration of an old
-    // ledger can still void.
-    if actor.trim().is_empty() {
-        crate::audit::log(tx, "journal_entries", id, "void", None, Some(event))?;
-    } else {
-        crate::audit::log_by(tx, "journal_entries", id, "void", None, Some(event), actor, "")?;
-    }
+    // The event records the actor and the reason. A code migration of an old ledger can still
+    // void: `log_with` then writes the event of version 1.
+    crate::audit::log_with(tx, "journal_entries", id, "void", None, Some(event), actor, reason)?;
     // A cascade voids the other posted entries of the link group in this transaction.
     if let (LinkMode::Cascade, Some(group)) = (mode, &group) {
         crate::intervault::void_group(tx, &entry.uid, group, requested_date, reason, actor)?;

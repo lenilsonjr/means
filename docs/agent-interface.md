@@ -332,7 +332,7 @@ A void of an entry with an inter-vault link that is not void reaches the other e
 
 Each linked entry has `link_uid`, `link_kind`, `entity_uid`, `entity_name`, `entry_id`, `entry_uid`, `date`, `status`, `amount` (the intercompany side now), `cascade_action` (`void` for a posted entry, `keep` for a draft), `locked` (a cascade reversal falls in a locked period) and `voided` (this void voided the entry).
 
-The engine computes the link group once. Each entry of the group gets one reversal, and each link gets one audit event, also when the links make a cycle. The audit event of a cascade void has `cascade` true and `linked_entry_uids`. The void event of each linked entry has `cascaded_from`, and the event of each link has `cascade` true and `voided_from`. `--actor A` (default `$USER`) goes on each of these events. A gRPC cascade records the actor `grpc`.
+The engine computes the link group once. Each entry of the group gets one reversal, and each link gets one audit event, also when the links make a cycle. The audit event of a cascade void has `cascade` true and `linked_entry_uids`. The void event of each linked entry has `cascaded_from`, and the event of each link has `cascade` true and `voided_from`. `--actor A` (default `$USER`) goes on each of these events. A gRPC void records the actor of the `means-actor` request metadata, or `grpc` without it. Each void event also records the reason.
 
 ## Close and filings
 

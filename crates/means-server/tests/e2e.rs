@@ -1344,11 +1344,13 @@ async fn grpc_void_of_a_linked_entry_needs_cascade() {
     assert!(err.message().contains("void the linked entries with cascade") && err.message().contains(&b.uid), "{}", err.message());
     assert!(!err.message().contains("--"), "{}", err.message());
 
-    // With cascade: both legs are void.
-    let out = client.void_journal_entry(pb::VoidJournalEntryRequest { id: a.id, date: String::new(), reason: "wrong lender".into(), cascade: true }).await.unwrap().into_inner();
+    // With cascade: both legs are void. The request metadata names the actor.
+    let mut request = tonic::Request::new(pb::VoidJournalEntryRequest { id: a.id, date: String::new(), reason: "wrong lender".into(), cascade: true });
+    request.metadata_mut().insert("means-actor", "Sample Reviewer".parse().unwrap());
+    let out = client.void_journal_entry(request).await.unwrap().into_inner();
     assert_eq!(out.entry.unwrap().status, "void");
     let db = Db::open(&server.db).unwrap();
     assert_eq!(journal::get_entry(&db.conn(), b.id).unwrap().status, EntryStatus::Void);
     let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'journal_entries' AND row_id = ?1 AND action = 'void'", [b.id], |r| r.get(0)).unwrap();
-    assert_eq!(actor, "grpc");
+    assert_eq!(actor, "Sample Reviewer");
 }

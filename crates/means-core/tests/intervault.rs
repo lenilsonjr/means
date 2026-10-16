@@ -156,11 +156,11 @@ fn a_void_without_cascade_is_refused_when_a_linked_entry_belongs_to_another_enti
 
     let err = journal::void_entry(&mut b.db.conn(), a.id, None, "wrong lender").unwrap_err();
     match &err {
-        Error::Conflict(m) => {
+        Error::NeedsCascade(m) => {
             assert!(m.contains("Blue Harbor LLC") && m.contains(&s.uid) && m.contains("2026-03-03") && m.contains("-1000 USD"), "{m}");
             assert!(m.contains("cascade"), "{m}");
         }
-        other => panic!("expected a conflict, got {other:?}"),
+        other => panic!("expected a refusal that needs cascade, got {other:?}"),
     }
     assert_eq!(proposal::AgentError::from(err).code, "invalid_input");
     // The refusal writes nothing.
@@ -592,7 +592,7 @@ fn a_cascade_reaches_three_entities_and_records_the_actor_on_each_event() {
         assert_eq!(reversals(&b, entry), 1);
         let voids = events(&b, "journal_entries", entry.id, "void");
         assert_eq!(voids.len(), 1);
-        assert_eq!(voids[0].actor, "Sample Reviewer");
+        assert_eq!((voids[0].actor.as_str(), voids[0].reason.as_str()), ("Sample Reviewer", "wrong lender"));
     }
     for link in [&first, &second] {
         assert_eq!(b.status_of(link), "void");
@@ -666,7 +666,7 @@ fn the_refusal_names_no_cli_flag() {
     let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
     b.link(&a, &s, "loan").unwrap();
     let err = journal::void_entry(&mut b.db.conn(), a.id, None, "wrong lender").unwrap_err();
-    let Error::Conflict(m) = err else { panic!("expected a conflict") };
+    let Error::NeedsCascade(m) = err else { panic!("expected a refusal that needs cascade") };
     assert!(m.contains("void the linked entries with cascade"), "{m}");
     assert!(!m.contains("--") && !m.contains("means "), "{m}");
 }

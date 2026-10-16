@@ -70,6 +70,7 @@ pub fn error_code(e: &Error) -> &'static str {
     match e {
         Error::NotFound(_) => "not_found",
         Error::Invalid(_) | Error::Parse(_) | Error::Conflict(_) | Error::Json(_) => "invalid_input",
+        Error::NeedsCascade(_) => "invalid_input",
         Error::Locked(_) => "locked_period",
         Error::Unbalanced(_) => "unbalanced",
         Error::Db(_) | Error::Other(_) => "internal",
@@ -81,6 +82,7 @@ impl From<Error> for AgentError {
         let code = error_code(&e);
         let message = match e {
             Error::NotFound(m) | Error::Invalid(m) | Error::Parse(m) | Error::Conflict(m) | Error::Locked(m) | Error::Unbalanced(m) => m,
+            Error::NeedsCascade(m) => m,
             Error::Json(e) => e.to_string(),
             Error::Db(e) => format!("database: {e}"),
             Error::Other(e) => e.to_string(),

@@ -52,12 +52,21 @@ impl MeansService {
     }
 }
 
+/// The request metadata key that names the person who acts. Audit events record it.
+pub const ACTOR_METADATA: &str = "means-actor";
+
+/// The actor of a gRPC request: the `means-actor` metadata when the client gives it, else `grpc`.
+fn request_actor<T>(req: &Request<T>) -> String {
+    req.metadata().get(ACTOR_METADATA).and_then(|v| v.to_str().ok()).map(str::trim).filter(|a| !a.is_empty()).unwrap_or("grpc").to_string()
+}
+
 fn status(e: means_core::Error) -> Status {
     use means_core::Error as E;
     match e {
         E::NotFound(m) => Status::not_found(m),
         E::Invalid(m) | E::Parse(m) => Status::invalid_argument(m),
         E::Locked(m) | E::Unbalanced(m) => Status::failed_precondition(m),
+        E::NeedsCascade(m) => Status::failed_precondition(m),
         E::Conflict(m) => Status::already_exists(m),
         E::Db(e) => Status::internal(format!("database: {e}")),
         E::Json(e) => Status::internal(format!("json: {e}")),
@@ -914,23 +923,12 @@ impl Means for MeansService {
 
     async fn void_journal_entry(&self, req: Request<pb::VoidJournalEntryRequest>) -> Result<Response<pb::JournalEntryResponse>, Status> {
         self.writable()?;
+        let actor = request_actor(&req);
         let r = req.into_inner();
         let d = date_opt(&r.date)?;
-        // A link that is not void needs cascade. The refusal is a failed precondition: the
-        // caller can void with cascade or remove the links first.
-        let out = self
-            .run(move |c| {
-                let entry = journal::get_entry(c, r.id)?;
-                if !r.cascade && entry.status == EntryStatus::Posted {
-                    let linked = means_core::intervault::linked_entries(c, r.id, d)?;
-                    if !linked.is_empty() {
-                        return Ok(Err(means_core::intervault::refusal(&entry, &linked)));
-                    }
-                }
-                Ok(Ok(journal::review_void_by(c, r.id, d, &r.reason, true, r.cascade, "grpc")?.entry))
-            })
-            .await?
-            .map_err(Status::failed_precondition)?;
+        // A link that is not void needs cascade. The engine refuses with `NeedsCascade`, which
+        // maps to FAILED_PRECONDITION: the caller can void with cascade or remove the links first.
+        let out = self.run(move |c| Ok(journal::review_void_by(c, r.id, d, &r.reason, true, r.cascade, &actor)?.entry)).await?;
         Ok(Response::new(pb::JournalEntryResponse { entry: Some(entry_pb(&out)), counterpart: None }))
     }
 
