@@ -738,6 +738,19 @@ pub struct VoidReview {
     pub needs_cascade: bool,
 }
 
+impl VoidReview {
+    /// The reversal as a void result shows it. After an apply, it is the short form of the
+    /// saved reversal. A preview rolls the reversal back, so the preview gives no id and no uid
+    /// for it: only the status and the date.
+    pub fn reversal_ref(&self) -> serde_json::Value {
+        if self.applied || self.already_void {
+            serde_json::json!({"uid": self.reversal.uid, "status": self.reversal.status.as_str(), "date": self.reversal.date.to_string()})
+        } else {
+            serde_json::json!({"uid": null, "status": "posted", "date": self.reversal.date.to_string()})
+        }
+    }
+}
+
 /// What a void does with the inter-vault links of the entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LinkMode {

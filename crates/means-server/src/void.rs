@@ -39,6 +39,11 @@ pub fn run(path: PathBuf, args: Args) -> Result<()> {
     let result = journal::review_void_by(&mut db.conn(), args.id, args.date, &args.reason, args.yes, args.cascade, &actor)?;
     if args.json {
         let mut value = serde_json::to_value(&result)?;
+        // A preview rolls the reversal back. Its ids do not exist, so the preview leaves them out,
+        // as `means entry void --dry-run` does.
+        if !result.applied && !result.already_void {
+            value["reversal"] = result.reversal_ref();
+        }
         if args.cascade {
             value["actor"] = serde_json::json!(actor);
         }

@@ -233,6 +233,23 @@ fn means_void_with_cascade_takes_the_actor_from_user() {
 }
 
 #[test]
+fn both_void_previews_give_the_same_shape_without_rolled_back_ids() {
+    let f = books();
+    let out = f.run(&["void", &f.a.id.to_string(), "--reason", "wrong lender", "--json"], false);
+    assert!(out.status.success());
+    let preview: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let (dry, code) = f.json(&["entry", "void", &f.a.uid, "--reason", "wrong lender", "--dry-run"], false);
+    assert_eq!(code, 0, "{dry}");
+    // The reversal of a preview does not exist: no id, no uid, the same object in both commands.
+    assert_eq!(preview["reversal"], dry["reversal"]);
+    assert_eq!(preview["reversal"], serde_json::json!({"uid": null, "status": "posted", "date": "2026-03-02"}));
+    assert_eq!(preview["linked_entries"], dry["linked_entries"]);
+    // The stored rows keep their ids: no reversal row exists.
+    let reversals: i64 = f.db().conn().query_row("SELECT COUNT(*) FROM journal_entries WHERE reverses_id IS NOT NULL", [], |r| r.get(0)).unwrap();
+    assert_eq!(reversals, 0);
+}
+
+#[test]
 fn a_cascade_preview_saves_nothing_and_shows_the_lock() {
     let f = books();
     f.lock(f.subsidiary, "2026-03-31");

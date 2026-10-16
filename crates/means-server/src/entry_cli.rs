@@ -306,7 +306,7 @@ fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>, cascade: Op
     // A preview rolls back: the entry keeps its status, and the reversal does not exist.
     let saved = review.applied || review.already_void;
     let entry = if saved { review.entry.clone() } else { journal::get_entry(&conn, id)? };
-    let reversal = if saved { entry_ref(&conn, &review.reversal)? } else { json!({"uid": null, "status": "posted", "date": review.reversal.date.to_string()}) };
+    let reversal = if saved { entry_ref(&conn, &review.reversal)? } else { review.reversal_ref() };
     let linked = review.linked_entries.iter().map(|l| serde_json::to_value(l).map_err(|e| AgentError::from(means_core::Error::from(e)))).collect::<AgentResult<Vec<_>>>()?;
     Ok(Output::Json(json!({
         "entry": entry_ref(&conn, &entry)?,
