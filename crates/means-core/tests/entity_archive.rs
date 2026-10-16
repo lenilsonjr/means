@@ -286,3 +286,55 @@ fn archive_ignores_links_to_archived_entities() {
     c.execute("UPDATE entities SET archived_at = 'now' WHERE id = ?1", [second.id]).unwrap();
     entities::archive(&mut c, first.id, "Test User", "rebuilt").unwrap();
 }
+
+#[test]
+fn schedules_skip_an_archived_entity_and_resume_after_unarchive() {
+    use means_core::model::{EntryTemplate, TemplateLine};
+    use means_core::templates;
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let old = entities::create_entity(&mut c, "Alpine Ski House", "company", "CH", "CHF").unwrap();
+    let active = entities::create_entity(&mut c, "Coho Winery", "company", "CH", "CHF").unwrap();
+    let save = |entity: i64, name: &str| {
+        let bank = accounts::ensure_account(&c, entity, AccountType::Asset, &["Bank"], "bank", "CHF").unwrap();
+        let rent = accounts::ensure_account(&c, entity, AccountType::Expense, &["Rent"], "expense", "CHF").unwrap();
+        let line = |account_id, method: &str, value: Option<&str>| TemplateLine { account_id, method: method.into(), value: value.map(dec), of_line: None, memo: String::new(), label: String::new() };
+        templates::save_template(
+            &c,
+            &EntryTemplate {
+                id: 0,
+                uid: String::new(),
+                entity_id: entity,
+                name: name.into(),
+                payee: "Example Landlord".into(),
+                description: "Monthly rent".into(),
+                lines: vec![line(bank.id, "fixed", Some("-50")), line(rent.id, "balance", None)],
+                rrule: "FREQ=MONTHLY;BYMONTHDAY=1".into(),
+                starts_on: Some(day("2026-01-01")),
+                next_on: None,
+                ends_on: None,
+                auto_post: false,
+                lead_days: 0,
+                version: 1,
+                active: true,
+                created_at: String::new(),
+            },
+        )
+        .unwrap()
+    };
+    // The template of the archived entity comes first in the selection order (by name).
+    let first = save(old.id, "A rent");
+    let second = save(active.id, "B rent");
+    entities::archive(&mut c, old.id, "Test User", "rebuilt").unwrap();
+
+    let created = templates::run_schedules(&mut c, Some(day("2026-03-15"))).unwrap();
+    assert_eq!(created, 3, "the active entity still runs");
+    let count = |c: &rusqlite::Connection, t: i64| -> i64 { c.query_row("SELECT COUNT(*) FROM journal_entries WHERE template_id = ?1", [t], |r| r.get(0)).unwrap() };
+    assert_eq!((count(&c, first.id), count(&c, second.id)), (0, 3));
+    // The archived template keeps its schedule state.
+    assert_eq!(templates::get_template(&c, first.id).unwrap().next_on, first.next_on);
+
+    entities::unarchive(&mut c, old.id, "Test User", "reopen", None).unwrap();
+    assert_eq!(templates::run_schedules(&mut c, Some(day("2026-03-15"))).unwrap(), 3);
+    assert_eq!(count(&c, first.id), 3);
+}
