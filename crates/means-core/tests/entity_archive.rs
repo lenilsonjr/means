@@ -138,6 +138,29 @@ fn revaluation_leaves_archived_books_alone() {
 }
 
 #[test]
+fn draft_revaluation_leaves_archived_drafts_alone() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let old = entities::create_entity(&mut c, "Fabrikam GmbH", "company", "DE", "EUR").unwrap();
+    let usd = accounts::ensure_account(&c, old.id, AccountType::Asset, &["Bank", "USD account"], "bank", "USD").unwrap();
+    let fees = accounts::ensure_account(&c, old.id, AccountType::Expense, &["Fees"], "expense", "EUR").unwrap();
+    // The draft takes the nearest earlier rate. A later exact rate gives it another value.
+    rates::set_price(&c, "USD", "EUR", day("2026-03-01"), dec("0.9"), "manual").unwrap();
+    let mut input = EntryInput::new(old.id, day("2026-03-02"));
+    input.status = EntryStatus::Draft;
+    input.postings = vec![PostingInput::new(usd.id, dec("-10")), PostingInput::balancing(fees.id)];
+    journal::create_entry(&mut c, input).unwrap();
+    entities::archive(&mut c, old.id, "Test User", "rebuilt").unwrap();
+    rates::set_price(&c, "USD", "EUR", day("2026-03-02"), dec("0.95"), "manual").unwrap();
+    let report = rates::revalue_missing(&mut c).unwrap();
+    assert_eq!((report.drafts, report.failed), (0, 0), "{:?}", report.first_error);
+    // The same draft revalues once the books are active again.
+    entities::unarchive(&mut c, old.id, "Test User", "reopen", None).unwrap();
+    let report = rates::revalue_missing(&mut c).unwrap();
+    assert_eq!((report.drafts, report.failed), (1, 0), "{:?}", report.first_error);
+}
+
+#[test]
 fn migration_28_keeps_entities_and_their_references() {
     // A ledger at version 27 with books, then the later migrations.
     let raw = rusqlite::Connection::open_in_memory().unwrap();

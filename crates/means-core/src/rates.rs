@@ -386,11 +386,13 @@ pub fn revalue_missing(conn: &mut Connection) -> Result<Revalued> {
         crate::hashchain::rechain(conn, entity_id, seq)?;
     }
     // A rate that the lookup found (exact, nearest, inverse or cross) can change when a new rate
-    // arrives. Rates given by hand ("input") and rates of a currency migration stay.
+    // arrives. Rates given by hand ("input") and rates of a currency migration stay. The drafts of
+    // an archived entity stay as they are, as its posted entries do.
     let drafts: Vec<i64> = {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT e.id FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id
-             WHERE e.status = 'draft' AND p.rate_source NOT IN ('', 'same', 'input', 'missing', 'currency_migration')
+             JOIN entities en ON en.id = e.entity_id
+             WHERE e.status = 'draft' AND en.archived_at IS NULL AND p.rate_source NOT IN ('', 'same', 'input', 'missing', 'currency_migration')
                AND NOT EXISTS (SELECT 1 FROM postings m WHERE m.journal_entry_id = e.id AND m.rate_source = 'missing') ORDER BY e.id",
         )?;
         let v: Vec<i64> = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
