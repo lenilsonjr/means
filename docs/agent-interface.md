@@ -234,7 +234,7 @@ The document can carry an `intervault` block at the top level. The engine then l
 
 `import --map` reads the file as `generic_csv` and builds the same column mapping as the TUI. See [column maps](import-formats.md#column-maps-for-other-csv-files). `import` prints text.
 
-`import --from D --to D` drafts only the lines dated in the range, both days included. It works with every bank source, with or without `--map`. A line outside the range stays in the import with the status `skipped` and the note `before --from D` or `after --to D`. It gets no draft. The summary counts it as skipped. `--from` after `--to` is refused. The range reads the date of each line. A line without a date ignores `--from` and `--to`: the range does not skip it, and it keeps the status that the parser gives it, for example a parse error.
+`import --from D --to D` drafts only the lines dated in the range, both days included. It works with every bank source, with or without `--map`. A line outside the range stays in the import with the status `skipped` and the note `before --from D` or `after --to D`. It gets no draft. The summary counts it as skipped. `--from` after `--to` is refused. The range reads the date of each line. A line without a date ignores `--from` and `--to`: the range does not skip it, and it keeps the status that the parser gives it, for example a parse error. When the range skips a line, the import stores no opening balance, no closing balance and no closing date from the file, and its period is the one of the lines that it keeps.
 
 ## Tax
 

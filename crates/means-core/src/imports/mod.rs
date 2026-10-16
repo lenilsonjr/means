@@ -607,15 +607,32 @@ pub fn run_import(conn: &mut Connection, request: ImportRequest<'_>) -> Result<I
 }
 
 /// Mark the dated lines outside the inclusive range from..to as skipped. The import keeps them as
-/// statement lines, so the file stays auditable, but they get no draft.
+/// statement lines, so the file stays auditable, but they get no draft. A line without a date
+/// ignores the range.
+///
+/// When the range skips a line, the balances and the period of the file no longer describe the
+/// lines that the import drafts. The import then stores no opening balance, no closing balance
+/// and no closing date, and it takes the period from the lines that stay.
 fn skip_outside(parse: &mut ParseOutput, from: Option<NaiveDate>, to: Option<NaiveDate>) {
+    let mut skipped = 0;
     for line in parse.lines.iter_mut().filter(|l| l.skip.is_none()) {
         let Some(date) = line.date else { continue };
         if let Some(from) = from.filter(|f| date < *f) {
             line.skip = Some(format!("before --from {from}"));
+            skipped += 1;
         } else if let Some(to) = to.filter(|t| date > *t) {
             line.skip = Some(format!("after --to {to}"));
+            skipped += 1;
         }
+    }
+    if skipped > 0 {
+        parse.opening_balance = None;
+        parse.closing_balance = None;
+        parse.closing_date = None;
+        let kept = || parse.lines.iter().filter(|l| l.skip.is_none()).filter_map(|l| l.date);
+        let (first, last) = (kept().min(), kept().max());
+        parse.period_from = first;
+        parse.period_to = last;
     }
 }
 

@@ -1767,3 +1767,26 @@ fn import_from_and_to_ignore_a_line_without_a_date() {
     let dated = lines.as_array().unwrap().iter().find(|l| l["reference"] == "ref-old").unwrap();
     assert_eq!((dated["status"].as_str(), dated["note"].as_str()), (Some("skipped"), Some("before --from 2026-01-01")));
 }
+
+#[test]
+fn an_import_range_that_skips_lines_stores_no_file_balance_and_its_own_period() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    let file = ledger.path.with_extension("balance.csv");
+    std::fs::write(
+        &file,
+        "Booked,Text,Value,Balance,Ref\n2025-12-30,Old fee,-1.00,99.00,ref-old\n2026-01-05,Card payment Sample Cafe,-12.50,86.50,ref-in\n2026-01-20,Card payment Sample Shop,-6.50,80.00,ref-in2\n2026-02-10,Later fee,-2.00,78.00,ref-late\n",
+    )
+    .unwrap();
+    let account = books.n26.to_string();
+    let map = "date=Booked,amount=Value,description=Text,balance=Balance,external_id=Ref";
+    let out = ledger.ok(&["import", "--account", &account, "--map", map, "--from", "2026-01-01", "--to", "2026-01-31", file.to_str().unwrap()]);
+    std::fs::remove_file(&file).unwrap();
+    let id: i64 = out.trim_start_matches("import #").chars().take_while(char::is_ascii_digit).collect::<String>().parse().unwrap();
+    let (import, _) = imports::get_import(&ledger.db().conn(), id).unwrap();
+    // The balance of the file belongs to its last line, which the range skipped.
+    assert_eq!((import.opening_balance, import.closing_balance), (None, None));
+    assert!(import.options["closing_date"].is_null(), "{}", import.options);
+    // The period is the one of the drafted lines.
+    assert_eq!((import.period_from, import.period_to), (Some(date("2026-01-05")), Some(date("2026-01-20"))));
+}
