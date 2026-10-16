@@ -12,7 +12,7 @@ An entity name is unique among the active entities, without case: `Acme` and `AC
 
 ### Archived entities
 
-`entities.archived_at` marks an archived entity. Use an archive for a set of books that a new entity replaces, for example after a first attempt that went wrong. `means entity archive <e> --actor A --reason R` sets the time. `means entity unarchive <e> --actor A --reason R [--name N]` clears it. Each one writes an audit event with the actor and the reason. Both are human actions: an agent session cannot run them.
+`entities.archived_at` marks an archived entity. Use an archive for a set of books that a new entity replaces, for example after a first attempt that went wrong. `means entity archive <e> --actor A --reason R` sets the time. `means entity unarchive <e> --actor A --reason R [--name N]` clears it. Each one writes an audit event with the actor and the reason. Both are human actions: an agent session cannot run them. gRPC `UpdateEntity` refuses a change of `archived` and points to these commands. It changes a name through the same rename as `entity set --name`, with the same check of the active names, and the audit event records the actor `grpc`.
 
 An archived entity:
 

@@ -209,3 +209,26 @@ fn migration_28_refuses_active_names_that_differ_only_in_case() {
     raw.execute("UPDATE entities SET archived_at = 'now' WHERE id = 2", []).unwrap();
     db::migrate_to(&raw, 28).unwrap();
 }
+
+#[test]
+fn update_entity_refuses_an_archive_change_and_checks_a_rename() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let first = entities::create_entity(&mut c, "Adatum Holdings", "company", "SG", "SGD").unwrap();
+    let second = entities::create_entity(&mut c, "Adatum Trading", "company", "SG", "SGD").unwrap();
+    // The archive state changes only through archive and unarchive.
+    let err = entities::update_entity_by(&mut c, first.id, "", "", "SG", None, true, "grpc").unwrap_err();
+    assert!(matches!(&err, Error::Invalid(m) if m.contains("means entity archive")), "{err:?}");
+    assert!(entities::get_entity(&c, first.id).unwrap().archived_at.is_none());
+    entities::archive(&mut c, first.id, "Test User", "rebuilt").unwrap();
+    let err = entities::update_entity_by(&mut c, first.id, "", "", "SG", None, false, "grpc").unwrap_err();
+    assert!(matches!(&err, Error::Invalid(m) if m.contains("means entity unarchive")), "{err:?}");
+    assert!(entities::get_entity(&c, first.id).unwrap().archived_at.is_some());
+    // A rename checks the active names without case, and records the actor.
+    let third = entities::create_entity(&mut c, "Adatum Services", "company", "SG", "SGD").unwrap();
+    assert!(matches!(entities::update_entity_by(&mut c, third.id, "ADATUM TRADING", "", "SG", None, false, "grpc"), Err(Error::Conflict(_))));
+    let renamed = entities::update_entity_by(&mut c, second.id, "Adatum Trading Pte. Ltd.", "", "SG", None, false, "grpc").unwrap();
+    assert_eq!(renamed.name, "Adatum Trading Pte. Ltd.");
+    let rename = audit::history(&c, "entities", second.id).unwrap().into_iter().find(|e| e.action == "rename").unwrap();
+    assert_eq!(rename.actor, "grpc");
+}

@@ -1354,3 +1354,39 @@ async fn grpc_void_of_a_linked_entry_needs_cascade() {
     let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'journal_entries' AND row_id = ?1 AND action = 'void'", [b.id], |r| r.get(0)).unwrap();
     assert_eq!(actor, "Sample Reviewer");
 }
+
+#[tokio::test]
+async fn grpc_update_entity_refuses_an_archive_change_and_checks_names() {
+    let server = start();
+    let mut client = MeansClient::connect(server.url.clone()).await.unwrap();
+    let first = client
+        .create_entity(pb::CreateEntityRequest { name: "Adatum Holdings".into(), kind: "company".into(), country: "SG".into(), currency: "SGD".into() })
+        .await
+        .unwrap()
+        .into_inner()
+        .entity
+        .unwrap();
+    let second = client
+        .create_entity(pb::CreateEntityRequest { name: "Adatum Trading".into(), kind: "company".into(), country: "SG".into(), currency: "SGD".into() })
+        .await
+        .unwrap()
+        .into_inner()
+        .entity
+        .unwrap();
+
+    let archive = pb::Entity { archived: true, ..first.clone() };
+    let err = client.update_entity(pb::UpdateEntityRequest { entity: Some(archive) }).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument, "{err:?}");
+    assert!(err.message().contains("means entity archive"), "{}", err.message());
+
+    let twin = pb::Entity { name: "ADATUM HOLDINGS".into(), ..second.clone() };
+    let err = client.update_entity(pb::UpdateEntityRequest { entity: Some(twin) }).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::AlreadyExists, "{err:?}");
+
+    let renamed = pb::Entity { name: "Adatum Trading Pte. Ltd.".into(), ..second.clone() };
+    let out = client.update_entity(pb::UpdateEntityRequest { entity: Some(renamed) }).await.unwrap().into_inner().entity.unwrap();
+    assert_eq!(out.name, "Adatum Trading Pte. Ltd.");
+    let db = means_core::Db::open(&server.db).unwrap();
+    let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'entities' AND row_id = ?1 AND action = 'rename'", [second.id], |r| r.get(0)).unwrap();
+    assert_eq!(actor, "grpc");
+}

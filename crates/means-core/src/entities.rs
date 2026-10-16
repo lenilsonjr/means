@@ -71,32 +71,49 @@ pub fn create_entity(conn: &mut Connection, name: &str, kind: &str, country: &st
     get_entity(conn, id)
 }
 
-/// Change the name, kind, country, lock date and archive state of an entity.
+/// Change the name, kind, country and lock date of an entity.
 /// The lock date can only move forward here. A move back needs `close::unlock`, which records
 /// the actor and the reason and checks the filed periods.
+/// `archived` must be the stored archive state: an archive or an unarchive needs
+/// `archive` or `unarchive`, which record the actor and the reason.
 pub fn update_entity(conn: &mut Connection, id: i64, name: &str, kind: &str, country: &str, lock_date: Option<NaiveDate>, archived: bool) -> Result<Entity> {
-    let before = get_entity(conn, id)?;
+    update_entity_by(conn, id, name, kind, country, lock_date, archived, "")
+}
+
+/// `update_entity` with the actor of the audit events. A name change goes through `rename_by`,
+/// with its check of the active names.
+#[allow(clippy::too_many_arguments)]
+pub fn update_entity_by(conn: &mut Connection, id: i64, name: &str, kind: &str, country: &str, lock_date: Option<NaiveDate>, archived: bool, actor: &str) -> Result<Entity> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let before = get_entity(&tx, id)?;
+    if archived != before.archived_at.is_some() {
+        let command = if archived { "means entity archive" } else { "means entity unarchive" };
+        return Err(Error::Invalid(format!("an update cannot change the archive state of {}; use `{command}`, which records an actor and a reason", before.name)));
+    }
     if let Some(lock) = before.lock_date {
         if lock_date.is_none_or(|new| new < lock) {
             return Err(Error::Locked(format!("{} is locked through {lock}; move the lock date back with `means close unlock`, which records an actor and a reason", before.name)));
         }
     }
-    let name = if name.trim().is_empty() { before.name.clone() } else { name.trim().to_string() };
     let kind = if kind.trim().is_empty() { before.kind.clone() } else { kind.trim().to_ascii_lowercase() };
     if kind != "person" && kind != "company" {
         return Err(Error::Invalid("entity kind must be person or company".into()));
     }
-    let archived_at = match (archived, &before.archived_at) {
-        (true, Some(a)) => Some(a.clone()),
-        (true, None) => Some(now_ts()),
-        (false, _) => None,
-    };
-    conn.execute(
-        "UPDATE entities SET name = ?2, kind = ?3, country = ?4, lock_date = ?5, archived_at = ?6, updated_at = ?7 WHERE id = ?1",
-        params![id, name, kind, country.trim().to_ascii_uppercase(), lock_date.map(|d| d.to_string()), archived_at, now_ts()],
+    if !name.trim().is_empty() && name.trim() != before.name {
+        rename_by(&tx, id, name, actor)?;
+    }
+    tx.execute(
+        "UPDATE entities SET kind = ?2, country = ?3, lock_date = ?4, updated_at = ?5 WHERE id = ?1",
+        params![id, kind, country.trim().to_ascii_uppercase(), lock_date.map(|d| d.to_string()), now_ts()],
     )?;
-    let after = get_entity(conn, id)?;
-    crate::audit::log(conn, "entities", id, "update", Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?))?;
+    let after = get_entity(&tx, id)?;
+    let (b, a) = (Some(serde_json::to_value(&before)?), Some(serde_json::to_value(&after)?));
+    if actor.trim().is_empty() {
+        crate::audit::log(&tx, "entities", id, "update", b, a)?;
+    } else {
+        crate::audit::log_by(&tx, "entities", id, "update", b, a, actor, "")?;
+    }
+    tx.commit()?;
     Ok(after)
 }
 
@@ -139,6 +156,11 @@ fn check_active_name(conn: &Connection, id: i64, name: &str) -> Result<()> {
 /// Give an entity a new name inside the caller's transaction. The name must be unique among
 /// the active entities. The audit log records the names before and after.
 pub fn rename_in(tx: &Connection, id: i64, name: &str) -> Result<Entity> {
+    rename_by(tx, id, name, "")
+}
+
+/// `rename_in` with the actor of the audit event.
+pub fn rename_by(tx: &Connection, id: i64, name: &str, actor: &str) -> Result<Entity> {
     let name = name.trim();
     if name.is_empty() {
         return Err(Error::Invalid("entity name is required".into()));
@@ -149,7 +171,12 @@ pub fn rename_in(tx: &Connection, id: i64, name: &str) -> Result<Entity> {
     }
     check_active_name(tx, id, name)?;
     tx.execute("UPDATE entities SET name = ?2, updated_at = ?3 WHERE id = ?1", params![id, name, now_ts()])?;
-    crate::audit::log(tx, "entities", id, "rename", Some(serde_json::json!({"name": before.name})), Some(serde_json::json!({"name": name})))?;
+    let (b, a) = (Some(serde_json::json!({"name": before.name})), Some(serde_json::json!({"name": name})));
+    if actor.trim().is_empty() {
+        crate::audit::log(tx, "entities", id, "rename", b, a)?;
+    } else {
+        crate::audit::log_by(tx, "entities", id, "rename", b, a, actor, "")?;
+    }
     get_entity(tx, id)
 }
 
