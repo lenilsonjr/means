@@ -43,6 +43,29 @@ fn row_to_entity(r: &rusqlite::Row<'_>) -> rusqlite::Result<Entity> {
     })
 }
 
+/// Find an entity by id, uid or name. The name match ignores case. One active entity with the
+/// name wins over archived entities with the name. A name that matches more than one active
+/// entity, or no active entity and more than one archived entity, is ambiguous: the error lists
+/// the ids, and the caller gives an id or a uid.
+pub fn find_by_key(conn: &Connection, key: &str) -> Result<Entity> {
+    let key = key.trim();
+    let all = list_entities(conn, true)?;
+    if let Some(e) = all.iter().find(|e| key.parse::<i64>().ok() == Some(e.id) || e.uid == key) {
+        return Ok(e.clone());
+    }
+    let named: Vec<&Entity> = all.iter().filter(|e| e.name.eq_ignore_ascii_case(key)).collect();
+    let active: Vec<&Entity> = named.iter().copied().filter(|e| e.archived_at.is_none()).collect();
+    let candidates = if active.is_empty() { named } else { active };
+    match candidates.as_slice() {
+        [] => Err(Error::NotFound(format!("entity {key}"))),
+        [one] => Ok((*one).clone()),
+        many => {
+            let list: Vec<String> = many.iter().map(|e| format!("#{} {}{}", e.id, e.name, if e.archived_at.is_some() { " (archived)" } else { "" })).collect();
+            Err(Error::Invalid(format!("the entity name {key:?} is ambiguous: it matches {}; give the id or the uid", list.join(", "))))
+        }
+    }
+}
+
 /// Create an entity with its functional currency and the system accounts every set of books needs.
 pub fn create_entity(conn: &mut Connection, name: &str, kind: &str, country: &str, currency: &str) -> Result<Entity> {
     let name = name.trim();

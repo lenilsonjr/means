@@ -235,14 +235,10 @@ fn done(body: Value, text: String) -> Output {
 }
 
 fn resolve_entity(conn: &Connection, key: &str) -> Result<means_core::model::Entity, Failure> {
-    let key = key.trim();
-    let all = means_core::entities::list_entities(conn, true)?;
-    let by_id = key.parse::<i64>().ok().and_then(|id| all.iter().find(|e| e.id == id));
-    by_id
-        .or_else(|| all.iter().find(|e| e.uid == key))
-        .or_else(|| all.iter().find(|e| e.name.eq_ignore_ascii_case(key)))
-        .cloned()
-        .ok_or_else(|| Failure::new("not_found", format!("no entity {key:?}")))
+    match means_core::entities::find_by_key(conn, key) {
+        Err(means_core::Error::NotFound(_)) => Err(Failure::new("not_found", format!("no entity {:?}", key.trim()))),
+        other => Ok(other?),
+    }
 }
 
 fn parse_line(conn: &Connection, key: &str) -> Result<i64, Failure> {

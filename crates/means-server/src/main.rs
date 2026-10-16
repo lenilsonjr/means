@@ -692,13 +692,10 @@ fn find_account(conn: &means_core::rusqlite::Connection, entity_id: i64, path: &
 }
 
 fn resolve_entity(conn: &means_core::rusqlite::Connection, key: &str) -> Result<means_core::model::Entity> {
-    let all = means_core::entities::list_entities(conn, true)?;
-    if let Ok(id) = key.trim().parse::<i64>() {
-        if let Some(e) = all.iter().find(|e| e.id == id) {
-            return Ok(e.clone());
-        }
+    match means_core::entities::find_by_key(conn, key) {
+        Err(means_core::Error::NotFound(_)) => anyhow::bail!("no entity named {key}"),
+        other => Ok(other?),
     }
-    all.into_iter().find(|e| e.name.eq_ignore_ascii_case(key.trim())).ok_or_else(|| anyhow::anyhow!("no entity named {key}"))
 }
 
 fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {

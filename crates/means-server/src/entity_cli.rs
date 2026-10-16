@@ -222,15 +222,9 @@ pub fn fields(value: Value) -> Map<String, Value> {
     }
 }
 
-/// Find an entity by id, uid or name. The name match ignores case.
+/// Find an entity by id, uid or name. The name match ignores case. An ambiguous name is refused.
 pub fn find_entity(conn: &means_core::rusqlite::Connection, key: &str) -> means_core::Result<Entity> {
-    let key = key.trim();
-    let all = entities::list_entities(conn, true)?;
-    all.iter()
-        .find(|e| key.parse::<i64>().ok() == Some(e.id) || e.uid == key)
-        .or_else(|| all.iter().find(|e| e.name.eq_ignore_ascii_case(key)))
-        .cloned()
-        .ok_or_else(|| Error::NotFound(format!("entity {key}")))
+    entities::find_by_key(conn, key)
 }
 
 pub fn date(s: &str) -> means_core::Result<chrono::NaiveDate> {

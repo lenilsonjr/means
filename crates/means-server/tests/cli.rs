@@ -1533,3 +1533,34 @@ fn account_set_counterparty_turns_the_close_warning_into_a_related_party_balance
     assert!(cleared["account"]["counterparty_uid"].is_null());
     assert_eq!(codes(&ledger.ok(&check)), ["intercompany_out_of_balance"]);
 }
+
+#[test]
+fn an_entity_name_that_matches_several_archived_entities_is_ambiguous() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let ids: Vec<i64> = {
+        let mut c = db.conn();
+        let mut ids = Vec::new();
+        for name in ["Fourth Coffee", "FOURTH COFFEE"] {
+            let e = entities::create_entity(&mut c, name, "company", "US", "USD").unwrap();
+            entities::archive(&mut c, e.id, "Test User", "rebuilt").unwrap();
+            ids.push(e.id);
+        }
+        ids
+    };
+    drop(db);
+    let said = |args: &[&str]| {
+        let out = ledger.run(args);
+        assert!(!out.status.success(), "means {args:?} should refuse an ambiguous name");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+    // Each resolver refuses the name and lists the ids: main.rs, entry_cli and entity_cli.
+    for args in [vec!["rule", "list", "--entity", "fourth coffee"], vec!["entry", "list", "--entity", "fourth coffee"], vec!["entity", "facts", "fourth coffee"]] {
+        let text = said(&args);
+        assert!(text.contains("ambiguous") && text.contains(&format!("#{}", ids[0])) && text.contains(&format!("#{}", ids[1])), "{args:?}: {text}");
+    }
+    // An id still selects one entity, and one active entity wins over the archived ones.
+    ledger.ok(&["entity", "facts", &ids[0].to_string()]);
+    entities::create_entity(&mut ledger.db().conn(), "Fourth Coffee", "company", "US", "USD").unwrap();
+    ledger.ok(&["entity", "facts", "fourth coffee"]);
+}
