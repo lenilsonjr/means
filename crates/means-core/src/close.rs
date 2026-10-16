@@ -99,18 +99,17 @@ fn intercompany_flows(conn: &Connection, entity_id: i64, account_id: i64, from: 
     Ok(flows)
 }
 
-/// The counterparty of an account when it is a related party outside the group: a payee of kind
-/// `person`, or a payee that stands for no other active entity of the ledger. A payee stands for
-/// an entity when its name or one of its aliases is the name of that entity, ignoring case.
+/// The counterparty of an account when it is a related party outside the group: a payee that
+/// stands for no other active entity of the ledger. A payee stands for an entity when its name or
+/// one of its aliases is the name of that entity, ignoring case. The engine checks the group first,
+/// for every kind: a payee of kind `person` that stands for an entity of the ledger (a person
+/// with own books) is in the group. Only then is a person outside the group.
 /// Such a party has no books in the ledger, so no inter-vault link can cover the movement.
 /// Returns the name and the kind of the payee, or None.
 fn outside_counterparty(conn: &Connection, entity_id: i64, account_id: i64) -> AgentResult<Option<(String, String)>> {
     let payee: Option<i64> = conn.query_row("SELECT counterparty_payee_id FROM accounts WHERE id = ?1", [account_id], |r| r.get(0))?;
     let Some(payee_id) = payee else { return Ok(None) };
     let (name, kind): (String, String) = conn.query_row("SELECT name, kind FROM payees WHERE id = ?1", [payee_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
-    if kind == "person" {
-        return Ok(Some((name, kind)));
-    }
     let mut stmt = conn.prepare("SELECT text FROM payee_aliases WHERE payee_id = ?1")?;
     let mut names: Vec<String> = stmt.query_map([payee_id], |r| r.get::<_, String>(0))?.collect::<std::result::Result<_, _>>()?;
     names.push(name.clone());

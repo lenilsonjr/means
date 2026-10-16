@@ -111,3 +111,14 @@ fn the_counterparty_must_be_a_payee_of_the_same_entity_and_goes_to_the_snapshot(
     let bank = accounts_json.as_array().unwrap().iter().find(|a| a["path"] == "Assets:Bank:Operating").unwrap();
     assert!(bank["counterparty_uid"].is_null());
 }
+
+#[test]
+fn a_person_counterparty_that_names_an_entity_is_in_the_group() {
+    let b = books();
+    // The shareholder is a person with own books in the ledger.
+    let shareholder = payee(&mut b.db.conn(), b.entity, "Sample Shareholder", "person");
+    accounts::update_account(&b.db.conn(), b.due, AccountUpdate { counterparty_payee_id: Some(Some(shareholder)), ..Default::default() }).unwrap();
+    entities::create_entity(&mut b.db.conn(), "sample shareholder", "person", "PT", "EUR").unwrap();
+    // The group check runs first, for every kind: the movement needs an inter-vault link.
+    assert_eq!(codes(&b), [("intercompany_out_of_balance".to_string(), Severity::Warning)]);
+}
