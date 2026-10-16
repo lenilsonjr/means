@@ -286,7 +286,8 @@ fn confirm(db_path: &Path, uid: &str, digest: &str, actor: Option<String>) -> Ag
 
 /// The given actor, else `$USER`, else "unknown".
 pub(crate) fn actor_or_user(actor: Option<String>) -> String {
-    actor.or_else(|| std::env::var("USER").ok()).filter(|a| !a.trim().is_empty()).unwrap_or_else(|| "unknown".into()).trim().to_string()
+    let given = |a: &String| !a.trim().is_empty();
+    actor.filter(given).or_else(|| std::env::var("USER").ok().filter(given)).unwrap_or_else(|| "unknown".into()).trim().to_string()
 }
 
 /// A void writes a reversal. `--dry-run` previews it and saves nothing, so an agent can run it.

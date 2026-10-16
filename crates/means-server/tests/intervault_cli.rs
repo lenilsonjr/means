@@ -262,3 +262,19 @@ fn a_cascade_preview_saves_nothing_and_shows_the_lock() {
     assert!(text.contains("its period is locked"), "{text}");
     assert_eq!((f.status(&f.a), f.status(&f.b)), (EntryStatus::Posted, EntryStatus::Posted));
 }
+
+#[test]
+fn an_empty_actor_falls_back_to_user() {
+    let f = books();
+    let out = Command::new(env!("CARGO_BIN_EXE_means"))
+        .arg("--db")
+        .arg(f.dir.join("ledger.db"))
+        .args(["entry", "void", &f.a.uid, "--reason", "wrong lender", "--cascade", "--actor", " "])
+        .env_remove("MEANS_AGENT")
+        .env("USER", "sample-user")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let history = audit::history(&f.db().conn(), "journal_entries", f.a.id).unwrap();
+    assert_eq!(history.iter().rev().find(|h| h.action == "void").unwrap().actor, "sample-user");
+}
