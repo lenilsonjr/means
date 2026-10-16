@@ -89,7 +89,9 @@ pub fn check_subtype(t: AccountType, subtype: &str) -> Result<String> {
     if allowed.contains(&s.as_str()) {
         return Ok(s);
     }
-    Err(Error::Invalid(format!("subtype {s:?} does not fit an {} account; use one of {}", t.as_str(), allowed.join(", "))))
+    let kind = t.as_str();
+    let article = if kind.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
+    Err(Error::Invalid(format!("subtype {s:?} does not fit {article} {kind} account; use one of {}", allowed.join(", "))))
 }
 
 /// All accounts of an entity (or all entities when `entity_id` is None), with paths, ordered as a tree.

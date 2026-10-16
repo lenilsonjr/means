@@ -578,11 +578,12 @@ impl Means for MeansService {
 
     async fn update_entity(&self, req: Request<pb::UpdateEntityRequest>) -> Result<Response<pb::EntityResponse>, Status> {
         self.writable()?;
+        let actor = request_actor(&req);
         let e = req.into_inner().entity.ok_or_else(|| Status::invalid_argument("entity is required"))?;
         let lock = date_opt(&e.lock_date)?;
         // A rename checks the active names without case. An archive or an unarchive needs
         // `means entity archive` or `unarchive`, so the update refuses a change of `archived`.
-        let out = self.run(move |c| entities::update_entity_by(c, e.id, &e.name, &e.kind, &e.country, lock, e.archived, "grpc")).await?;
+        let out = self.run(move |c| entities::update_entity_by(c, e.id, &e.name, &e.kind, &e.country, lock, e.archived, &actor)).await?;
         Ok(Response::new(pb::EntityResponse { entity: Some(entity_pb(&out)) }))
     }
 

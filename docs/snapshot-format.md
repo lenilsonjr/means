@@ -88,7 +88,7 @@ These notes make the contract exact where the table is short.
 
 `schema_version` stays 1 when the format gets new fields. A reader must ignore fields that it does not know. These fields came after the first version 1 snapshots:
 
-- `entities.json`: `address`, `flags` and `flag_history`.
+- `entities.json`: `address`, `flags`, `flag_history` and `archived`.
 - `accounts.json`: `country`, `iban`, `bic`, `institution`, `location` and `counterparty_uid`.
 - `parties.json`: `residence` and `citizenship`.
 

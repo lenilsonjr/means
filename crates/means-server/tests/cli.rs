@@ -1604,7 +1604,10 @@ fn chart_new_accepts_the_holding_subtype() {
     let btc = accounts::find_by_path(&db.conn(), entity.id, "Assets:Wallets:BTC").unwrap().unwrap();
     assert_eq!((btc.subtype.as_str(), btc.commodity.as_str()), ("holding", "BTC"));
     assert_eq!(accounts::check_subtype(AccountType::Asset, "Holding").unwrap(), "holding");
-    assert!(accounts::check_subtype(AccountType::Liability, "holding").is_err());
+    let refused = accounts::check_subtype(AccountType::Liability, "holding").unwrap_err().to_string();
+    assert!(refused.contains("does not fit a liability account"), "{refused}");
+    let refused = accounts::check_subtype(AccountType::Asset, "card").unwrap_err().to_string();
+    assert!(refused.contains("does not fit an asset account"), "{refused}");
 }
 
 #[test]

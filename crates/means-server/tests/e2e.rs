@@ -1385,8 +1385,14 @@ async fn grpc_update_entity_refuses_an_archive_change_and_checks_names() {
 
     let renamed = pb::Entity { name: "Adatum Trading Pte. Ltd.".into(), ..second.clone() };
     let out = client.update_entity(pb::UpdateEntityRequest { entity: Some(renamed) }).await.unwrap().into_inner().entity.unwrap();
+    // A request with the means-actor metadata records that actor instead of grpc.
+    let mut request = tonic::Request::new(pb::UpdateEntityRequest { entity: Some(pb::Entity { name: "Adatum Holdings Pte. Ltd.".into(), ..first.clone() }) });
+    request.metadata_mut().insert("means-actor", "Sample Reviewer".parse().unwrap());
+    client.update_entity(request).await.unwrap();
     assert_eq!(out.name, "Adatum Trading Pte. Ltd.");
     let db = means_core::Db::open(&server.db).unwrap();
     let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'entities' AND row_id = ?1 AND action = 'rename'", [second.id], |r| r.get(0)).unwrap();
     assert_eq!(actor, "grpc");
+    let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'entities' AND row_id = ?1 AND action = 'rename'", [first.id], |r| r.get(0)).unwrap();
+    assert_eq!(actor, "Sample Reviewer");
 }
