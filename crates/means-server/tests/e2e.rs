@@ -1311,3 +1311,88 @@ async fn review_split_editor_posts_existing_draft_and_capture_reuses_it() {
     assert!(app.capture.splits.is_empty(), "{}", app.status);
     assert_eq!(client.list_journal_entries(pb::ListJournalEntriesRequest { entity_id: entity, ..Default::default() }).await.unwrap().into_inner().entries.len(), 2);
 }
+
+#[tokio::test]
+async fn grpc_void_of_a_linked_entry_needs_cascade() {
+    use means_core::{accounts, entities, intervault, journal, AccountType, Db, EntryInput, EntryStatus, PostingInput};
+    let server = start();
+    let mut client = MeansClient::connect(server.url.clone()).await.unwrap();
+    let (a, b) = {
+        let db = Db::open(&server.db).unwrap();
+        let mut c = db.conn();
+        let parent = entities::create_entity(&mut c, "Northwind Holdings Pte. Ltd.", "company", "SG", "SGD").unwrap();
+        let sub = entities::create_entity(&mut c, "Blue Harbor LLC", "company", "US", "USD").unwrap();
+        let parent_bank = accounts::ensure_account(&c, parent.id, AccountType::Asset, &["Bank"], "bank", "SGD").unwrap().id;
+        let parent_loan = accounts::ensure_account(&c, parent.id, AccountType::Asset, &["Loan to Blue Harbor"], "receivable", "SGD").unwrap().id;
+        let sub_bank = accounts::ensure_account(&c, sub.id, AccountType::Asset, &["Bank"], "bank", "USD").unwrap().id;
+        let sub_loan = accounts::ensure_account(&c, sub.id, AccountType::Liability, &["Loan from Northwind"], "loan", "USD").unwrap().id;
+        let mut entry = |entity: i64, date: &str, debit: i64, amount: &str, credit: i64| {
+            let mut input = EntryInput::new(entity, date.parse().unwrap());
+            input.status = EntryStatus::Posted;
+            input.postings = vec![PostingInput::new(debit, amount.parse().unwrap()), PostingInput::balancing(credit)];
+            journal::create_entry(&mut c, input).unwrap()
+        };
+        let a = entry(parent.id, "2026-03-02", parent_loan, "1350.00", parent_bank);
+        let b = entry(sub.id, "2026-03-03", sub_bank, "1000.00", sub_loan);
+        intervault::link(&mut c, &a.uid, &b.uid, "loan", "").unwrap();
+        (a, b)
+    };
+
+    // Without cascade: a failed precondition, with a message that names no CLI flag.
+    let err = client.void_journal_entry(pb::VoidJournalEntryRequest { id: a.id, date: String::new(), reason: "wrong lender".into(), cascade: false }).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition, "{err:?}");
+    assert!(err.message().contains("void the linked entries with cascade") && err.message().contains(&b.uid), "{}", err.message());
+    assert!(!err.message().contains("--"), "{}", err.message());
+
+    // With cascade: both legs are void. The request metadata names the actor.
+    let mut request = tonic::Request::new(pb::VoidJournalEntryRequest { id: a.id, date: String::new(), reason: "wrong lender".into(), cascade: true });
+    request.metadata_mut().insert("means-actor", "Sample Reviewer".parse().unwrap());
+    let out = client.void_journal_entry(request).await.unwrap().into_inner();
+    assert_eq!(out.entry.unwrap().status, "void");
+    let db = Db::open(&server.db).unwrap();
+    assert_eq!(journal::get_entry(&db.conn(), b.id).unwrap().status, EntryStatus::Void);
+    let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'journal_entries' AND row_id = ?1 AND action = 'void'", [b.id], |r| r.get(0)).unwrap();
+    assert_eq!(actor, "Sample Reviewer");
+}
+
+#[tokio::test]
+async fn grpc_update_entity_refuses_an_archive_change_and_checks_names() {
+    let server = start();
+    let mut client = MeansClient::connect(server.url.clone()).await.unwrap();
+    let first = client
+        .create_entity(pb::CreateEntityRequest { name: "Adatum Holdings".into(), kind: "company".into(), country: "SG".into(), currency: "SGD".into() })
+        .await
+        .unwrap()
+        .into_inner()
+        .entity
+        .unwrap();
+    let second = client
+        .create_entity(pb::CreateEntityRequest { name: "Adatum Trading".into(), kind: "company".into(), country: "SG".into(), currency: "SGD".into() })
+        .await
+        .unwrap()
+        .into_inner()
+        .entity
+        .unwrap();
+
+    let archive = pb::Entity { archived: true, ..first.clone() };
+    let err = client.update_entity(pb::UpdateEntityRequest { entity: Some(archive) }).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument, "{err:?}");
+    assert!(err.message().contains("means entity archive"), "{}", err.message());
+
+    let twin = pb::Entity { name: "ADATUM HOLDINGS".into(), ..second.clone() };
+    let err = client.update_entity(pb::UpdateEntityRequest { entity: Some(twin) }).await.unwrap_err();
+    assert_eq!(err.code(), tonic::Code::AlreadyExists, "{err:?}");
+
+    let renamed = pb::Entity { name: "Adatum Trading Pte. Ltd.".into(), ..second.clone() };
+    let out = client.update_entity(pb::UpdateEntityRequest { entity: Some(renamed) }).await.unwrap().into_inner().entity.unwrap();
+    // A request with the means-actor metadata records that actor instead of grpc.
+    let mut request = tonic::Request::new(pb::UpdateEntityRequest { entity: Some(pb::Entity { name: "Adatum Holdings Pte. Ltd.".into(), ..first.clone() }) });
+    request.metadata_mut().insert("means-actor", "Sample Reviewer".parse().unwrap());
+    client.update_entity(request).await.unwrap();
+    assert_eq!(out.name, "Adatum Trading Pte. Ltd.");
+    let db = means_core::Db::open(&server.db).unwrap();
+    let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'entities' AND row_id = ?1 AND action = 'rename'", [second.id], |r| r.get(0)).unwrap();
+    assert_eq!(actor, "grpc");
+    let actor: String = db.conn().query_row("SELECT actor FROM audit_log WHERE table_name = 'entities' AND row_id = ?1 AND action = 'rename'", [first.id], |r| r.get(0)).unwrap();
+    assert_eq!(actor, "Sample Reviewer");
+}

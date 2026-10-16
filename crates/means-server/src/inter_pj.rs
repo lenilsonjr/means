@@ -154,6 +154,10 @@ async fn pull(path: PathBuf, client: Client, account: Option<String>, cutoff: Op
         bail!("selected Inter account does not match INTER_ACCOUNT_NUMBER")
     }
     let db = Db::open(&path)?;
+    if means_core::connections::archived_provider_accounts(&db.conn(), "inter_pj")?.contains(&client.account) {
+        println!("{}: skipped; its account belongs to an archived entity", client.account);
+        return Ok(());
+    }
     let saved = means_core::connections::list(&db.conn())?;
     let saved = saved.iter().find(|a| a.channel == "inter_pj" && a.provider_account_id == client.account).map(|a| a.booked_from.as_str()).unwrap_or_default();
     let from = cutoff.or(means_core::parse_opt_date(saved)?).context("Inter requires a booking start: use --booked-from or save a cutoff in Connections")?;

@@ -78,6 +78,53 @@ pub struct CsvMapping {
 }
 
 impl CsvMapping {
+    /// Build a mapping from a command-line column map such as
+    /// `date=Booked,amount=Amount,description=Text,counterparty=Name,external_id=Id`.
+    /// A column is a header name or a 1-based column number. `counterparty` adds its column to the
+    /// description. `external_id` (or `reference`) fills the statement line reference. The keys
+    /// `debit`, `credit`, `balance` and `currency` are also accepted. `date_format` is a strftime
+    /// pattern; an empty one lets the parser detect it. `decimal_comma` reads 1.234,56 numbers.
+    pub fn from_column_map(spec: &str, date_format: &str, decimal_comma: bool) -> Result<CsvMapping> {
+        let mut m = CsvMapping { date_format: date_format.trim().to_string(), decimal_separator: if decimal_comma { ",".into() } else { String::new() }, ..Default::default() };
+        let mut seen = std::collections::HashSet::new();
+        for pair in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            let (key, column) = pair.split_once('=').ok_or_else(|| Error::Invalid(format!("column map entry {pair:?} must be key=column")))?;
+            let (key, column) = (key.trim().to_ascii_lowercase(), column.trim().to_string());
+            if column.is_empty() {
+                return Err(Error::Invalid(format!("column map entry {pair:?} names no column")));
+            }
+            if !seen.insert(key.clone()) {
+                return Err(Error::Invalid(format!("column map names {key} twice")));
+            }
+            match key.as_str() {
+                "date" => m.date_column = column,
+                "amount" => m.amount_column = column,
+                "debit" => m.debit_column = column,
+                "credit" => m.credit_column = column,
+                "description" => m.description_column = column,
+                "counterparty" => m.extra_description_columns.push(column),
+                "external_id" | "reference" => m.reference_column = column,
+                "balance" => m.balance_column = column,
+                "currency" => m.currency_column = column,
+                other => return Err(Error::Invalid(format!("unknown column map key {other:?}; use date, amount, debit, credit, description, counterparty, external_id, balance or currency"))),
+            }
+        }
+        if seen.contains("external_id") && seen.contains("reference") {
+            return Err(Error::Invalid("column map names external_id and reference; they are the same column".into()));
+        }
+        if m.date_column.is_empty() {
+            return Err(Error::Invalid("column map needs date=<column>".into()));
+        }
+        if m.amount_column.is_empty() && m.debit_column.is_empty() && m.credit_column.is_empty() {
+            return Err(Error::Invalid("column map needs amount=<column>, or debit and credit columns".into()));
+        }
+        let debit_or_credit = !m.debit_column.is_empty() || !m.credit_column.is_empty();
+        if !m.amount_column.is_empty() && debit_or_credit {
+            return Err(Error::Invalid("column map takes amount OR debit and credit columns".into()));
+        }
+        Ok(m)
+    }
+
     fn is_empty(&self) -> bool {
         self.date_column.is_empty() && self.amount_column.is_empty() && self.debit_column.is_empty()
     }
@@ -272,7 +319,8 @@ pub struct ImportOutcome {
 pub(crate) const MATCH_WINDOW_DAYS: i64 = 5;
 
 /// One file to import, and how to read it. `source` may be "auto" or "" to detect it from the
-/// file, and `preview` parses without writing anything.
+/// file, and `preview` parses without writing anything. `from` and `to` are an inclusive range of
+/// line dates: a line outside it is kept as a skipped line and gets no draft.
 pub struct ImportRequest<'a> {
     pub source: &'a str,
     pub account_id: Option<i64>,
@@ -281,11 +329,19 @@ pub struct ImportRequest<'a> {
     pub mapping: Option<&'a CsvMapping>,
     pub preview: bool,
     pub options: serde_json::Value,
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
 }
 
 impl<'a> ImportRequest<'a> {
     pub fn new(source: &'a str, account_id: Option<i64>, filename: &'a str, content: &'a [u8]) -> ImportRequest<'a> {
-        ImportRequest { source, account_id, filename, content, mapping: None, preview: false, options: serde_json::json!({}) }
+        ImportRequest { source, account_id, filename, content, mapping: None, preview: false, options: serde_json::json!({}), from: None, to: None }
+    }
+
+    pub fn date_range(mut self, from: Option<NaiveDate>, to: Option<NaiveDate>) -> ImportRequest<'a> {
+        self.from = from;
+        self.to = to;
+        self
     }
 
     pub fn mapping(mut self, mapping: Option<&'a CsvMapping>) -> ImportRequest<'a> {
@@ -306,10 +362,15 @@ impl<'a> ImportRequest<'a> {
 
 /// The pipeline: receive, parse, dedupe, match, draft, reconcile.
 pub fn run_import(conn: &mut Connection, request: ImportRequest<'_>) -> Result<ImportOutcome> {
-    let ImportRequest { source, account_id, filename, content, mapping, preview, options } = request;
+    let ImportRequest { source, account_id, filename, content, mapping, preview, options, from, to } = request;
     let source = if source.is_empty() || source == "auto" { detect_source(filename, content) } else { source.to_string() };
     if source == "account_tracker" {
         return Err(Error::Invalid("use ImportAccountTracker for Account Tracker backups".into()));
+    }
+    if let (Some(f), Some(t)) = (from, to) {
+        if f > t {
+            return Err(Error::Invalid(format!("--from {f} is after --to {t}")));
+        }
     }
     let sum = checksum(content);
     if !preview {
@@ -320,6 +381,7 @@ pub fn run_import(conn: &mut Connection, request: ImportRequest<'_>) -> Result<I
         }
     }
     let mut parse = parse(&source, content, mapping)?;
+    skip_outside(&mut parse, from, to);
     if source == "remessa_csv" {
         return remessa::run(conn, parse, &sum, ImportRequest::new(&source, account_id, filename, content).preview(preview).options(options));
     }
@@ -542,6 +604,36 @@ pub fn run_import(conn: &mut Connection, request: ImportRequest<'_>) -> Result<I
     }
     crate::audit::log(conn, "imports", import.id, "create", None, Some(serde_json::json!({"source": source, "filename": filename, "lines": import.lines_count})))?;
     Ok(ImportOutcome { import: get_import(conn, import.id)?.0, lines, parse })
+}
+
+/// Mark the dated lines outside the inclusive range from..to as skipped. The import keeps them as
+/// statement lines, so the file stays auditable, but they get no draft. A line without a date
+/// ignores the range.
+///
+/// When the range skips a line, the balances and the period of the file no longer describe the
+/// lines that the import drafts. The import then stores no opening balance, no closing balance
+/// and no closing date, and it takes the period from the lines that stay.
+fn skip_outside(parse: &mut ParseOutput, from: Option<NaiveDate>, to: Option<NaiveDate>) {
+    let mut skipped = 0;
+    for line in parse.lines.iter_mut().filter(|l| l.skip.is_none()) {
+        let Some(date) = line.date else { continue };
+        if let Some(from) = from.filter(|f| date < *f) {
+            line.skip = Some(format!("before --from {from}"));
+            skipped += 1;
+        } else if let Some(to) = to.filter(|t| date > *t) {
+            line.skip = Some(format!("after --to {to}"));
+            skipped += 1;
+        }
+    }
+    if skipped > 0 {
+        parse.opening_balance = None;
+        parse.closing_balance = None;
+        parse.closing_date = None;
+        let kept = || parse.lines.iter().filter(|l| l.skip.is_none()).filter_map(|l| l.date);
+        let (first, last) = (kept().min(), kept().max());
+        parse.period_from = first;
+        parse.period_to = last;
+    }
 }
 
 /// Retry only unfinished bank-import lines from their persisted evidence.

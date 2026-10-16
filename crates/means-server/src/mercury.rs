@@ -219,9 +219,14 @@ async fn pull_report(
     let db = Db::open(&db_path)?;
     let directory = inbox.unwrap_or_else(|| db_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("inbox"));
     let saved = means_core::connections::list(&db.conn())?;
+    let archived = means_core::connections::archived_provider_accounts(&db.conn(), core::CHANNEL)?;
     let mut files = Vec::new();
     for account in accounts {
         let id = account["id"].as_str().context("Mercury account has no ID")?;
+        if archived.contains(id) {
+            println!("{id}: skipped; its account belongs to an archived entity");
+            continue;
+        }
         // /transactions defaults to first available history. The account-specific
         // /account/{id}/transactions endpoint instead defaults to only 30 days.
         let saved_from = saved.iter().find(|a| a.channel == core::CHANNEL && a.provider_account_id == id).map(|a| a.booked_from.as_str()).unwrap_or_default();

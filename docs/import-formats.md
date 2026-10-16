@@ -28,6 +28,36 @@ Conventions shared by every source:
 official page or by an open-source importer whose tests carry real-looking samples. "Assumed" means
 the parser accepts it, but nobody has held a file that proves it.
 
+## Column maps for other CSV files
+
+A CSV file that no preset recognises needs a column map. The TUI builds the map on the Imports
+screen. The CLI takes it with `--map`:
+
+```sh
+means import --account 12 --map date=Booked,amount=Value,description=Text,counterparty=Name,external_id=Ref \
+  --date-format %d/%m/%Y --decimal-comma export.csv
+```
+
+`CsvMapping::from_column_map` in `crates/means-core/src/imports/mod.rs` reads the map:
+
+- The map is a list of `key=column` pairs, separated by commas. A column is a header name or a
+  1-based column number.
+- `date` is necessary. Give `amount`, or `debit` and `credit`. `amount` and `debit` or `credit`
+  cannot occur together.
+- `description` names the description column. Each `counterparty` column adds its text to the
+  description.
+- `external_id` fills the reference of the statement line, which detects duplicates. `reference` is
+  the same key. Give only one of the two.
+- `balance` and `currency` are also accepted. An unknown key or a key that occurs twice is refused.
+- `--date-format` takes a strftime pattern, for example `%d/%m/%Y`. Without it, the parser detects
+  the format.
+- `--decimal-comma` reads amounts such as `1.234,56`.
+- The parser detects the delimiter and the header row.
+
+With `--source auto` (the default), `--map` reads the file as `generic_csv`. A map with another CSV
+source applies to that source. A map with a source that is not CSV is refused. `--date-format` and
+`--decimal-comma` need `--map`.
+
 ## N26 (`n26_csv`)
 
 Two layouts, both comma-separated, all fields double-quoted, `YYYY-MM-DD` dates, `.` decimals,
@@ -800,6 +830,11 @@ confirmation will delete a draft or void a posted duplicate. Copy its token only
 after reviewing every pair. Apply checks the preview against the current ledger in
 one transaction; changed books require a new preview.
 
+The command never voids with cascade. A posted duplicate with an inter-vault link
+that is not void stays as it is. The preview gives a note with the linked entries,
+as a void without cascade does. Void the linked entries with cascade, or remove the
+link, and then preview again.
+
 Matching requires the same bank account, signed native amount, and currency, with
 dates at most **five days apart** (the normal import matching window). This covers
 CSV value dates differing from Enable Banking booking dates. Both the older entry
@@ -851,6 +886,24 @@ unmatched evidence. Posted and void entries are refused. Retrying the unmatched 
   `Valor na moeda em real` is the total charged.
 - Pluggy: the `status` values a real connection sends, whether a `CREDIT` transaction carries a
   `balance` at all, and what `next` looks like on a second page.
+
+## Importing part of a long export
+
+A bank export can cover years before the books of the entity start. Give a date range to draft
+only the lines in it:
+
+```sh
+means import --account 12 --from 2026-01-01 --to 2026-12-31 all-time.csv
+```
+
+Both days are included, and each option is optional. The import keeps every line outside the range
+as a statement line with the status `skipped` and a note such as `before --from 2026-01-01`. These
+lines get no draft, and the summary counts them as skipped. The range reads the date of each
+line: a line without a date ignores the range and keeps the status that the parser gives it. The
+range works with every bank source. When the range skips a line, the opening balance, the
+closing balance and the closing date of the file no longer describe the drafted lines: the
+import stores none of them, and its period runs from the first to the last line that it keeps. The file checksum still identifies the file, so the same file cannot be imported again
+with another range. Roll the first import back before you import the file again.
 
 ## Retrying an interrupted bank import
 

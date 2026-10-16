@@ -419,7 +419,7 @@ impl Store {
             let name = format!("snapshot-{}.sqlite", means_core::new_uid());
             let path = self.root.join(&name);
             write_new(&path, &[])?;
-            let staging = Db::open(&path)?;
+            let staging = Db::open_replica_staging(&path)?;
             snapshot::install(&staging, snapshot, &m.vault, &m.ledger_head, m.ledger_count.parse()?)?;
             staging.conn().execute_batch("PRAGMA wal_checkpoint(TRUNCATE);PRAGMA journal_mode=DELETE;")?;
             drop(staging);

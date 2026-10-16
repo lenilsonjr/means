@@ -23,6 +23,9 @@ pub enum Command {
     },
 }
 pub fn run(path: PathBuf, command: Command) -> Result<()> {
+    if matches!(command, Command::Link { .. }) {
+        crate::entry_cli::guard("refund link");
+    }
     let db = Db::open(path)?;
     match command {
         Command::Candidates { line, days, json } => {

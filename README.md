@@ -6,9 +6,10 @@ Books that survive an audit. Local double-entry accounting across entities and c
 
 *Captured from the running TUI with fictional demo data.*
 
-- **Engine**: Rust, SQLite file, double-entry journal per entity, functional-currency valuation, immutable statement lines as evidence, hash-chained entries.
+- **Engine**: Rust, SQLite file, double-entry journal per entity, functional-currency valuation, immutable statement lines and hashed documents as evidence, hash-chained entries.
+- **Books for an audit**: entity facts, groups and related parties; tax codes with a tax event for each taxed posting; invoices with open items and settlements; typed links between entities; period close with lock dates and a filings register; management reports; and a hashed snapshot of the books.
 - **Imports**: Account Tracker Pro backups and bank exports, plus Pluggy, Enable Banking, Mercury, Wise business and Banco Inter PJ API pulls, and email attachments through IMAP. Rules draft or post entries; matching links captured entries to bank evidence.
-- **Terminal workflows**: capture, review, accounts, imports, bank connections, reconciliation, and reports. The CLI also supports chart maintenance, import retries, and Beancount export.
+- **Terminal workflows**: capture, review, accounts, imports, bank connections, reconciliation, and reports. The CLI also supports chart maintenance, import retries, Beancount and snapshot export, and a JSON interface for agents and scripts.
 
 The TUI connects to a local gRPC server. CLI commands use the accounting core directly and do not require a running server. There is no web interface.
 
@@ -81,7 +82,7 @@ means --db ./personal.db serve --listen 127.0.0.1:7771 --inbox ./inbox
 means tui --server http://127.0.0.1:7771
 ```
 
-Fetch exchange rates with `means rates fetch --from YYYY-MM-DD` for the period you need. Import a backup or bank file through the CLI or the TUI Imports screen. Use `means accounts --entity 1` to find account IDs for bank imports; replace `1` with the ID from `means entity list`.
+Fetch exchange rates with `means rates fetch --from YYYY-MM-DD` for the period you need. Without a network, enter rates with `means rates set` or load a CSV file with `means rates import`. Import a backup or bank file through the CLI or the TUI Imports screen. Use `means accounts --entity 1` to find account IDs for bank imports; replace `1` with the ID from `means entity list`. With `--json`, both commands give each `id` and `uid`.
 
 ## Local server and terminal workflows
 
@@ -115,7 +116,7 @@ and different-commodity destinations are refused.
 | N26, Revolut, Wise, Mercury | CSV exports | Detected from the header row. |
 | Banco Inter | OFX (preferred) or CSV extrato | |
 | Remessa Online | CSV extrato | Each row becomes a draft exchange between the BRL account and the foreign-currency account; the bank lines then match it. |
-| Anything else | CSV | Map columns and preview parsed rows in the TUI. |
+| Anything else | CSV | Map columns and preview parsed rows in the TUI, or give `--map` to `means import`. |
 
 Every file is kept and hashed. The same file is never processed twice, overlapping statements only add new lines, and every posting created from a line links back to it.
 
@@ -133,17 +134,28 @@ Account Tracker backups open a per-account mapping screen. Use `e` to cycle the 
 means import retry 42                           # resume unfinished/error bank lines from stored evidence
 means rematch 42 --cross-source --preview        # inspect exact CSV/API overlaps; apply with the returned token
 means draft delete 123                          # drafts only; bank evidence remains unmatched
-means void 4213 --reason "Duplicate purchase"     # preview a posted-entry reversal
+means void 4213 --reason "Duplicate purchase"     # preview a posted-entry reversal and its linked entries
 means void 4213 --reason "Duplicate purchase" --yes  # apply; optional --date YYYY-MM-DD
+means void 4213 --reason "Wrong lender" --yes --cascade --actor "Sample Reviewer"  # also void the linked entries of other entities
+means intervault unlink <link uid> --actor "A. Reviewer" --reason "Wrong lender"  # remove the link of posted entries; add --force-locked for a locked period
 means entity add Personal --currency EUR --country PT
 means entity add LLC --currency USD --kind company --country US
 means import --entity 1 backup.atb                # Account Tracker into one entity
 means import --account 12 statement.csv           # bank file into account 12, source auto-detected
-means rates fetch --from 2021-01-01               # ECB reference rates, then revalue postings booked without a rate
+means import --account 12 --from 2026-01-01 all-time.csv   # lines outside --from/--to stay as skipped lines, without drafts
+means import --source generic_csv --account 12 --map date=Booked,amount=Value,description=Text,counterparty=Name,external_id=Ref --date-format %d/%m/%Y --decimal-comma export.csv
+means rates fetch --from 2021-01-01               # ECB reference rates, then revalue postings booked without a rate, and drafts
+means rates set --date 2026-03-02 --base EUR --quote USD --rate 1.0850 --json   # 1 EUR = 1.0850 USD; offline
+means rates import rates.csv                      # columns date,base,quote,rate; all rows or none
+means rates list --base EUR --quote USD --from 2026-03-01 --to 2026-03-31 --json
+means entity list --json                          # id, uid, name, kind, country, currency, fiscal_year_end, lock_date, archived
+means entity list --all                           # also the archived entities
 means accounts --entity 1
+means accounts --entity 1 --json                  # each account with its id (for import --account) and uid
 means reconcile --account 12                      # statement versus ledger, unmatched lines and unreconciled postings
 means entries --entity Personal --status draft    # the journal, newest first, each entry with its postings
-means entries --entity Personal --json            # one JSON object per line; count on stderr
+means entries --entity Personal --json            # one JSON object: ok, entries, count, total, schema_version
+means entries --entity Personal --jsonl           # one JSON object per entry and line; count on stderr
 means report expenses --entity 1 --from 2026-09-01 --to 2026-09-30 --tag trip:porto --json
 means report expenses --entity 1 --group-by tag
 means budget create --entity 1 --name Porto --tag trip:porto --amount 600 --from 2026-09-01 --to 2026-11-30
@@ -153,15 +165,43 @@ means post 4214 --to "Expenses:Groceries=72.40" --to "Expenses:Household"  # fin
 means rule list --entity Personal                 # the bank rules, in the order they run
 means rule add --entity Personal --contains namecheap --to Expenses:Domains  # appended after the last rule
 means rule delete 95
+means rule apply --entity Personal --dry-run      # re-run the rules over import drafts; drafts a human edited stay; drop --dry-run to move them
 means profiles                                    # learned inbox routes: source, filename pattern, account, hits
 means profiles delete 3                           # forget a wrong route (does not undo past imports)
-means status
+means status                                      # JSON; --json gives the same output
 means verify                                      # recompute every entity's hash chain
 means chart apply --entity "Personal" charts/personal-nomad.json          # create a chart template's accounts (existing ones kept, coded)
 means chart remap --dry-run charts/remap/example.json            # preview a remap plan; drop --dry-run to apply it atomically
+means chart new --entity LLC "Assets:Bank:Example Bank EUR" --currency EUR  # the root name sets the kind; --currency sets the account commodity
+means chart new --entity LLC "Assets:Bank:Example Bank EUR" --commodity EUR --statutory-code 1010 --subtype bank   # commodity (alias of --currency), statutory code and subtype in one command
+means entity set LLC --fye 12-31 --registration EIN=00-0000000   # legal facts; entity classify, group and party record the rest
+means entity set "LLC (rebuilt)" --name LLC                        # rename; the name is unique among the active entities
+means entity archive "LLC (first attempt)" --actor "Sample Person" --reason "rebuilt as a new entity"   # hide the books and refuse writes
+means entity unarchive "LLC (first attempt)" --actor "Sample Person" --reason "keep both books" [--name N]   # reverse an archive
+means entity set LLC --address city=Springfield --flag us.contractor_payments=true --from 2026-01-01   # address and dated flags
+means account set Assets:Bank:Operating --entity LLC --country US --institution "Example Bank"   # account identifiers
+means account set Assets:Bank:Operating --entity LLC --statutory-code 572   # the code in a national chart; "" clears it
+means account set "Liabilities:Amount due to related parties" --entity LLC --counterparty "Sample Shareholder"   # a related party outside the group ("" clears it)
+means close questions --entity LLC --jurisdiction US --json      # year-end flags the ledger has, and the ones it lacks
+means doc add receipt.pdf --entity LLC --link-entry <entry uid> --role receipt   # store a hashed file as evidence
+means tax code add --entity LLC --code SR --kind output --rate-bp 900 --tax-account "Liabilities:GST output" --from 2026-01-01
+means tax summary --entity LLC --from 2026-01-01 --to 2026-03-31 --json
+means invoice add --entity LLC --json-file invoice.json --recognize   # record an invoice; its recognition entry is a draft
+means invoice list --entity LLC --open --json
+means intervault exceptions --entity LLC --from 2026-01-01 --to 2026-03-31 --json   # intercompany postings without a link
+means entry draft --entity LLC --json-file draft.json            # an agent drafts; a human confirms with means entry confirm
+means close check --entity LLC --from 2026-01-01 --to 2026-03-31
+means export --format snapshot --output books-2026-q1 --as-of 2026-03-31 --json   # active entities; --include-archived adds the archived ones
+means export verify books-2026-q1
 ```
 
-`means entries --json` emits posting quantities and booked amounts as structured Money objects, for example `{"minor":"125","commodity":"EUR","precision":2}` means EUR 1.25. Minor units are strings to preserve exact integers in JavaScript. Quantity uses the account commodity; amount uses the entity’s functional currency.
+`means rates set` stores one row in the prices table: one unit of the base costs `rate` units of the quote on that day. The default source is `manual`; `--source` changes it. The rate lookup uses the row directly, as the inverse, or through a cross rate. A direct row comes before an inverse row. For example, the ECB stores USD in EUR, so a USD posting in a EUR entity uses a recent ECB row before a manual `--base EUR --quote USD` row. To override the ECB for that posting, enter `--base USD --quote EUR`. `set` and `import` then revalue postings booked without a rate, as `fetch` does. All three also revalue drafts at the rates stored now, also a draft that already has a rate, for example a cross rate. Drafts are not in the hash chain, so this is safe. Posted entries that have a rate stay unchanged. The summary counts both, for example `2 entries revalued, 5 drafts revalued`. `--no-revalue` skips this step.
+
+`means import --map` reads a CSV file as `generic_csv` and builds the same column mapping as the TUI. A column is a header name or a 1-based column number. `counterparty` adds its column to the description. `external_id` fills the line reference, which detects duplicates. The keys `debit`, `credit`, `balance` and `currency` are also accepted. `--date-format` takes a strftime pattern; without it, the parser detects the format. `--decimal-comma` reads `1.234,56`.
+
+`means import --from D --to D` drafts only the lines dated from `--from` to `--to`, both days included. Each option is optional. The import keeps every other line as a statement line with the status `skipped` and a note such as `before --from 2026-01-01`, so the file stays auditable. The summary counts these lines as skipped. The range applies to every bank source. An Account Tracker backup refuses it.
+
+`means entries --json` and `--jsonl` emit posting quantities and booked amounts as structured Money objects, for example `{"minor":"125","commodity":"EUR","precision":2}` means EUR 1.25. Minor units are strings to preserve exact integers in JavaScript. Quantity uses the account commodity; amount uses the entity’s functional currency.
 
 Overview shows net worth and recent entries for the selected vault. Press `e` to change vaults. Its default reporting currency is that vault’s accounting currency. Company balances do not count as personal assets just because both vaults are in the same file. The status counts are labelled **all vaults**.
 
@@ -173,11 +213,36 @@ Pluggy pulls accept `--booked-from YYYY-MM-DD` to exclude an account's existing 
 
 `means report expenses` groups expense postings by account class, or by tag with `--group-by tag`. Tag rows overlap; the total counts each posting once. It uses booked amounts in the entity’s functional currency. The dates are inclusive. An optional `--tag` selects one exact entry tag. See [expense report and budget semantics](docs/expense-reports.md).
 
+### Reports
+
+The `means report` commands read the ledger and write nothing. Each command takes an entity id, name or uid. Dates are inclusive. With `--json`, each command prints one object with `"schema_version": 1`, Money objects, account uids and a `basis` object. `basis` states the valuation and the entry statuses that the report reads.
+
+```sh
+means report trial-balance --entity Personal --from 2026-01-01 --to 2026-03-31   # opening, debits, credits, closing
+means report balance-sheet --entity Personal --as-of 2026-03-31                   # book values; --market-values for holdings
+means report income --entity Personal --from 2026-01-01 --to 2026-03-31          # revenue, expenses, result, expense classes
+means report cash-flow --entity Personal --from 2026-03-01 --to 2026-03-31       # direct method on bank, cash, card and wallet accounts
+means report general-ledger --entity Personal --from 2026-03-01 --to 2026-03-31 --account Assets:Bank:N26
+means report open-items --entity Personal --as-of 2026-03-31 --direction purchase
+means report tax-summary --entity Personal --from 2026-01-01 --to 2026-03-31     # the same report as means tax summary
+means report net-worth --entity Personal --as-of 2026-03-31 --json
+```
+
+The reports read posted and void entries at their booked values in the functional currency. A void entry and its reversal cancel each other. Drafts do not count, except in `cash-flow`, which shows them as projected columns. The balance sheet uses book values by default. With `--market-values`, holding accounts use the market price on the date, and the difference shows as unrealised gains. `net-worth` always uses the market price when a price exists. The trial balance opening sums every entry before the first date. See [the agent interface](docs/agent-interface.md#reports) for the JSON fields.
+
 Budgets set one limit for a chosen date range, defaulting to a calendar month, with no rollover. Target an expense category (including subcategories), an expense class, or an exact tag. In TUI Reports, press `u` for budgets, `n` to create, Enter to edit, and `v` to group by class or tag. Press `c`/`g` for expense reports by class/tag.
+
+### Close and filings
+
+`means close check --entity LLC --from 2026-01-01 --to 2026-03-31` lists what blocks a close: drafts, unreviewed entries, missing rates, suspense balances and an unbalanced period. It writes nothing. `means close lock --entity LLC --through 2026-03-31 --actor "Ana Lima" --reason "Q1 close"` moves the lock date forward after a clean check. `means close unlock` moves it back, with an actor and a reason in the audit log. `means filing record` and `means filing status` keep the register of returns and reports, with the snapshot digest and the receipt. A submitted or accepted filing freezes its period; `means close unlock --amend` then creates an amendment. See [close, lock and filings](docs/data-model.md#close-lock-and-filings).
 
 `means reconcile --account ID` is read-only. For an account path, use `--entity Personal --account Assets:Bank:N26`. Balances use the statement closing date when available; missing statement balances remain unknown. The report shows up to 500 unmatched lines and unreconciled postings from up to 5,000 ledger rows, matching the existing reconciliation report.
 
 Export booked balances to Beancount/Fava with `means export --format beancount --output books.beancount`. See [export semantics and validation](docs/export.md).
+
+## For agents
+
+An agent or a script uses the same `means` binary. Commands such as `means entry draft`, `means entry propose`, `means report` and `means export --format snapshot` print one JSON object with `"schema_version": 1`. The agent drafts; a human confirms with `means entry confirm`. `means policy set draft-only` stops rules, schedules, the matcher and imports from posting. Set `MEANS_AGENT=1` in an agent session to refuse human actions; it is a workflow aid, not an access control. See the [agent interface](docs/agent-interface.md) for every command, its output and its error codes.
 
 ## Development
 
@@ -213,6 +278,10 @@ Run `cd website && npm ci && npm run dev` with Node.js 24 LTS for a local previe
 - [Expense reports](docs/expense-reports.md)
 - [TUI bank connections](docs/connections.md)
 - [Beancount export](docs/export.md)
+- [Snapshot format](docs/snapshot-format.md)
+- [Agent interface and posting policy](docs/agent-interface.md)
+- [Chart templates](charts/README.md)
+- [Ledger readiness review](docs/ledger-readiness.md)
 
 ## Where this goes
 

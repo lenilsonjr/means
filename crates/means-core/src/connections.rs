@@ -48,6 +48,26 @@ pub fn list(c: &Connection) -> Result<Vec<ConnectionAccount>> {
     let rows = stmt.query_map([], row)?.collect::<std::result::Result<Vec<_>, _>>()?;
     rows.into_iter().map(|r| decorate(c, r)).collect()
 }
+/// The name of the archived entity that owns the mapped account of a connection, or None. A
+/// bank pull skips such a connection: the archived books refuse every write.
+pub fn archived_owner(c: &Connection, a: &ConnectionAccount) -> Result<Option<String>> {
+    let Some(entity_id) = a.entity_id else { return Ok(None) };
+    let entity = crate::entities::get_entity(c, entity_id)?;
+    Ok(entity.archived_at.is_some().then_some(entity.name))
+}
+
+/// The provider account ids of the connections of `channel` whose mapped account belongs to an
+/// archived entity. A bank pull skips them.
+pub fn archived_provider_accounts(c: &Connection, channel: &str) -> Result<std::collections::HashSet<String>> {
+    let mut out = std::collections::HashSet::new();
+    for a in list(c)?.into_iter().filter(|a| a.channel == channel) {
+        if archived_owner(c, &a)?.is_some() {
+            out.insert(a.provider_account_id);
+        }
+    }
+    Ok(out)
+}
+
 pub fn get(c: &Connection, id: i64) -> Result<ConnectionAccount> {
     let a = c.query_row(&format!("{SELECT} WHERE id=?1"), [id], row).optional()?.ok_or_else(|| Error::NotFound(format!("connection {id}")))?;
     decorate(c, a)

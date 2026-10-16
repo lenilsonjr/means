@@ -10,25 +10,40 @@
 pub mod accounts;
 pub mod audit;
 pub mod budgets;
+pub mod close;
+/// The year-end questionnaire of entity flags.
+pub mod close_questions;
 pub mod connections;
 pub mod cross_source;
 pub mod currency_migration;
 pub mod db;
+pub mod documents;
 pub mod entities;
+/// The address and the dated flags of an entity.
+pub mod entity_flags;
 pub mod export;
+pub mod filings;
+pub mod groups;
 pub mod hashchain;
 pub mod imports;
+pub mod intervault;
+pub mod invoices;
 pub mod journal;
 pub mod matcher;
 mod minor_units;
 pub mod model;
 pub mod money;
+pub mod parties;
 pub mod payees;
+pub mod policy;
+pub mod proposal;
 pub mod rates;
 pub mod refunds;
 pub mod reports;
 pub mod rules;
+pub mod snapshot;
 pub mod tags;
+pub mod tax;
 pub mod templates;
 
 pub use db::Db;
@@ -48,14 +63,50 @@ pub enum Error {
     Unbalanced(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    /// A void of an entry with inter-vault links that are not void, without cascade. The CLI
+    /// gives `invalid_input`, and gRPC gives FAILED_PRECONDITION.
+    #[error("needs cascade: {0}")]
+    NeedsCascade(String),
     #[error("parse error: {0}")]
     Parse(String),
+    /// The entity is archived. Its books are read-only until an unarchive.
+    #[error("entity_archived: {0}")]
+    Archived(String),
     #[error("database error: {0}")]
-    Db(#[from] rusqlite::Error),
+    Db(rusqlite::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Other(#[from] anyhow::Error),
+}
+
+/// The prefix of the trigger message that refuses a write to an archived entity.
+/// Migration 29 raises it.
+pub const ARCHIVED_PREFIX: &str = "entity_archived:";
+
+impl From<rusqlite::Error> for Error {
+    /// A write that an archive guard trigger refuses becomes `Error::Archived`. Every other
+    /// database error stays `Error::Db`.
+    fn from(e: rusqlite::Error) -> Error {
+        match archived_message(&e) {
+            Some(m) => Error::Archived(m),
+            None => Error::Db(e),
+        }
+    }
+}
+
+/// The message of an archive guard refusal, without its prefix.
+pub fn archived_message(e: &rusqlite::Error) -> Option<String> {
+    match e {
+        rusqlite::Error::SqliteFailure(_, Some(m)) => m.strip_prefix(ARCHIVED_PREFIX).map(|rest| rest.trim().to_string()),
+        _ => None,
+    }
+}
+
+/// True for a constraint violation of the schema, such as a unique key. An archive guard
+/// refusal is not one: it maps to `Error::Archived`.
+pub(crate) fn is_constraint_violation(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation) && archived_message(e).is_none()
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -24,13 +24,14 @@ JSON represents posting quantities and booked values as Money objects. For examp
 
 ```sh
 means import --account 12 statement.csv
+means import --account 12 --from 2026-01-01 --to 2026-12-31 all-time.csv
 means import --entity 1 backup.atb
 means import retry 42
 means rematch 42 --cross-source --preview
 means reconcile --account 12
 ```
 
-`import retry` resumes unfinished or error lines from stored evidence. Apply cross-source matches by confirming the returned preview token. Read [import recovery and overlap rules](../guides/import-formats/) before you change existing imports.
+`import --from` and `--to` draft only the lines in the inclusive date range. Other lines stay in the import as `skipped` lines with a note, and get no draft. `import retry` resumes unfinished or error lines from stored evidence. Apply cross-source matches by confirming the returned preview token. Read [import recovery and overlap rules](../guides/import-formats/) before you change existing imports.
 
 ## Categorize a draft
 

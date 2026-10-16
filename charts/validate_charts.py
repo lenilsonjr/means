@@ -1,13 +1,34 @@
 #!/usr/bin/env python3
 """Validate chart templates in charts/: shape, uniqueness, placeholder parents,
-code scheme, depth and size. Exit 1 on any failure."""
+code scheme, depth, size and the types of the optional statutory keys and
+account identifiers.
+Exit 1 on any failure."""
 import glob
 import json
 import os
 import sys
 
 CHARTS = os.path.dirname(os.path.abspath(__file__))
-ROOTS = {"Income": ("income", 4000, 4999), "Expenses": ("expense", 6000, 7999)}
+ROOTS = {
+    "Assets": ("asset", 1000, 1999),
+    "Liabilities": ("liability", 2000, 2999),
+    "Equity": ("equity", 3000, 3999),
+    "Income": ("income", 4000, 4999),
+    "Expenses": ("expense", 6000, 7999),
+}
+BALANCE_SHEET = ("Assets", "Liabilities", "Equity")
+# Optional per-account keys and their JSON types.
+OPTIONAL_ACC = {
+    "description": str,
+    "statutory_code": str,
+    "tax_treatment": str,
+    "intercompany": bool,
+    "country": str,
+    "iban": str,
+    "bic": str,
+    "institution": str,
+    "location": str,
+}
 REQUIRED_TOP = ("id", "name", "for", "accounts")
 REQUIRED_ACC = ("code", "path", "type", "placeholder")
 
@@ -31,8 +52,11 @@ def check(file):
         fail(f"id {data.get('id')!r} does not match file name")
     accounts = data["accounts"]
     n = len(accounts)
-    if not 45 <= n <= 80:
-        fail(f"{n} accounts, expected 45-80")
+    # A full chart (T7) also lists balance-sheet accounts and may hold up to 90.
+    full = any(a.get("path", "").split(":")[0] in BALANCE_SHEET for a in accounts)
+    most = 90 if full else 80
+    if not 45 <= n <= most:
+        fail(f"{n} accounts, expected 45-{most}")
 
     by_path = {}
     codes = {}
@@ -54,7 +78,7 @@ def check(file):
             fail(f"{path!r}: deeper than three levels")
         root = segs[0]
         if root not in ROOTS:
-            fail(f"{path!r}: first segment must be Income or Expenses")
+            fail(f"{path!r}: first segment must be one of {', '.join(ROOTS)}")
             continue
         want_type, lo, hi = ROOTS[root]
         if a["type"] != want_type:
@@ -93,8 +117,9 @@ def check(file):
             fail(f"{a['path']!r}: placeholder without children")
         if not a["placeholder"] and a["path"] in children:
             fail(f"{a['path']!r}: leaf with children")
-        if "description" in a and not isinstance(a["description"], str):
-            fail(f"{a['path']!r}: description must be a string")
+        for key, want in OPTIONAL_ACC.items():
+            if key in a and type(a[key]) is not want:
+                fail(f"{a['path']!r}: {key} must be a {'boolean' if want is bool else 'string'}")
 
     # order: parents before children, codes ascending
     seen = set()

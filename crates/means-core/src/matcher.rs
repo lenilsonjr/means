@@ -111,6 +111,7 @@ pub fn best_match_for(conn: &Connection, account_id: i64, amount: Money, date: N
 }
 
 /// Link a line to a posting: the posting is reconciled, the entry posted if it was a draft.
+/// Under the `draft_only` posting policy, a draft stays a draft and waits for a human.
 pub fn attach(conn: &mut Connection, sl: &mut StatementLine, posting_id: i64) -> Result<()> {
     let tx = conn.transaction()?;
     let mut updated = sl.clone();
@@ -146,7 +147,7 @@ pub(crate) fn attach_in_transaction(tx: &rusqlite::Transaction<'_>, sl: &mut Sta
     if entry.status == EntryStatus::Void {
         return Err(Error::Invalid("a void entry cannot receive statement evidence".into()));
     }
-    if entry.status == EntryStatus::Draft {
+    if entry.status == EntryStatus::Draft && crate::policy::allows_auto_post(tx)? {
         journal::post_entry_in_transaction(tx, entry_id)?;
     }
     let ts = now_ts();

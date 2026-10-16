@@ -376,6 +376,8 @@ message ListPricesRequest { string commodity = 1; string currency = 2; string fr
 message ListPricesResponse { repeated Price prices = 1; }
 message SetPriceRequest { string commodity = 1; string currency = 2; string on = 3; string price = 4; string source = 5; }
 message FetchRatesRequest { string from = 1; }   // earliest date to fetch, "" = 2020-01-01
+// revalued counts the entries booked without a rate that now have one and the revalued drafts
+// together. Drafts with tax events are not revalued.
 message FetchRatesResponse { int32 inserted = 1; int32 revalued = 2; string latest = 3; }
 
 message ListAccountsRequest { int64 entity_id = 1; bool include_closed = 2; string as_of = 3; string type = 4; }
@@ -417,7 +419,10 @@ message PostDraftRequest { int64 id = 1; repeated SplitInput splits = 2; optiona
 message ReviewPostingRequest { SimpleEntryInput capture = 1; PostDraftRequest categorize = 2; bool existing = 3; string tags = 4; string confirmation = 5; }
 message ReviewPostingResponse { JournalEntry entry = 1; string confirmation = 2; }
 
-message VoidJournalEntryRequest { int64 id = 1; string date = 2; string reason = 3; }
+// A void of an entry with inter-vault links that are not void needs cascade = true. The engine
+// then voids the posted linked entries of the link group in the same transaction and marks the
+// links void. Without cascade, the void fails with FAILED_PRECONDITION and names each linked entry.
+message VoidJournalEntryRequest { int64 id = 1; string date = 2; string reason = 3; bool cascade = 4; }
 message DeleteJournalEntryRequest { int64 id = 1; }
 message SetTagsRequest { int64 entry_id = 1; repeated string tags = 2; }  // replace-all; tags never touch the hash chain
 message ConfirmEntriesRequest { repeated int64 ids = 1; }  // stamp the review mark; edits confirm implicitly
@@ -436,6 +441,7 @@ message CreateTransferRequest {
   int64 from_contra_account_id = 10; // cross-entity: contra in the from entity (default owner_distributions / investment_in_entity)
   int64 to_contra_account_id = 11;   // cross-entity: contra in the to entity (default distributions_received / owner_contributions)
   string status = 12;
+  string kind = 13;                  // cross-entity: kind of the inter-vault link ("" = transfer)
 }
 message CreateTransferResponse { JournalEntry entry = 1; JournalEntry counterpart = 2; }
 

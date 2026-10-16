@@ -1,18 +1,32 @@
 //! `means`: books that survive an audit. One binary: engine, terminal UI, CLI.
 
+mod account_cli;
 mod budgets;
+mod close_cli;
 mod connections;
+mod doc_cli;
 mod email;
 mod enable_banking;
+mod entity_cli;
+mod entry_cli;
+mod export_cli;
+mod filing_cli;
 mod grpc;
 mod inter_pj;
+mod intervault_cli;
+mod invoice_cli;
 mod local_api;
 mod mercury;
+mod party_cli;
 mod payees;
+mod policy_cli;
+mod rates_cli;
 mod refunds;
+mod report_cli;
 mod reports;
 mod sharing;
 mod statement_http;
+mod tax_cli;
 mod void;
 mod wise;
 
@@ -57,7 +71,7 @@ enum Command {
         #[command(subcommand)]
         command: budgets::Command,
     },
-    /// Report booked expenses by account class, tag or payee
+    /// Management reports: trial balance, balance sheet, income, cash flow, ledger, open items, tax, net worth and expenses
     Report {
         #[command(subcommand)]
         command: reports::Command,
@@ -87,13 +101,27 @@ enum Command {
         #[command(subcommand)]
         command: enable_banking::Command,
     },
-    /// Export booked balances for Beancount and Fava (all entities)
+    /// Export booked balances for Beancount and Fava, or a hashed snapshot of the books
     Export {
-        #[arg(long, value_parser = ["beancount"], default_value = "beancount")]
+        #[command(subcommand)]
+        command: Option<export_cli::Command>,
+        #[arg(long, value_parser = ["beancount", "snapshot"], default_value = "beancount")]
         format: String,
-        /// Write to a new file instead of stdout (refuses to overwrite)
+        /// Write to a new file (beancount) or a new directory (snapshot); refuses to overwrite
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Export only this entity (name, id or uid); repeat for more (default: every active entity)
+        #[arg(long)]
+        entity: Vec<String>,
+        /// Also export the archived entities when no --entity is given
+        #[arg(long)]
+        include_archived: bool,
+        /// Export only the entries dated on or before this day (YYYY-MM-DD)
+        #[arg(long)]
+        as_of: Option<String>,
+        /// Print one JSON object (snapshot)
+        #[arg(long)]
+        json: bool,
     },
     /// Run the local gRPC engine for the terminal UI
     Serve {
@@ -121,6 +149,21 @@ enum Command {
         /// Default entity id (Account Tracker backups)
         #[arg(long)]
         entity: Option<i64>,
+        /// CSV column map: date=<col>,amount=<col>,description=<col>[,counterparty=<col>][,external_id=<col>]; a column is a header name or a 1-based number
+        #[arg(long)]
+        map: Option<String>,
+        /// strftime pattern of the date column, for example %d/%m/%Y (default: detected)
+        #[arg(long, requires = "map")]
+        date_format: Option<String>,
+        /// Amounts use a decimal comma, for example 1.234,56
+        #[arg(long, requires = "map")]
+        decimal_comma: bool,
+        /// First line date to draft, YYYY-MM-DD; earlier lines are kept as skipped lines (bank sources)
+        #[arg(long)]
+        from: Option<String>,
+        /// Last line date to draft, YYYY-MM-DD; later lines are kept as skipped lines (bank sources)
+        #[arg(long)]
+        to: Option<String>,
         #[arg(required = true)]
         file: Option<PathBuf>,
         #[command(subcommand)]
@@ -179,6 +222,9 @@ enum Command {
     Accounts {
         #[arg(long)]
         entity: Option<i64>,
+        /// Emit a JSON array: id, uid, path, type, statutory keys, identifiers and balance of each account
+        #[arg(long)]
+        json: bool,
     },
     /// Compare a bank statement with the ledger; inspect unmatched evidence
     Reconcile {
@@ -208,17 +254,79 @@ enum Command {
         #[command(subcommand)]
         command: RuleCommand,
     },
-    /// Counts and health of the ledger
-    Status,
+    /// Counts and health of the ledger, as JSON
+    Status {
+        /// Print JSON; this is the default output, and the flag exists for consistency
+        #[arg(long)]
+        json: bool,
+    },
     /// Verify the hash chain of every entity
     Verify,
+    /// Machine write interface: drafts, proposals and confirmation, as JSON
+    Entry {
+        #[command(subcommand)]
+        command: entry_cli::Command,
+    },
+    /// Show or set the ledger-wide posting policy
+    Policy {
+        #[command(subcommand)]
+        command: policy_cli::Command,
+    },
+    /// Documents as evidence: store, link, show and verify invoices, receipts and statements
+    Doc {
+        #[command(subcommand)]
+        command: doc_cli::Command,
+    },
+    /// Groups of entities with dated ownership
+    Group {
+        #[command(subcommand)]
+        command: entity_cli::GroupCommand,
+    },
+    /// Dated relationships between payees and entities, and related parties
+    Party {
+        #[command(subcommand)]
+        command: party_cli::PartyCommand,
+    },
+    /// Period close: check a period, lock it, and reopen it with an actor and a reason
+    Close {
+        #[command(subcommand)]
+        command: close_cli::Command,
+    },
+    /// The register of returns and reports filed for an entity
+    Filing {
+        #[command(subcommand)]
+        command: filing_cli::Command,
+    },
+    /// Tax codes, tax events and the tax summary of a period
+    Tax {
+        #[command(subcommand)]
+        command: tax_cli::TaxCommand,
+    },
+    /// Invoices received or issued elsewhere: open items, settlements and credit notes
+    Invoice {
+        #[command(subcommand)]
+        command: invoice_cli::Command,
+    },
+    /// Typed links between entries of different entities, and the intercompany exceptions
+    Intervault {
+        #[command(subcommand)]
+        command: intervault_cli::Command,
+    },
+    /// The identifiers of one account: country, IBAN, BIC, institution and location
+    Account {
+        #[command(subcommand)]
+        command: account_cli::Command,
+    },
 }
 
 #[derive(Args)]
 struct EntriesArgs {
-    /// Emit one JSON object per entry; the summary count goes to stderr
-    #[arg(long)]
+    /// Print one JSON object: ok, entries, count, total and schema_version
+    #[arg(long, conflicts_with = "jsonl")]
     json: bool,
+    /// Print one JSON object per entry and line; the summary count goes to stderr
+    #[arg(long)]
+    jsonl: bool,
     /// Entity id or name
     #[arg(long)]
     entity: Option<String>,
@@ -277,6 +385,25 @@ enum RuleCommand {
     },
     /// Delete a rule
     Delete { id: i64 },
+    /// Re-run the rules over import drafts and move each draft to the account the rules now select
+    ///
+    /// The balancing posting moves, also to another account type. The payee follows the rule.
+    /// Drafts stay drafts. Posted entries, drafts that no rule matches, template rules, split
+    /// drafts and drafts that a human edited do not change.
+    Apply {
+        /// Entity id or name
+        #[arg(long)]
+        entity: String,
+        /// Only the drafts of this import
+        #[arg(long)]
+        import: Option<i64>,
+        /// Show what would change and write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the counts and changes as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -307,8 +434,25 @@ enum EntityCommand {
         #[arg(long, default_value = "")]
         country: String,
     },
-    /// List entities
-    List,
+    /// List the active entities; --all adds the archived entities
+    List {
+        /// Emit a JSON array: id, uid, name, kind, country, currency, fiscal year end, lock date and archive state of each entity
+        #[arg(long)]
+        json: bool,
+        /// Also list the archived entities
+        #[arg(long)]
+        all: bool,
+    },
+    /// Set the name, legal form, fiscal year end, incorporation date, registrations, address and flags
+    Set(entity_cli::SetArgs),
+    /// Archive an entity: it leaves the lists, the pickers and the default export, and its books become read-only
+    Archive(entity_cli::ArchiveArgs),
+    /// Make an archived entity active again
+    Unarchive(entity_cli::UnarchiveArgs),
+    /// Record a tax classification in a jurisdiction from a date
+    Classify(entity_cli::ClassifyArgs),
+    /// Show all facts, the address, the flags, classifications and group membership on a date
+    Facts(entity_cli::FactsArgs),
 }
 
 #[derive(Subcommand)]
@@ -342,14 +486,26 @@ enum PluggyCommand {
 
 #[derive(Subcommand)]
 enum RatesCommand {
-    /// Fetch ECB reference rates (EUR against USD, BRL, IDR, ...) and revalue postings booked without a rate
+    /// Fetch ECB reference rates (EUR against every ECB currency); revalue postings booked without a rate, and drafts
     Fetch {
         #[arg(long, default_value = "2020-01-01")]
         from: String,
-        /// Store rates without changing existing entry book values
+        /// Last day of the range for --pairs, YYYY-MM-DD (default: today)
+        #[arg(long, requires = "pairs")]
+        to: Option<String>,
+        /// Also store cross rates for these pairs on each rate day of the range, for example USD/SGD,GBP/SGD
+        #[arg(long)]
+        pairs: Option<String>,
+        /// Store rates without changing existing entry or draft book values
         #[arg(long)]
         no_revalue: bool,
     },
+    /// Store one rate entered by hand: 1 base = rate quote on a date; revalue postings booked without a rate, and drafts
+    Set(rates_cli::SetArgs),
+    /// List stored rates, newest first
+    List(rates_cli::ListArgs),
+    /// Load rates from a CSV file with the columns date,base,quote,rate
+    Import(rates_cli::ImportArgs),
 }
 
 #[derive(Subcommand)]
@@ -393,17 +549,27 @@ enum ChartCommand {
         file: PathBuf,
     },
     /// Create one account, missing parents become placeholders: chart new --entity Personal "Expenses:Food:Ramen" --code 6215
+    /// An existing leaf keeps its place and takes the given code, statutory code and subtype
     New {
         /// Entity id or name
         #[arg(long)]
         entity: String,
-        /// Full path; the root name (Income, Expenses, ...) is optional
+        /// Full path; the root name (Assets, Liabilities, Equity, Income, Expenses) is optional and sets the kind
         path: String,
         #[arg(long, default_value = "")]
         code: String,
-        /// asset | liability | equity | income | expense
-        #[arg(long, default_value = "expense")]
-        kind: String,
+        /// asset | liability | equity | income | expense (default: from the root name, else expense)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Commodity of the new account, e.g. USD in an SGD entity (default: the entity currency); new parents keep the entity currency
+        #[arg(long, visible_alias = "commodity")]
+        currency: Option<String>,
+        /// Statutory code of the account: a code from a national chart or a reporting taxonomy (default: none)
+        #[arg(long)]
+        statutory_code: Option<String>,
+        /// Asset: bank | savings | cash | wallet | receivable | investment | crypto | holding; liability: card | loan | mortgage | payable (default: bank or card)
+        #[arg(long)]
+        subtype: Option<String>,
     },
     /// Rename an account; children keep their place
     Rename {
@@ -524,18 +690,40 @@ struct PlanMove {
     to: String,
 }
 
+/// One row of `accounts --json`. The balance is a money string in the account's commodity.
+/// `id` is the integer that `means import --account` takes.
+fn account_json(a: &means_core::model::Account) -> serde_json::Value {
+    serde_json::json!({
+        "id": a.id,
+        "uid": a.uid,
+        "entity_id": a.entity_id,
+        "path": a.path,
+        "code": a.code,
+        "type": a.r#type.as_str(),
+        "subtype": a.subtype,
+        "placeholder": a.placeholder,
+        "commodity": a.commodity,
+        "statutory_code": a.statutory_code,
+        "tax_treatment": a.tax_treatment,
+        "intercompany": a.intercompany,
+        "country": a.country,
+        "iban": a.iban,
+        "bic": a.bic,
+        "institution": a.institution,
+        "location": a.location,
+        "balance": means_core::money::fmt(a.balance, a.precision),
+    })
+}
+
 fn find_account(conn: &means_core::rusqlite::Connection, entity_id: i64, path: &str) -> Result<means_core::model::Account> {
     means_core::accounts::find_by_path(conn, entity_id, path)?.ok_or_else(|| anyhow::anyhow!("no account {path} in this entity (paths look like Expenses:Food:Groceries; the root name is optional)"))
 }
 
 fn resolve_entity(conn: &means_core::rusqlite::Connection, key: &str) -> Result<means_core::model::Entity> {
-    let all = means_core::entities::list_entities(conn, true)?;
-    if let Ok(id) = key.trim().parse::<i64>() {
-        if let Some(e) = all.iter().find(|e| e.id == id) {
-            return Ok(e.clone());
-        }
+    match means_core::entities::find_by_key(conn, key) {
+        Err(means_core::Error::NotFound(_)) => anyhow::bail!("no entity named {key}"),
+        other => Ok(other?),
     }
-    all.into_iter().find(|e| e.name.eq_ignore_ascii_case(key.trim())).ok_or_else(|| anyhow::anyhow!("no entity named {key}"))
 }
 
 fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {
@@ -558,30 +746,59 @@ fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {
             println!("{}: {} accounts created, {} already there{}", e.name, created, existing, if f.name.is_empty() { String::new() } else { format!(" ({})", f.name) });
             Ok(())
         }
-        ChartCommand::New { entity, path, code, kind } => {
+        ChartCommand::New { entity, path, code, kind, currency, statutory_code, subtype } => {
+            use means_core::model::AccountType;
             let e = resolve_entity(&conn, &entity)?;
-            let t = means_core::model::AccountType::parse(&kind)?;
+            means_core::entities::ensure_active(&conn, e.id)?;
             let mut segments: Vec<&str> = path.split(':').map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
-            if let Some(first) = segments.first() {
-                if first.eq_ignore_ascii_case(t.root_name()) {
-                    segments.remove(0);
-                }
+            // A root segment that names a type sets the kind; an explicit --kind must agree with it.
+            let root = segments.first().and_then(|first| {
+                [AccountType::Asset, AccountType::Liability, AccountType::Equity, AccountType::Income, AccountType::Expense].into_iter().find(|t| first.eq_ignore_ascii_case(t.root_name()))
+            });
+            let t = match (kind.as_deref().map(AccountType::parse).transpose()?, root) {
+                (Some(k), Some(r)) if k != r => anyhow::bail!("--kind {} contradicts the root {:?} of {:?}; omit --kind or change the path", k.as_str(), segments[0], path),
+                (Some(k), _) => k,
+                (None, Some(r)) => r,
+                (None, None) => AccountType::Expense,
+            };
+            if root.is_some() {
+                segments.remove(0);
             }
+            let currency = currency.as_deref().map(means_core::entities::normalize_code).transpose()?;
             if segments.is_empty() {
                 anyhow::bail!("give the account a name");
             }
-            let subtype = match t {
-                means_core::model::AccountType::Income => "income",
-                means_core::model::AccountType::Expense => "expense",
-                means_core::model::AccountType::Asset => "bank",
-                means_core::model::AccountType::Liability => "card",
-                means_core::model::AccountType::Equity => "equity",
-            };
-            let a = means_core::accounts::ensure_account(&conn, e.id, t, &segments, subtype, &e.currency)?;
-            if !code.trim().is_empty() {
-                means_core::accounts::update_account(&conn, a.id, means_core::accounts::AccountUpdate { code: Some(code.clone()), ..Default::default() })?;
+            let given_subtype = subtype.as_deref().map(|s| means_core::accounts::check_subtype(t, s)).transpose()?;
+            // The same check as `account set`: no whitespace, and an empty value clears the code.
+            let statutory_code = statutory_code.as_deref().map(means_core::accounts::check_statutory_code).transpose()?;
+            let default_subtype = means_core::accounts::SUBTYPES.iter().find(|(k, _)| *k == t).map(|(_, v)| v[0]).unwrap_or("expense");
+            let leaf_currency = currency.as_deref().unwrap_or(&e.currency);
+            // One transaction: the account and its codes, or nothing.
+            let tx = conn.transaction()?;
+            let a = means_core::accounts::ensure_account_in(&tx, e.id, t, &segments, given_subtype.as_deref().unwrap_or(default_subtype), &e.currency, leaf_currency)?;
+            if currency.is_some() && a.commodity != leaf_currency {
+                anyhow::bail!("{} already exists in {}, not {}", a.path, a.commodity, leaf_currency);
             }
-            println!("{} #{}{}", a.path, a.id, if code.trim().is_empty() { String::new() } else { format!(" · code {}", code.trim()) });
+            if a.placeholder && (given_subtype.is_some() || statutory_code.as_deref().is_some_and(|c| !c.is_empty())) {
+                anyhow::bail!("{} is a group account; a subtype or a statutory code needs a leaf account", a.path);
+            }
+            let upd = means_core::accounts::AccountUpdate {
+                code: (!code.trim().is_empty()).then(|| code.clone()),
+                statutory_code: statutory_code.clone(),
+                subtype: given_subtype.filter(|s| *s != a.subtype),
+                ..Default::default()
+            };
+            let a = if upd.code.is_some() || upd.statutory_code.is_some() || upd.subtype.is_some() { means_core::accounts::update_account(&tx, a.id, upd)? } else { a };
+            tx.commit()?;
+            println!(
+                "{} #{}{}{}{}{}",
+                a.path,
+                a.id,
+                if code.trim().is_empty() { String::new() } else { format!(" · code {}", code.trim()) },
+                if a.statutory_code.is_empty() { String::new() } else { format!(" · statutory {}", a.statutory_code) },
+                if a.subtype == default_subtype { String::new() } else { format!(" · {}", a.subtype) },
+                if a.commodity == e.currency { String::new() } else { format!(" · {}", a.commodity) }
+            );
             Ok(())
         }
         ChartCommand::Rename { entity, path, new_name } => {
@@ -805,6 +1022,11 @@ fn entries(db_path: PathBuf, a: EntriesArgs) -> Result<()> {
     };
     let (list, total) = means_core::journal::list_entries(&conn, &filter)?;
     if a.json {
+        let value = serde_json::json!({"ok": true, "entries": list, "count": list.len(), "total": total, "schema_version": entry_cli::SCHEMA_VERSION});
+        println!("{}", serde_json::to_string(&value)?);
+        return Ok(());
+    }
+    if a.jsonl {
         use std::io::Write;
         let mut stdout = std::io::stdout().lock();
         for entry in &list {
@@ -868,7 +1090,7 @@ fn post(db_path: PathBuf, id: i64, to: &[String], payee: Option<String>) -> Resu
 
 fn rule(db_path: PathBuf, command: RuleCommand) -> Result<()> {
     let db = Db::open(&db_path)?;
-    let conn = db.conn();
+    let mut conn = db.conn();
     match command {
         RuleCommand::List { entity } => {
             let e = resolve_entity(&conn, &entity)?;
@@ -910,6 +1132,36 @@ fn rule(db_path: PathBuf, command: RuleCommand) -> Result<()> {
             let r = means_core::rules::get_rule(&conn, id)?;
             means_core::rules::delete_rule(&conn, id)?;
             println!("rule #{} {} deleted", r.id, r.payee);
+            Ok(())
+        }
+        RuleCommand::Apply { entity, import, dry_run, json } => {
+            let e = resolve_entity(&conn, &entity)?;
+            if let Some(id) = import {
+                let (_, lines) = means_core::imports::get_import(&conn, id)?;
+                if let Some(account) = lines.iter().find_map(|l| l.account_id) {
+                    anyhow::ensure!(means_core::accounts::get_account(&conn, account)?.entity_id == e.id, "import #{id} belongs to another entity");
+                }
+            }
+            let r = means_core::rules::apply_to_drafts(&mut conn, e.id, import, !dry_run)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+                return Ok(());
+            }
+            println!("{}: {} drafts examined, {} changed, {} unchanged", e.name, r.examined, r.changed, r.unchanged);
+            for c in &r.changes {
+                let payee = if c.payee_from == c.payee { c.payee.clone() } else { format!("{} -> {}", c.payee_from, c.payee) };
+                println!("  #{} {} {payee}: {} -> {} (rule: {})", c.entry_id, c.date, c.from, c.to, c.rule);
+            }
+            for f in &r.failed {
+                println!("  #{} failed: {}", f.entry_id, f.message);
+            }
+            if !r.skipped_edited.is_empty() {
+                let ids: Vec<String> = r.skipped_edited.iter().map(|id| format!("#{id}")).collect();
+                println!("Skipped, edited by a human: {}", ids.join(", "));
+            }
+            if dry_run {
+                println!("Dry run: no changes saved. Repeat without --dry-run to apply.");
+            }
             Ok(())
         }
     }
@@ -968,22 +1220,12 @@ async fn main() -> Result<()> {
     }
     match cli.command.unwrap_or(Command::Serve { listen: "127.0.0.1:7770".parse().unwrap(), inbox: None }) {
         Command::Share(args) => sharing::run(db_path, args).await,
-        Command::Export { format: _, output } => {
-            use std::io::Write;
-            let db = Db::open(&db_path)?;
-            let document = means_core::export::beancount(&mut db.conn())?;
-            match output {
-                Some(path) => {
-                    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path).with_context(|| format!("create {}", path.display()))?;
-                    file.write_all(document.as_bytes())?;
-                }
-                None => std::io::stdout().lock().write_all(document.as_bytes())?,
-            }
-            Ok(())
+        Command::Export { command, format, output, entity, include_archived, as_of, json } => {
+            export_cli::run(&db_path, command, &format, output, &export_cli::Scope { entity: &entity, include_archived }, as_of.as_deref(), json)
         }
         Command::Serve { listen, inbox } => serve(db_path, listen, inbox).await,
         Command::Tui { server } => means_tui::run(&server).await,
-        Command::Import { source, account, entity, file, command } => match command {
+        Command::Import { source, account, entity, map, date_format, decimal_comma, from, to, file, command } => match command {
             Some(ImportCommand::Lines { id, status, json }) => {
                 let conn = means_core::rusqlite::Connection::open_with_flags(&db_path, means_core::rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
                 let (_, lines) = means_core::imports::get_import(&conn, id)?;
@@ -1026,15 +1268,27 @@ async fn main() -> Result<()> {
                 }
                 Ok(())
             }
-            None => import(db_path, &source, account, entity, &file.context("an import file is required")?),
+            None => {
+                let mapping = map.as_deref().map(|spec| means_core::imports::CsvMapping::from_column_map(spec, date_format.as_deref().unwrap_or(""), decimal_comma)).transpose()?;
+                let range = (from.as_deref().map(means_core::parse_date).transpose()?, to.as_deref().map(means_core::parse_date).transpose()?);
+                import(db_path, &source, account, entity, mapping.as_ref(), range, &file.context("an import file is required")?)
+            }
         },
         Command::Draft { command: DraftCommand::Delete { id } } => {
+            entry_cli::guard("draft delete");
             let db = Db::open(&db_path)?;
             means_core::journal::delete_entry(&mut db.conn(), id)?;
             println!("deleted draft #{id}; any statement evidence remains unmatched");
             Ok(())
         }
         Command::Rematch { import_id, cross_source, preview: _, apply } => {
+            // A cross-source preview only reads. An apply voids or deletes duplicates, and a
+            // plain rematch merges them.
+            if !cross_source {
+                entry_cli::guard("rematch");
+            } else if apply.is_some() {
+                entry_cli::guard("rematch --apply");
+            }
             let db = Db::open(&db_path)?;
             let mut conn = db.conn();
             if cross_source {
@@ -1069,6 +1323,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Rollback { import_id, force } => {
+            entry_cli::guard("rollback");
             let db = Db::open(&db_path)?;
             let mut conn = db.conn();
             means_core::imports::delete_import(&mut conn, import_id, force)?;
@@ -1099,14 +1354,29 @@ async fn main() -> Result<()> {
             let done = std::thread::spawn(move || pluggy_pull(db_path, options));
             done.join().map_err(|_| anyhow::anyhow!("the pluggy pull thread panicked"))?
         }
-        Command::Rates { command: RatesCommand::Fetch { from, no_revalue } } => {
-            let db = Db::open(&db_path)?;
+        Command::Rates { command: RatesCommand::Fetch { from, to, pairs, no_revalue } } => {
             let from = means_core::parse_date(&from)?;
-            let (inserted, revalued, latest) = fetch_rates_with_revaluation(&db, Some(from), !no_revalue).await?;
-            println!("rates: {inserted} written, {revalued} entries revalued, latest {latest}");
+            let to = to.as_deref().map(means_core::parse_date).transpose()?.unwrap_or_else(|| chrono::Local::now().date_naive());
+            let pairs = pairs.as_deref().map(means_core::rates::parse_pairs).transpose()?;
+            let db = Db::open(&db_path)?;
+            // Store the cross pairs before the revaluation, so the revaluation can use them.
+            let (inserted, _, _) = fetch_rates_with_revaluation(&db, Some(from), false).await?;
+            let derived = match &pairs {
+                Some(pairs) => means_core::rates::store_cross_pairs(&mut db.conn(), pairs, from, to)?,
+                None => 0,
+            };
+            let (revalued, drafts) = if no_revalue { (0, 0) } else { revalue_logged(&mut db.conn())? };
+            let (_, latest) = means_core::rates::price_count(&db.conn())?;
+            println!("rates: {inserted} written, {derived} cross rates stored, {revalued} entries revalued, {drafts} drafts revalued, latest {}", latest.unwrap_or_default());
             Ok(())
         }
+        Command::Rates { command: RatesCommand::Set(args) } => rates_cli::set(db_path, args),
+        Command::Rates { command: RatesCommand::List(args) } => rates_cli::list(db_path, args),
+        Command::Rates { command: RatesCommand::Import(args) } => rates_cli::import(db_path, args),
         Command::Entity { command: EntityCommand::MigrateCurrency { entity, to, apply, backup, include_locked } } => {
+            if apply.is_some() {
+                entry_cli::guard("entity migrate-currency --apply");
+            }
             let mut conn = means_core::currency_migration::open_existing(&db_path, false)?;
             let entity = resolve_entity(&conn, &entity)?;
             let applying = apply.is_some();
@@ -1127,19 +1397,58 @@ async fn main() -> Result<()> {
             println!("entity #{} {} ({}, {})", e.id, e.name, e.kind, e.currency);
             Ok(())
         }
-        Command::Entity { command: EntityCommand::List } => {
+        Command::Entity { command: EntityCommand::List { json, all } } => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
-            for e in means_core::entities::list_entities(&conn, true)? {
+            if json {
+                let mut rows = Vec::new();
+                for e in means_core::entities::list_entities(&conn, all)? {
+                    let facts = means_core::entities::get_facts(&conn, e.id)?;
+                    rows.push(serde_json::json!({
+                        "id": e.id,
+                        "uid": e.uid,
+                        "name": e.name,
+                        "kind": e.kind,
+                        "country": e.country,
+                        "currency": e.currency,
+                        "fiscal_year_end": facts.fiscal_year_end,
+                        "lock_date": e.lock_date.map(|d| d.to_string()),
+                        "archived": e.archived_at.is_some(),
+                    }));
+                }
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            for e in means_core::entities::list_entities(&conn, all)? {
                 println!("#{:<3} {:<24} {:<8} {}{}", e.id, e.name, e.kind, e.currency, if e.archived_at.is_some() { " (archived)" } else { "" });
             }
             Ok(())
         }
-        Command::Chart { command } => chart(db_path, command),
-        Command::Accounts { entity } => {
+        Command::Entity { command: EntityCommand::Set(args) } => entity_cli::set(db_path, args),
+        Command::Entity { command: EntityCommand::Archive(args) } => entity_cli::archive(db_path, args),
+        Command::Entity { command: EntityCommand::Unarchive(args) } => entity_cli::unarchive(db_path, args),
+        Command::Entity { command: EntityCommand::Classify(args) } => entity_cli::classify(db_path, args),
+        Command::Entity { command: EntityCommand::Facts(args) } => entity_cli::facts(db_path, args),
+        Command::Group { command } => entity_cli::group(db_path, command),
+        Command::Party { command } => party_cli::run(db_path, command),
+        Command::Chart { command } => {
+            match &command {
+                ChartCommand::Remap { dry_run: false, .. } => entry_cli::guard("chart remap"),
+                ChartCommand::Merge { .. } => entry_cli::guard("chart merge"),
+                _ => {}
+            }
+            chart(db_path, command)
+        }
+        Command::Accounts { entity, json } => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
-            for a in means_core::accounts::list_accounts_with_balances(&conn, entity, false, None)? {
+            let accounts = means_core::accounts::list_accounts_with_balances(&conn, entity, false, None)?;
+            if json {
+                let rows: Vec<serde_json::Value> = accounts.iter().map(account_json).collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(());
+            }
+            for a in accounts {
                 if a.placeholder {
                     println!("{:<48} {:>16}", a.path, "");
                 } else {
@@ -1150,28 +1459,42 @@ async fn main() -> Result<()> {
         }
         Command::Reconcile { account, entity } => reconcile(db_path, &account, entity.as_deref()),
         Command::Entries(args) => entries(db_path, args),
-        Command::Post { id, to, payee } => post(db_path, id, &to, payee),
+        Command::Post { id, to, payee } => {
+            entry_cli::guard("post");
+            post(db_path, id, &to, payee)
+        }
         Command::Void(args) => void::run(db_path, args),
         Command::Rule { command } => rule(db_path, command),
         Command::Profiles { command } => profiles(db_path, command),
-        Command::Status => {
+        Command::Status { json: _ } => {
             let db = Db::open(&db_path)?;
             let s = grpc::status_of(&db)?;
             println!("{}", serde_json::to_string_pretty(&s)?);
             Ok(())
         }
+        Command::Doc { command } => doc_cli::run(db_path, command),
         Command::Verify => {
             let db = Db::open(&db_path)?;
             let conn = db.conn();
+            // Archived entities stay in the check: their books stay verifiable.
             for e in means_core::entities::list_entities(&conn, true)? {
                 let r = means_core::hashchain::verify(&conn, e.id)?;
+                let name = if e.archived_at.is_some() { format!("{} (archived)", e.name) } else { e.name.clone() };
                 match r.first_bad_seq {
-                    None => println!("{}: {} entries verified, head {}", e.name, r.checked, r.head.unwrap_or_default()),
-                    Some(seq) => println!("{}: chain BROKEN at seq {seq} (entry #{})", e.name, r.first_bad_entry_id.unwrap_or(0)),
+                    None => println!("{name}: {} entries verified, head {}", r.checked, r.head.unwrap_or_default()),
+                    Some(seq) => println!("{name}: chain BROKEN at seq {seq} (entry #{})", r.first_bad_entry_id.unwrap_or(0)),
                 }
             }
             Ok(())
         }
+        Command::Entry { command } => entry_cli::run(db_path, command),
+        Command::Policy { command } => policy_cli::run(db_path, command),
+        Command::Close { command } => close_cli::run(db_path, command),
+        Command::Filing { command } => filing_cli::run(db_path, command),
+        Command::Tax { command } => tax_cli::run(db_path, command),
+        Command::Invoice { command } => invoice_cli::run(db_path, command),
+        Command::Intervault { command } => intervault_cli::run(db_path, command),
+        Command::Account { command } => account_cli::run(db_path, command),
     }
 }
 
@@ -1226,13 +1549,22 @@ fn watch_inbox(db: Arc<Db>, dir: PathBuf) {
     });
 }
 
-fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i64>, file: &PathBuf) -> Result<()> {
+type DateRange = (Option<chrono::NaiveDate>, Option<chrono::NaiveDate>);
+
+fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i64>, mapping: Option<&means_core::imports::CsvMapping>, range: DateRange, file: &PathBuf) -> Result<()> {
     let db = Db::open(&db_path)?;
     let content = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let filename = file.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
     let mut conn = db.conn();
-    let source = if source == "auto" { means_core::imports::detect_source(&filename, &content) } else { source.to_string() };
+    // A column map reads the file as a generic CSV, as the terminal UI does.
+    let source = match (source, mapping) {
+        ("auto", Some(_)) => "generic_csv".to_string(),
+        ("auto", None) => means_core::imports::detect_source(&filename, &content),
+        (s, _) => s.to_string(),
+    };
+    anyhow::ensure!(mapping.is_none() || source.ends_with("_csv"), "--map reads a CSV file; use it with --source generic_csv");
     if source == "account_tracker" {
+        anyhow::ensure!(range == (None, None), "--from and --to apply to bank statements; an Account Tracker backup imports whole");
         let entity = entity.context("--entity is required for Account Tracker backups")?;
         let r = means_core::imports::account_tracker::import(&mut conn, &content, &filename, &[], entity, true, true)?;
         println!("import #{}: {} entries created, {} already present", r.import.id, r.created, r.skipped_existing);
@@ -1244,7 +1576,7 @@ fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i
         }
         return Ok(());
     }
-    let out = means_core::imports::run_import(&mut conn, means_core::imports::ImportRequest::new(&source, account, &filename, &content))?;
+    let out = means_core::imports::run_import(&mut conn, means_core::imports::ImportRequest::new(&source, account, &filename, &content).mapping(mapping).date_range(range.0, range.1))?;
     let i = &out.import;
     println!(
         "import #{} ({}): {} lines, {} created, {} matched, {} duplicates, {} skipped, {} unmatched, {} errors",
@@ -1259,7 +1591,8 @@ fn import(db_path: PathBuf, source: &str, account: Option<i64>, entity: Option<i
     Ok(())
 }
 
-/// Download the ECB history and store it; then revalue postings booked without a rate.
+/// Download the ECB history and store it; then revalue postings booked without a rate, and drafts.
+/// The second number counts the revalued entries and drafts together.
 pub async fn fetch_rates(db: &Db, from: Option<chrono::NaiveDate>) -> Result<(usize, usize, String)> {
     fetch_rates_with_revaluation(db, from, true).await
 }
@@ -1269,17 +1602,22 @@ async fn fetch_rates_with_revaluation(db: &Db, from: Option<chrono::NaiveDate>, 
     let xml = client.get(ECB_HIST_URL).send().await?.error_for_status()?.text().await?;
     let mut conn = db.conn();
     let inserted = means_core::rates::import_ecb_xml(&mut conn, &xml, from)?;
-    let fixed = if revalue {
-        let revalued = means_core::rates::revalue_missing(&mut conn)?;
-        if revalued.failed > 0 {
-            tracing::warn!(failed = revalued.failed, first = ?revalued.first_error, "some entries could not be revalued");
-        }
-        revalued.fixed
-    } else {
-        0
-    };
+    let (fixed, drafts) = if revalue { revalue_logged(&mut conn)? } else { (0, 0) };
     let (_, latest) = means_core::rates::price_count(&conn)?;
-    Ok((inserted, fixed, latest.unwrap_or_default()))
+    Ok((inserted, fixed + drafts, latest.unwrap_or_default()))
+}
+
+/// Revalue the postings booked without a rate and the drafts, and log the entries that still fail.
+/// Returns the number of fixed entries and of revalued drafts.
+fn revalue_logged(conn: &mut means_core::rusqlite::Connection) -> Result<(usize, usize)> {
+    let revalued = means_core::rates::revalue_missing(conn)?;
+    if revalued.failed > 0 {
+        tracing::warn!(failed = revalued.failed, first = ?revalued.first_error, "some entries could not be revalued");
+    }
+    if !revalued.skipped_tax_events.is_empty() {
+        tracing::warn!(drafts = ?revalued.skipped_tax_events, "drafts with tax events were not revalued");
+    }
+    Ok((revalued.fixed, revalued.drafts))
 }
 
 /// The Pluggy channel's network half. means-core opens no socket, so the HTTP client lives here

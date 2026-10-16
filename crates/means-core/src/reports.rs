@@ -150,6 +150,75 @@ pub fn trial_balance(conn: &Connection, entity_id: i64, as_of: Option<NaiveDate>
     Ok(Report { rows, total_debit: debit, total_credit: credit, net: debit.checked_sub(credit)?, currency: entity.currency, summary: vec![] })
 }
 
+/// One account of a period trial balance, in the functional currency.
+#[derive(Debug, Clone)]
+pub struct PeriodBalance {
+    pub account_id: i64,
+    pub path: String,
+    pub r#type: AccountType,
+    pub placeholder: bool,
+    /// Balance before the first day, debit positive.
+    pub opening: Money,
+    /// Sum of the debit postings in the period.
+    pub debits: Money,
+    /// Sum of the credit postings in the period, positive.
+    pub credits: Money,
+    /// Opening plus debits minus credits, debit positive.
+    pub closing: Money,
+}
+
+pub struct PeriodTrialBalance {
+    pub rows: Vec<PeriodBalance>,
+    pub currency: String,
+    pub opening: Money,
+    pub debits: Money,
+    pub credits: Money,
+    pub closing: Money,
+}
+
+/// Opening balance, gross debits, gross credits and closing balance of each account of an
+/// entity for a period. It reads posted and void entries at their booked functional values.
+/// Without `from`, the opening balance is zero and the period starts at the first entry.
+pub fn trial_balance_period(conn: &Connection, entity_id: i64, from: Option<NaiveDate>, to: Option<NaiveDate>) -> Result<PeriodTrialBalance> {
+    if from.zip(to).is_some_and(|(a, b)| a > b) {
+        return Err(Error::Invalid("report start date must not follow its end date".into()));
+    }
+    let entity = entities::get_entity(conn, entity_id)?;
+    let zero = unit(conn, &entity.currency)?;
+    let index = accounts::path_index(conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT p.account_id,
+                COALESCE(SUM(CASE WHEN ?2 IS NOT NULL AND e.date < ?2 THEN p.amount ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN (?2 IS NULL OR e.date >= ?2) AND p.amount > 0 THEN p.amount ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN (?2 IS NULL OR e.date >= ?2) AND p.amount < 0 THEN -p.amount ELSE 0 END), 0)
+         FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id
+         WHERE e.entity_id = ?1 AND e.status IN ('posted','void') AND (?3 IS NULL OR e.date <= ?3)
+         GROUP BY p.account_id",
+    )?;
+    let sums: HashMap<i64, (i64, i64, i64)> = stmt
+        .query_map(params![entity_id, from.map(|d| d.to_string()), to.map(|d| d.to_string())], |r| Ok((r.get::<_, i64>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?))))?
+        .collect::<std::result::Result<_, _>>()?;
+    let money = |minor: i64| Money::from_minor(minor, zero.commodity(), zero.precision());
+    let mut rows = Vec::new();
+    for a in ordered(&index, Some(entity_id)) {
+        let Some(&(opening, debits, credits)) = sums.get(&a.id) else { continue };
+        if opening == 0 && debits == 0 && credits == 0 {
+            continue;
+        }
+        let (opening, debits, credits) = (money(opening)?, money(debits)?, money(credits)?);
+        let closing = opening.checked_add(debits)?.checked_sub(credits)?;
+        rows.push(PeriodBalance { account_id: a.id, path: a.path.clone(), r#type: a.r#type, placeholder: a.placeholder, opening, debits, credits, closing });
+    }
+    Ok(PeriodTrialBalance {
+        opening: zero.checked_sum(rows.iter().map(|r| r.opening))?,
+        debits: zero.checked_sum(rows.iter().map(|r| r.debits))?,
+        credits: zero.checked_sum(rows.iter().map(|r| r.credits))?,
+        closing: zero.checked_sum(rows.iter().map(|r| r.closing))?,
+        rows,
+        currency: entity.currency,
+    })
+}
+
 /// Convert and round each account before aggregation so totals equal displayed rows.
 pub fn balance_sheet(conn: &Connection, entity_id: Option<i64>, as_of: Option<NaiveDate>, currency: &str) -> Result<Report> {
     let index = accounts::path_index(conn)?;
@@ -392,12 +461,7 @@ pub struct CashflowDay {
 /// Day by day movement on bank, cash and card accounts, posted and draft, with a projected balance.
 pub fn cashflow(conn: &Connection, entity_id: i64, from: NaiveDate, to: NaiveDate) -> Result<Vec<CashflowDay>> {
     let fprec = entities::functional_precision(conn, entity_id)?;
-    let opening: i64 = conn.query_row(
-        "SELECT COALESCE(SUM(p.amount), 0) FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id JOIN accounts a ON a.id = p.account_id
-         WHERE e.entity_id = ?1 AND e.status IN ('posted','void') AND e.date < ?2 AND a.subtype IN ('bank','cash','card','wallet')",
-        params![entity_id, from.to_string()],
-        |r| r.get(0),
-    )?;
+    let opening = cashflow_opening_minor(conn, entity_id, from)?;
     let mut stmt = conn.prepare(
         "SELECT e.date, e.status, COALESCE(SUM(CASE WHEN p.amount > 0 THEN p.amount ELSE 0 END), 0), COALESCE(SUM(CASE WHEN p.amount < 0 THEN -p.amount ELSE 0 END), 0)
          FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id JOIN accounts a ON a.id = p.account_id
@@ -426,6 +490,23 @@ pub fn cashflow(conn: &Connection, entity_id: i64, from: NaiveDate, to: NaiveDat
         out.push(day);
     }
     Ok(out)
+}
+
+fn cashflow_opening_minor(conn: &Connection, entity_id: i64, from: NaiveDate) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COALESCE(SUM(p.amount), 0) FROM postings p JOIN journal_entries e ON e.id = p.journal_entry_id JOIN accounts a ON a.id = p.account_id
+         WHERE e.entity_id = ?1 AND e.status IN ('posted','void') AND e.date < ?2 AND a.subtype IN ('bank','cash','card','wallet')",
+        params![entity_id, from.to_string()],
+        |r| r.get(0),
+    )?)
+}
+
+/// The opening balance of `cashflow`: posted and void movements on bank, cash, card and
+/// wallet accounts before `from`, in the functional currency.
+pub fn cashflow_opening(conn: &Connection, entity_id: i64, from: NaiveDate) -> Result<Money> {
+    let entity = entities::get_entity(conn, entity_id)?;
+    let fprec = entities::functional_precision(conn, entity_id)?;
+    Money::from_minor(cashflow_opening_minor(conn, entity_id, from)?, &entity.currency, fprec)
 }
 
 pub struct NetWorth {

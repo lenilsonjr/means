@@ -205,9 +205,16 @@ fn void_preserves_tagged_totals_and_rolls_back_the_whole_operation_on_failure() 
 fn legacy_reversal_tag_repair_is_audited_atomic_and_preserves_edits() {
     let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     means_core::db::migrate_to(&conn, 11).unwrap();
-    // Seed legacy tag contents using current journal helpers. Payee metadata is
+    // Seed legacy tag contents using current journal helpers. Payee, statutory and tax metadata are
     // independent of the tag repairs under test; do not advance their migration version.
+    // A void reads the inter-vault links, so the seed also creates that table.
     conn.execute_batch(include_str!("../migrations/0016_payees.sql")).unwrap();
+    conn.execute_batch(include_str!("../migrations/0021_statutory_codes.sql")).unwrap();
+    conn.execute_batch(include_str!("../migrations/0022_tax_events.sql")).unwrap();
+    conn.execute_batch(include_str!("../migrations/0025_intervault_links.sql")).unwrap();
+    // The account reader also reads the account identifiers of migration 27 and the counterparty of migration 30.
+    conn.execute_batch(include_str!("../migrations/0027_entity_flags.sql")).unwrap();
+    conn.execute_batch(include_str!("../migrations/0030_account_counterparty.sql")).unwrap();
     let e = entities::create_entity(&mut conn, "Personal", "person", "PT", "EUR").unwrap();
     let bank = accounts::ensure_account(&conn, e.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
     let expense = accounts::ensure_account(&conn, e.id, AccountType::Expense, &["Food"], "expense", "EUR").unwrap();
@@ -349,4 +356,27 @@ fn net_worth_requires_one_vault_and_keeps_native_account_currencies() {
     input.postings = vec![PostingInput::new(bank.id, d("100")), PostingInput::new(equity.id, d("-100"))];
     journal::create_entry(&mut c, input).unwrap();
     assert_eq!(reports::net_worth(&c, personal.id, "", Some(day(1))).unwrap().total, report.total);
+}
+
+#[test]
+fn period_trial_balance_splits_opening_debits_and_credits() {
+    let db = Db::open_memory().unwrap();
+    let mut conn = db.conn();
+    let entity = entities::create_entity(&mut conn, "Harbor Lane Studio", "company", "US", "EUR").unwrap();
+    let bank = accounts::ensure_account(&conn, entity.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
+    let income = accounts::ensure_account(&conn, entity.id, AccountType::Income, &["Sales"], "income", "EUR").unwrap();
+    for (n, amount, status) in [(1, "100", EntryStatus::Posted), (5, "40", EntryStatus::Posted), (6, "-15", EntryStatus::Posted), (7, "99", EntryStatus::Draft), (20, "7", EntryStatus::Posted)] {
+        let mut entry = EntryInput::new(entity.id, day(n));
+        entry.status = status;
+        entry.postings = vec![PostingInput::new(bank.id, d(amount)), PostingInput::balancing(income.id)];
+        journal::create_entry(&mut conn, entry).unwrap();
+    }
+    let tb = reports::trial_balance_period(&conn, entity.id, Some(day(2)), Some(day(10))).unwrap();
+    let row = tb.rows.iter().find(|r| r.account_id == bank.id).unwrap();
+    assert_eq!((row.opening, row.debits, row.credits, row.closing), (eur("100"), eur("40"), eur("15"), eur("125")));
+    let sales = tb.rows.iter().find(|r| r.account_id == income.id).unwrap();
+    assert_eq!((sales.opening, sales.debits, sales.credits, sales.closing), (eur("-100"), eur("15"), eur("40"), eur("-125")));
+    assert_eq!((tb.debits, tb.credits, tb.opening, tb.closing), (eur("55"), eur("55"), eur("0"), eur("0")));
+    assert!(reports::trial_balance_period(&conn, entity.id, Some(day(10)), Some(day(2))).is_err());
+    assert_eq!(reports::cashflow_opening(&conn, entity.id, day(6)).unwrap(), eur("140"));
 }

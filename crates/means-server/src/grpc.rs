@@ -52,12 +52,22 @@ impl MeansService {
     }
 }
 
+/// The request metadata key that names the person who acts. Audit events record it.
+pub const ACTOR_METADATA: &str = "means-actor";
+
+/// The actor of a gRPC request: the `means-actor` metadata when the client gives it, else `grpc`.
+fn request_actor<T>(req: &Request<T>) -> String {
+    req.metadata().get(ACTOR_METADATA).and_then(|v| v.to_str().ok()).map(str::trim).filter(|a| !a.is_empty()).unwrap_or("grpc").to_string()
+}
+
 fn status(e: means_core::Error) -> Status {
     use means_core::Error as E;
     match e {
         E::NotFound(m) => Status::not_found(m),
         E::Invalid(m) | E::Parse(m) => Status::invalid_argument(m),
         E::Locked(m) | E::Unbalanced(m) => Status::failed_precondition(m),
+        E::NeedsCascade(m) => Status::failed_precondition(m),
+        E::Archived(m) => Status::failed_precondition(format!("entity_archived: {m}")),
         E::Conflict(m) => Status::already_exists(m),
         E::Db(e) => Status::internal(format!("database: {e}")),
         E::Json(e) => Status::internal(format!("json: {e}")),
@@ -418,6 +428,7 @@ fn posting_input_from_pb(p: &pb::PostingInput) -> Result<PostingInput, Status> {
         fingerprint: (!p.fingerprint.is_empty()).then(|| p.fingerprint.clone()),
         balance: p.quantity.trim().is_empty() || p.quantity.trim() == "balance",
         value_in: None,
+        tax: None,
     })
 }
 
@@ -567,9 +578,12 @@ impl Means for MeansService {
 
     async fn update_entity(&self, req: Request<pb::UpdateEntityRequest>) -> Result<Response<pb::EntityResponse>, Status> {
         self.writable()?;
+        let actor = request_actor(&req);
         let e = req.into_inner().entity.ok_or_else(|| Status::invalid_argument("entity is required"))?;
         let lock = date_opt(&e.lock_date)?;
-        let out = self.run(move |c| entities::update_entity(c, e.id, &e.name, &e.kind, &e.country, lock, e.archived)).await?;
+        // A rename checks the active names without case. An archive or an unarchive needs
+        // `means entity archive` or `unarchive`, so the update refuses a change of `archived`.
+        let out = self.run(move |c| entities::update_entity_by(c, e.id, &e.name, &e.kind, &e.country, lock, e.archived, &actor)).await?;
         Ok(Response::new(pb::EntityResponse { entity: Some(entity_pb(&out)) }))
     }
 
@@ -701,6 +715,16 @@ impl Means for MeansService {
                         placeholder: Some(a.placeholder),
                         commodity: if a.commodity.is_empty() { None } else { Some(a.commodity.clone()) },
                         class: Some(a.class.clone()),
+                        // The gRPC account has no statutory keys yet. Keep the stored values.
+                        statutory_code: None,
+                        tax_treatment: None,
+                        intercompany: None,
+                        country: None,
+                        iban: None,
+                        bic: None,
+                        institution: None,
+                        location: None,
+                        counterparty_payee_id: None,
                     },
                 )?;
                 account_with_balance(c, a.id)
@@ -739,7 +763,7 @@ impl Means for MeansService {
         let nodes: Vec<accounts::ChartNode> = r
             .accounts
             .iter()
-            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone() })
+            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone(), ..Default::default() })
             .collect();
         let (created, existing) = self.run(move |c| accounts::apply_chart(c, r.entity_id, &nodes)).await?;
         Ok(Response::new(pb::ApplyChartResponse { created: created as i32, existing: existing as i32 }))
@@ -751,7 +775,7 @@ impl Means for MeansService {
         let nodes: Vec<accounts::ChartNode> = r
             .accounts
             .iter()
-            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone() })
+            .map(|a| accounts::ChartNode { code: a.code.clone(), path: a.path.clone(), r#type: a.r#type.clone(), placeholder: a.placeholder, description: a.description.clone(), ..Default::default() })
             .collect();
         let moves: Vec<(i64, String)> = r.moves.iter().map(|m| (m.source_id, m.target_path.clone())).collect();
         let rep = self.run(move |c| accounts::remap_accounts(c, r.entity_id, &nodes, &moves)).await?;
@@ -815,6 +839,8 @@ impl Means for MeansService {
         self.writable()?;
         let e = req.into_inner().entry.ok_or_else(|| Status::invalid_argument("entry is required"))?;
         let input = entry_input_from_pb(&e)?;
+        // Under the draft_only posting policy, the core stores a posted request as a draft.
+        // The status of the returned entry tells the client which status the engine stored.
         let out = self.run(move |c| journal::create_entry(c, input)).await?;
         Ok(Response::new(pb::JournalEntryResponse { entry: Some(entry_pb(&out)), counterpart: None }))
     }
@@ -845,6 +871,7 @@ impl Means for MeansService {
             status: EntryStatus::parse(&r.status).map_err(status)?,
             origin: "transfer".into(),
             external: None,
+            kind: Some(r.kind.clone()).filter(|k| !k.trim().is_empty()),
         };
         let (a, b) = self.run(move |c| journal::create_transfer(c, t)).await?;
         Ok(Response::new(pb::CreateTransferResponse { entry: Some(entry_pb(&a)), counterpart: b.as_ref().map(entry_pb) }))
@@ -901,9 +928,12 @@ impl Means for MeansService {
 
     async fn void_journal_entry(&self, req: Request<pb::VoidJournalEntryRequest>) -> Result<Response<pb::JournalEntryResponse>, Status> {
         self.writable()?;
+        let actor = request_actor(&req);
         let r = req.into_inner();
         let d = date_opt(&r.date)?;
-        let out = self.run(move |c| journal::void_entry(c, r.id, d, &r.reason)).await?;
+        // A link that is not void needs cascade. The engine refuses with `NeedsCascade`, which
+        // maps to FAILED_PRECONDITION: the caller can void with cascade or remove the links first.
+        let out = self.run(move |c| Ok(journal::review_void_by(c, r.id, d, &r.reason, true, r.cascade, &actor)?.entry)).await?;
         Ok(Response::new(pb::JournalEntryResponse { entry: Some(entry_pb(&out)), counterpart: None }))
     }
 
@@ -1184,7 +1214,7 @@ impl Means for MeansService {
             .iter()
             .map(|m| imports::account_tracker::Mapping { external_id: m.external_id.clone(), entity_id: m.entity_id, r#type: m.r#type.clone(), subtype: m.subtype.clone(), skip: m.skip })
             .collect();
-        let expand = r.expand_recurring || r.mapping.is_empty() && !r.expand_recurring && true;
+        let expand = r.expand_recurring || r.mapping.is_empty();
         let out = self.run(move |c| imports::account_tracker::import(c, &r.content, &r.filename, &mappings, r.default_entity_id, expand, r.schedules)).await?;
         Ok(Response::new(pb::ImportAccountTrackerResponse {
             import: Some(import_pb(&out.import)),
@@ -1543,7 +1573,7 @@ mod replica_tests {
         drop(db);
         // Install in a distinct empty database as the production importer does.
         let replica_path = path.with_extension("replica");
-        let staging = Db::open(&replica_path).unwrap();
+        let staging = Db::open_replica_staging(&replica_path).unwrap();
         means_sharing::snapshot::install(&staging, &snapshot, &entity.uid, "", 0).unwrap();
         drop(staging);
         let db = Arc::new(Db::open_replica(&replica_path).unwrap());

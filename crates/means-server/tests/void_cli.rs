@@ -68,10 +68,23 @@ fn preview_apply_and_repeat_preserve_history_and_negate_book_values() {
         assert_eq!(result["evidence_lines"], 1);
         assert_eq!(f.snapshot(), before);
     }
+    let out = f.run(&["--reason", "Duplicate purchase", "--json"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["applied"], false);
+    assert_eq!(result["already_void"], false);
+    assert_eq!(result["entry"]["status"], "posted");
+    assert!(result["entry"]["reversed_by_id"].is_null());
+    assert_eq!(result["entry"], serde_json::to_value(journal::get_entry(&f.db.conn(), f.entry).unwrap()).unwrap());
+    // The preview rolls the reversal back, so it gives no id and no uid for it.
+    assert_eq!(result["reversal"], serde_json::json!({"uid": null, "status": "posted", "date": result["entry"]["date"]}));
+    assert_eq!(f.snapshot(), before);
     let out = f.run(&["--yes", "--reason", "Duplicate purchase", "--json"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let result: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(result["applied"], true);
+    assert_eq!(result["entry"]["status"], "void");
+    assert_eq!(result["entry"]["reversed_by_id"], result["reversal"]["id"]);
     let after = f.snapshot();
     assert_eq!(after["entry"]["status"], "void");
     assert_eq!(after["entry"]["postings"], before["entry"]["postings"]);

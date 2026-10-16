@@ -31,8 +31,32 @@ struct Prepared {
     fingerprint: Option<String>,
 }
 
+/// Prepared postings and the tax events to record after the postings exist.
+struct PreparedEntry {
+    rows: Vec<Prepared>,
+    taxes: Vec<crate::tax::PlannedEvent>,
+}
+
 /// Validate and value the postings of an entry. Returns prepared postings, balanced.
+/// Tax blocks on the inputs are an error here: only the create and edit routes accept them.
 fn prepare(conn: &Connection, entity: &Entity, date: NaiveDate, inputs: &[PostingInput], absorb_fx: bool, keep_closed: &std::collections::HashSet<i64>) -> Result<Vec<Prepared>> {
+    if inputs.iter().any(|p| p.tax.is_some()) {
+        return Err(Error::Invalid("this operation does not accept tax blocks".into()));
+    }
+    Ok(prepare_taxed(conn, entity, date, inputs, None, absorb_fx, keep_closed)?.rows)
+}
+
+/// Validate and value the postings of an entry, add the tax lines of its tax blocks, then balance.
+/// The tax lines come after the given postings, so the balancing posting absorbs them.
+fn prepare_taxed(
+    conn: &Connection,
+    entity: &Entity,
+    date: NaiveDate,
+    inputs: &[PostingInput],
+    default_tax: Option<&TaxInput>,
+    absorb_fx: bool,
+    keep_closed: &std::collections::HashSet<i64>,
+) -> Result<PreparedEntry> {
     if inputs.len() < 2 {
         return Err(Error::Invalid("a journal entry needs at least two postings".into()));
     }
@@ -128,6 +152,35 @@ fn prepare(conn: &Connection, entity: &Entity, date: NaiveDate, inputs: &[Postin
         prepared.push(pp);
     }
 
+    // Tax blocks: compute the events and append the tax lines before the balance step.
+    let mut taxes = Vec::new();
+    for (i, p) in inputs.iter().enumerate() {
+        let block = match (&p.tax, default_tax) {
+            (Some(block), _) => block,
+            (None, Some(block)) if !p.balance && crate::tax::takes_default_block(&prepared[i].account) => block,
+            _ => continue,
+        };
+        if p.balance {
+            return Err(Error::Invalid(format!("the posting on {} balances the entry, so it cannot carry a tax block; give its quantity", prepared[i].account.path)));
+        }
+        let (event, lines) = crate::tax::plan(conn, entity, date, fprec, i, &prepared[i].account, prepared[i].quantity, prepared[i].amount, block)?;
+        for line in lines {
+            let (rate, rate_source) = if line.on_taxed_account { (prepared[i].rate, prepared[i].rate_source.clone()) } else { (None, String::new()) };
+            prepared.push(Prepared {
+                quantity: Money::from_minor(line.quantity, &line.account.commodity, line.account.precision)?,
+                amount: Money::from_minor(line.amount, &entity.currency, fprec)?,
+                account: line.account,
+                rate,
+                rate_source,
+                memo: line.memo,
+                metadata: line.metadata,
+                external_id: None,
+                fingerprint: None,
+            });
+        }
+        taxes.push(event);
+    }
+
     // A1 is exact: the amounts are counted in minor units of the functional currency and must sum to zero (D14).
     let total_money = Money::from_minor(0, &entity.currency, fprec)?.checked_sum(prepared.iter().enumerate().filter(|(i, _)| Some(*i) != balance_index).map(|(_, p)| p.amount))?;
     let total_minor = total_money.minor();
@@ -173,7 +226,12 @@ fn prepare(conn: &Connection, entity: &Entity, date: NaiveDate, inputs: &[Postin
     if prepared.iter().all(|p| p.quantity.is_zero()) {
         return Err(Error::Invalid("all postings are zero".into()));
     }
-    Ok(prepared)
+    Ok(PreparedEntry { rows: prepared, taxes })
+}
+
+/// True when the entry input carries a tax block.
+fn has_tax_blocks(input: &EntryInput) -> bool {
+    input.tax.is_some() || input.postings.iter().any(|p| p.tax.is_some())
 }
 
 /// Value `quantity` of `commodity` in `functional` at `date`. Returns (amount, rate, source).
@@ -258,14 +316,17 @@ pub fn create_entry(conn: &mut Connection, input: EntryInput) -> Result<JournalE
 }
 
 pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, input: EntryInput) -> Result<JournalEntry> {
-    let entity = entities::get_entity(conn, input.entity_id)?;
+    // The archive guards refuse the write too; this check names the entity in the message.
+    let entity = entities::ensure_active(conn, input.entity_id)?;
     if input.status == EntryStatus::Void {
         return Err(Error::Invalid("cannot create a void entry".into()));
     }
-    if input.status == EntryStatus::Posted {
+    // A reversal corrects a posted entry and stays posted. Every other route obeys the policy.
+    let status = if input.reverses_id.is_some() { input.status } else { crate::policy::admit(conn, input.status)? };
+    if status == EntryStatus::Posted {
         check_lock(&entity, input.date)?;
     }
-    let prepared = prepare(conn, &entity, input.date, &input.postings, input.absorb_fx, &std::collections::HashSet::new())?;
+    let PreparedEntry { rows: prepared, taxes } = prepare_taxed(conn, &entity, input.date, &input.postings, input.tax.as_ref(), input.absorb_fx, &std::collections::HashSet::new())?;
     let ts = now_ts();
     conn.execute(
         "INSERT INTO journal_entries (uid, entity_id, date, payee, description, notes, status, reverses_id, counterpart_id, template_id, template_version, origin, posted_at, created_at, updated_at, reviewed_at)
@@ -277,31 +338,38 @@ pub(crate) fn create_entry_in_transaction(conn: &rusqlite::Transaction<'_>, inpu
             input.payee.trim(),
             input.description.trim(),
             input.notes.trim(),
-            input.status.as_str(),
+            status.as_str(),
             input.reverses_id,
             input.counterpart_id,
             input.template_id,
             input.template_version,
             if input.origin.is_empty() { "capture" } else { input.origin.as_str() },
-            if input.status == EntryStatus::Posted { Some(ts.clone()) } else { None },
+            if status == EntryStatus::Posted { Some(ts.clone()) } else { None },
             ts,
             // A machine's decision waits for a human; a human's own entry is reviewed by making it.
-            if matches!(input.origin.as_str(), "rule" | "import" | "schedule") { None } else { Some(ts.clone()) }
+            if matches!(input.origin.as_str(), "rule" | "import" | "schedule" | "agent" | "invoice") { None } else { Some(ts.clone()) }
         ],
     )?;
     let id = conn.last_insert_rowid();
     insert_postings(conn, id, &prepared)?;
     let canonical = if let Some(original) = input.reverses_id { get_entry(conn, original)?.payee_id } else { crate::payees::explicit(conn, input.entity_id, &input.payee)?.map(|p| p.id) };
     crate::payees::link(conn, id, canonical)?;
-    if input.status == EntryStatus::Posted {
+    crate::tax::insert_planned(conn, &entity, id, &taxes)?;
+    if status == EntryStatus::Posted {
         let entry = get_entry(conn, id)?;
         hashchain::append(conn, &entry)?;
     }
-    crate::audit::log(conn, "journal_entries", id, "create", None, Some(serde_json::json!({"status": input.status.as_str(), "origin": input.origin, "date": input.date.to_string()})))?;
+    let mut after = serde_json::json!({"status": status.as_str(), "origin": input.origin, "date": input.date.to_string()});
+    if status != input.status {
+        after["requested_status"] = serde_json::json!(input.status.as_str());
+        after["posting_policy"] = serde_json::json!(crate::policy::PostingPolicy::DraftOnly.as_str());
+    }
+    crate::audit::log(conn, "journal_entries", id, "create", None, Some(after))?;
     get_entry(conn, id)
 }
 
 struct ReplacementLink {
+    old_posting_id: i64,
     position: usize,
     reconciled_at: Option<String>,
     line_ids: Vec<i64>,
@@ -326,8 +394,9 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
         let replacement = identity.or_else(|| {
             candidates.iter().copied().find(|i| {
                 let p = &rows[*i];
-                !(old.external_id.is_some() && p.external_id.is_some() && old.external_id != p.external_id)
-                    && !(old.fingerprint.is_some() && p.fingerprint.is_some() && old.fingerprint != p.fingerprint)
+                // Two known references that differ identify different bank movements.
+                let differ = |a: &Option<String>, b: &Option<String>| a.is_some() && b.is_some() && a != b;
+                !differ(&old.external_id, &p.external_id) && !differ(&old.fingerprint, &p.fingerprint)
             })
         });
         let Some(index) = replacement else {
@@ -346,22 +415,29 @@ fn replacement_links(conn: &Connection, before: &JournalEntry, rows: &mut [Prepa
         }
         let mut stmt = conn.prepare("SELECT id FROM statement_lines WHERE posting_id = ?1")?;
         let line_ids: Vec<i64> = stmt.query_map([old.id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
-        links.push(ReplacementLink { position: index, reconciled_at: old.reconciled_at.clone(), line_ids });
+        links.push(ReplacementLink { old_posting_id: old.id, position: index, reconciled_at: old.reconciled_at.clone(), line_ids });
     }
     Ok(links)
 }
 
 fn replace_postings(conn: &Connection, id: i64, prepared: &[Prepared], links: Vec<ReplacementLink>) -> Result<()> {
+    let documents = crate::documents::detach_posting_links(conn, id)?;
+    let tax_links = crate::tax::posting_links(conn, id)?;
+    let settlements = crate::invoices::detach_posting_settlements(conn, id)?;
     conn.execute("DELETE FROM postings WHERE journal_entry_id = ?1", [id])?;
     insert_postings(conn, id, prepared)?;
+    let mut replaced = std::collections::HashMap::new();
     for link in links {
         let new_id: i64 = conn.query_row("SELECT id FROM postings WHERE journal_entry_id = ?1 AND position = ?2", params![id, link.position as i64], |r| r.get(0))?;
+        replaced.insert(link.old_posting_id, new_id);
         conn.execute("UPDATE postings SET reconciled_at = ?2 WHERE id = ?1", params![new_id, link.reconciled_at])?;
         for line_id in link.line_ids {
             conn.execute("UPDATE statement_lines SET posting_id = ?2 WHERE id = ?1", params![line_id, new_id])?;
         }
     }
-    Ok(())
+    crate::tax::relink_postings(conn, &tax_links, &replaced)?;
+    crate::invoices::reattach_posting_settlements(conn, settlements, &replaced)?;
+    crate::documents::reattach_posting_links(conn, id, documents, &replaced)
 }
 
 /// Replace the content of an entry. Drafts change freely; posted entries only while unlocked and unreconciled.
@@ -373,31 +449,44 @@ pub fn update_entry(conn: &mut Connection, id: i64, input: EntryInput) -> Result
 }
 
 /// Replace an entry as part of a larger atomic workflow, with the same validation as an ordinary edit.
-pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i64, input: EntryInput) -> Result<JournalEntry> {
+pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i64, mut input: EntryInput) -> Result<JournalEntry> {
     let before = get_entry(conn, id)?;
-    let entity = entities::get_entity(conn, before.entity_id)?;
+    let entity = entities::ensure_active(conn, before.entity_id)?;
     if input.entity_id != before.entity_id {
         return Err(Error::Invalid("an entry cannot move between entities".into()));
     }
     if before.status == EntryStatus::Void {
         return Err(Error::Locked("a void entry cannot change".into()));
     }
-    let content_changed = before.date != input.date || before.payee != input.payee.trim() || before.description != input.description.trim() || postings_differ(&before, &input);
+    // An edit with tax blocks replaces the tax events. The engine drops the old tax lines and adds new ones.
+    // An edit without tax blocks keeps the events and moves them to the replacement postings.
+    let taxed = has_tax_blocks(&input);
+    if taxed {
+        input.postings.retain(|p| !crate::tax::is_tax_line(&p.metadata));
+    }
+    let content_changed = taxed || before.date != input.date || before.payee != input.payee.trim() || before.description != input.description.trim() || postings_differ(&before, &input);
     if before.status == EntryStatus::Posted && content_changed {
         check_lock(&entity, before.date)?;
         check_lock(&entity, input.date)?;
     }
     let new_status = match (before.status, input.status) {
         (EntryStatus::Posted, _) => EntryStatus::Posted,
-        (EntryStatus::Draft, EntryStatus::Posted) => EntryStatus::Posted,
+        // Under draft_only an edit never posts a draft. A human posts it with post_entry.
+        (EntryStatus::Draft, EntryStatus::Posted) => crate::policy::admit(conn, EntryStatus::Posted)?,
         (EntryStatus::Draft, _) => EntryStatus::Draft,
         (EntryStatus::Void, _) => EntryStatus::Void,
     };
-    if new_status == EntryStatus::Posted && before.status == EntryStatus::Draft {
+    let posts_draft = new_status == EntryStatus::Posted && before.status == EntryStatus::Draft;
+    if posts_draft {
         check_lock(&entity, input.date)?;
     }
     let keep_closed: std::collections::HashSet<i64> = before.postings.iter().map(|p| p.account_id).collect();
-    let mut prepared = if content_changed || before.status == EntryStatus::Draft { Some(prepare(conn, &entity, input.date, &input.postings, input.absorb_fx, &keep_closed)?) } else { None };
+    let (mut prepared, taxes) = if content_changed || before.status == EntryStatus::Draft {
+        let entry = prepare_taxed(conn, &entity, input.date, &input.postings, input.tax.as_ref(), input.absorb_fx, &keep_closed)?;
+        (Some(entry.rows), entry.taxes)
+    } else {
+        (None, Vec::new())
+    };
     let links = match prepared.as_mut() {
         Some(rows) => replacement_links(conn, &before, rows, Some(input.date))?,
         None => Vec::new(),
@@ -411,8 +500,14 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
     if before.payee != input.payee.trim() {
         crate::payees::link(conn, id, crate::payees::explicit(conn, input.entity_id, &input.payee)?.map(|p| p.id))?;
     }
+    if taxed {
+        crate::tax::delete_for_entry(conn, id)?;
+    }
     if let Some(prepared) = prepared {
         replace_postings(conn, id, &prepared, links)?;
+    }
+    if taxed {
+        crate::tax::insert_planned(conn, &entity, id, &taxes)?;
     }
 
     if new_status == EntryStatus::Posted {
@@ -427,6 +522,9 @@ pub(crate) fn update_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: 
         }
     }
     crate::audit::log(conn, "journal_entries", id, "update", Some(serde_json::to_value(&before)?), None)?;
+    if posts_draft {
+        crate::intervault::on_post(conn, id)?;
+    }
     get_entry(conn, id)
 }
 
@@ -602,6 +700,7 @@ pub fn post_entry(conn: &mut Connection, id: i64) -> Result<JournalEntry> {
 /// Let reconciliation post a draft in the same transaction as its evidence link.
 pub(crate) fn post_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i64) -> Result<JournalEntry> {
     let entry = get_entry(conn, id)?;
+    entities::ensure_active(conn, entry.entity_id)?;
     match entry.status {
         EntryStatus::Posted => return Ok(entry),
         EntryStatus::Void => return Err(Error::Locked("a void entry cannot be posted".into())),
@@ -614,12 +713,15 @@ pub(crate) fn post_entry_in_transaction(conn: &rusqlite::Transaction<'_>, id: i6
     let entry = get_entry(conn, id)?;
     hashchain::append(conn, &entry)?;
     crate::audit::log(conn, "journal_entries", id, "post", None, None)?;
+    // A linked pair becomes posted when both entries are posted.
+    crate::intervault::on_post(conn, id)?;
     get_entry(conn, id)
 }
 
 /// Void by reversal: a new posted entry with every posting negated, dated `date`.
+/// The void is refused while the entry has an inter-vault link that is not void.
 pub fn void_entry(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str) -> Result<JournalEntry> {
-    Ok(review_void(conn, id, date, reason, true)?.entry)
+    Ok(review_void(conn, id, date, reason, true, false)?.entry)
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -629,11 +731,55 @@ pub struct VoidReview {
     pub evidence_lines: i64,
     pub applied: bool,
     pub already_void: bool,
+    /// True when the caller asked to void the linked entries too.
+    pub cascade: bool,
+    /// The entries of other entities that the void reaches through inter-vault links.
+    pub linked_entries: Vec<crate::intervault::LinkedEntry>,
+    /// True when the entry has linked entries and the caller did not ask for cascade.
+    /// The apply is then refused.
+    pub needs_cascade: bool,
+}
+
+impl VoidReview {
+    /// The reversal as a void result shows it. After an apply, it is the short form of the
+    /// saved reversal. A preview rolls the reversal back, so the preview gives no id and no uid
+    /// for it: only the status and the date.
+    pub fn reversal_ref(&self) -> serde_json::Value {
+        if self.applied || self.already_void {
+            serde_json::json!({"uid": self.reversal.uid, "status": self.reversal.status.as_str(), "date": self.reversal.date.to_string()})
+        } else {
+            serde_json::json!({"uid": null, "status": "posted", "date": self.reversal.date.to_string()})
+        }
+    }
+}
+
+/// What a void does with the inter-vault links of the entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkMode {
+    /// Refuse the void while the entry has a link that is not void.
+    Refuse,
+    /// Void the link group too: the posted linked entries and the links.
+    Cascade,
+    /// Reverse this entry only and leave the links: a preview that rolls back, or one entry
+    /// of a cascade, whose links the cascade marks void.
+    Leg,
 }
 
 /// Compute the full reversal inside one transaction. Preview rolls it back.
+/// A preview returns the stored entry and `applied: false`.
 /// Drafts are never deleted by a void request.
-pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str, apply: bool) -> Result<VoidReview> {
+///
+/// An entry with inter-vault links that are not void needs `cascade` to apply: the engine then
+/// voids the posted linked entries in the same transaction. Without `cascade`, the apply is
+/// refused. A preview never applies the cascade, also with `cascade`: it reverses this entry
+/// only and lists the linked entries with their `locked` flag.
+pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str, apply: bool, cascade: bool) -> Result<VoidReview> {
+    review_void_by(conn, id, date, reason, apply, cascade, "")
+}
+
+/// `review_void` with the person who acts. `actor` goes on each audit event of the void and of
+/// its cascade.
+pub fn review_void_by(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reason: &str, apply: bool, cascade: bool, actor: &str) -> Result<VoidReview> {
     let tx = conn.transaction()?;
     let before = get_entry(&tx, id)?;
     if before.status == EntryStatus::Draft {
@@ -642,28 +788,61 @@ pub fn review_void(conn: &mut Connection, id: i64, date: Option<NaiveDate>, reas
     if before.status == EntryStatus::Void {
         let reversal_id = before.reversed_by_id.ok_or_else(|| Error::Invalid(format!("void entry #{id} has no reversal")))?;
         let reversal = get_entry(&tx, reversal_id)?;
-        return Ok(VoidReview { entry: before, reversal, evidence_lines: 0, applied: false, already_void: true });
+        return Ok(VoidReview { entry: before, reversal, evidence_lines: 0, applied: false, already_void: true, cascade, linked_entries: Vec::new(), needs_cascade: false });
     }
     let evidence_lines = tx.query_row("SELECT COUNT(*) FROM statement_lines WHERE journal_entry_id=?1", [id], |r| r.get(0))?;
-    let entry = void_entry_in_transaction(&tx, id, date, reason)?;
+    let mut linked_entries = crate::intervault::linked_entries(&tx, id, date)?;
+    let needs_cascade = !cascade && !linked_entries.is_empty();
+    let mode = match (apply, cascade) {
+        (false, _) => LinkMode::Leg,
+        (true, true) => LinkMode::Cascade,
+        (true, false) => LinkMode::Refuse,
+    };
+    let entry = void_in_transaction(&tx, id, date, reason, mode, None, actor)?;
     let reversal = get_entry(&tx, entry.reversed_by_id.ok_or_else(|| Error::Invalid("void did not create a reversal".into()))?)?;
     if apply {
+        for linked in &mut linked_entries {
+            linked.voided = get_entry(&tx, linked.entry_id)?.status == EntryStatus::Void;
+        }
         tx.commit()?;
-    } else {
-        tx.rollback()?;
+        return Ok(VoidReview { entry, reversal, evidence_lines, applied: true, already_void: false, cascade, linked_entries, needs_cascade });
     }
-    Ok(VoidReview { entry, reversal, evidence_lines, applied: apply, already_void: false })
+    tx.rollback()?;
+    // A preview saves nothing. It returns the stored entry with its real status, not the
+    // entry as the void would leave it. It still lists the linked entries.
+    Ok(VoidReview { entry: before, reversal, evidence_lines, applied: false, already_void: false, cascade, linked_entries, needs_cascade })
 }
 
 /// Void a posted entry within a larger atomic operation (such as cross-source reconciliation).
+/// The void is refused while the entry has an inter-vault link that is not void.
 pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<NaiveDate>, reason: &str) -> Result<JournalEntry> {
+    void_in_transaction(tx, id, date, reason, LinkMode::Refuse, None, "")
+}
+
+/// Void a posted entry that a cascade reaches from the entry `from_uid`. The cascade handles
+/// the links, so this void reverses the entry only.
+pub(crate) fn void_cascaded(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<NaiveDate>, reason: &str, from_uid: &str, actor: &str) -> Result<JournalEntry> {
+    void_in_transaction(tx, id, date, reason, LinkMode::Leg, Some(from_uid), actor)
+}
+
+fn void_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64, date: Option<NaiveDate>, reason: &str, mode: LinkMode, cascaded_from: Option<&str>, actor: &str) -> Result<JournalEntry> {
     let entry = get_entry(tx, id)?;
     if entry.status != EntryStatus::Posted {
         return Err(Error::Conflict(format!("entry #{id} is not posted")));
     }
-    let entity = entities::get_entity(tx, entry.entity_id)?;
+    let entity = entities::ensure_active(tx, entry.entity_id)?;
+    let requested_date = date;
     let date = date.unwrap_or(entry.date);
     check_lock(&entity, date)?;
+    // The walk of the link group runs once, here. A cascade uses the same group for its writes.
+    let group = match mode {
+        LinkMode::Leg => None,
+        LinkMode::Refuse | LinkMode::Cascade => Some(crate::intervault::link_group(tx, id, requested_date)?),
+    };
+    let linked = group.as_ref().map(|g| g.entries.as_slice()).unwrap_or_default();
+    if mode == LinkMode::Refuse && !linked.is_empty() {
+        return Err(Error::NeedsCascade(crate::intervault::refusal(&entry, linked)));
+    }
     let mut input = EntryInput::new(entry.entity_id, date);
     input.payee = entry.payee.clone();
     input.description = if reason.trim().is_empty() { format!("Reversal of #{}", entry.id) } else { format!("Reversal of #{}: {}", entry.id, reason.trim()) };
@@ -684,11 +863,26 @@ pub(crate) fn void_entry_in_transaction(tx: &rusqlite::Transaction<'_>, id: i64,
         })
         .collect::<Result<Vec<_>>>()?;
     let reversal = create_entry_in_transaction(tx, input)?;
+    crate::tax::mirror_for_reversal(tx, id, reversal.id)?;
     tx.execute("INSERT INTO entry_tags (entry_id, key, value) SELECT ?1, key, value FROM entry_tags WHERE entry_id = ?2", params![reversal.id, id])?;
     tx.execute("UPDATE journal_entries SET status = 'void', updated_at = ?2 WHERE id = ?1", params![id, now_ts()])?;
     // Statement lines that evidenced the voided entry go back to the queue.
     tx.execute("UPDATE statement_lines SET status = 'unmatched', posting_id = NULL, journal_entry_id = NULL, note = 'entry voided' WHERE journal_entry_id = ?1", [id])?;
-    crate::audit::log(tx, "journal_entries", id, "void", None, Some(serde_json::json!({"reversal": reversal.id, "reason": reason})))?;
+    let mut event = serde_json::json!({"reversal": reversal.id, "reason": reason});
+    if mode == LinkMode::Cascade && !linked.is_empty() {
+        event["cascade"] = serde_json::json!(true);
+        event["linked_entry_uids"] = serde_json::json!(linked.iter().map(|l| l.entry_uid.as_str()).collect::<Vec<_>>());
+    }
+    if let Some(from) = cascaded_from {
+        event["cascaded_from"] = serde_json::json!(from);
+    }
+    // The event records the actor and the reason. A code migration of an old ledger can still
+    // void: `log_with` then writes the event of version 1.
+    crate::audit::log_with(tx, "journal_entries", id, "void", None, Some(event), actor, reason)?;
+    // A cascade voids the other posted entries of the link group in this transaction.
+    if let (LinkMode::Cascade, Some(group)) = (mode, &group) {
+        crate::intervault::void_group(tx, &entry.uid, group, requested_date, reason, actor)?;
+    }
     get_entry(tx, id)
 }
 
@@ -698,8 +892,11 @@ pub fn delete_entry(conn: &mut Connection, id: i64) -> Result<()> {
     if entry.status != EntryStatus::Draft {
         return Err(Error::Locked("only drafts can be deleted; void posted entries instead".into()));
     }
+    entities::ensure_active(conn, entry.entity_id)?;
     let tx = conn.transaction()?;
     tx.execute("UPDATE statement_lines SET status = 'unmatched', posting_id = NULL, journal_entry_id = NULL WHERE journal_entry_id = ?1", [id])?;
+    crate::tax::delete_for_entry(&tx, id)?;
+    crate::intervault::on_delete(&tx, id)?;
     tx.execute("DELETE FROM journal_entries WHERE id = ?1", [id])?;
     crate::audit::log(&tx, "journal_entries", id, "delete", Some(serde_json::to_value(&entry)?), None)?;
     tx.commit()?;
@@ -708,11 +905,41 @@ pub fn delete_entry(conn: &mut Connection, id: i64) -> Result<()> {
 
 /// Re-value postings booked without a rate now that prices exist. Returns true when something changed.
 pub fn revalue_entry(conn: &mut Connection, id: i64, rechain: bool) -> Result<bool> {
+    revalue(conn, id, rechain, false)
+}
+
+/// Re-value a draft at the rates stored now, also when its postings already have a rate. A draft
+/// is not in the hash chain, so a better rate can replace the old one. Returns true when a value
+/// changed. An entry that is not a draft changes only when it has a posting without a rate.
+pub fn revalue_draft(conn: &mut Connection, id: i64) -> Result<bool> {
+    revalue(conn, id, false, true)
+}
+
+fn revalue(conn: &mut Connection, id: i64, rechain: bool, drafts: bool) -> Result<bool> {
     let entry = get_entry(conn, id)?;
-    if entry.status == EntryStatus::Void || !entry.postings.iter().any(|p| p.rate_source == "missing") {
+    let missing = entry.postings.iter().any(|p| p.rate_source == "missing");
+    if entry.status == EntryStatus::Void || !(missing || drafts && entry.status == EntryStatus::Draft) {
         return Ok(false);
     }
     check_mutation_lock(conn, &entry)?;
+    let entity = entities::get_entity(conn, entry.entity_id)?;
+    let Some(mut prepared) = revaluation(conn, &entry, missing)? else { return Ok(false) };
+    let tx = conn.transaction()?;
+    let links = replacement_links(&tx, &entry, &mut prepared, None)?;
+    replace_postings(&tx, id, &prepared, links)?;
+    if rechain {
+        if let Some(seq) = entry.seq {
+            hashchain::rechain(&tx, entity.id, seq)?;
+        }
+    }
+    crate::audit::log(&tx, "journal_entries", id, "revalue", None, None)?;
+    tx.commit()?;
+    Ok(true)
+}
+
+/// The postings of an entry valued at the rates stored now, or None when the values do not
+/// change or a rate is still missing. It writes nothing.
+fn revaluation(conn: &Connection, entry: &JournalEntry, missing: bool) -> Result<Option<Vec<Prepared>>> {
     let entity = entities::get_entity(conn, entry.entity_id)?;
     let inputs: Vec<PostingInput> = entry
         .postings
@@ -744,21 +971,26 @@ pub fn revalue_entry(conn: &mut Connection, id: i64, rechain: bool) -> Result<bo
         .collect();
     let has_balance = inputs.iter().any(|p| p.balance);
     let keep_closed: std::collections::HashSet<i64> = entry.postings.iter().map(|p| p.account_id).collect();
-    let mut prepared = prepare(conn, &entity, entry.date, &inputs, !has_balance, &keep_closed)?;
+    let prepared = prepare(conn, &entity, entry.date, &inputs, !has_balance, &keep_closed)?;
     if prepared.iter().any(|p| p.rate_source == "missing") {
+        return Ok(None);
+    }
+    let same = |p: &Posting, q: &Prepared| p.account_id == q.account.id && p.quantity == q.quantity && p.amount == q.amount && p.rate == q.rate && p.rate_source == q.rate_source;
+    if !missing && entry.postings.len() == prepared.len() && entry.postings.iter().zip(&prepared).all(|(p, q)| same(p, q)) {
+        return Ok(None);
+    }
+    Ok(Some(prepared))
+}
+
+/// True when a revaluation of the draft at the rates stored now changes a value. It writes
+/// nothing. The revaluation report uses it to list only the drafts with tax events that a new
+/// rate would change.
+pub fn draft_would_change(conn: &Connection, id: i64) -> Result<bool> {
+    let entry = get_entry(conn, id)?;
+    if entry.status != EntryStatus::Draft {
         return Ok(false);
     }
-    let tx = conn.transaction()?;
-    let links = replacement_links(&tx, &entry, &mut prepared, None)?;
-    replace_postings(&tx, id, &prepared, links)?;
-    if rechain {
-        if let Some(seq) = entry.seq {
-            hashchain::rechain(&tx, entity.id, seq)?;
-        }
-    }
-    crate::audit::log(&tx, "journal_entries", id, "revalue", None, None)?;
-    tx.commit()?;
-    Ok(true)
+    Ok(revaluation(conn, &entry, false)?.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -1086,6 +1318,9 @@ pub struct Transfer {
     pub status: EntryStatus,
     pub origin: String,
     pub external: Option<(Option<String>, Option<String>)>,
+    /// The kind of the inter-vault link between the two entries. `None` gives `transfer`.
+    /// A transfer inside one entity has no link.
+    pub kind: Option<String>,
 }
 
 /// A transfer inside one entity (one entry) or between entities (two linked entries).
@@ -1096,6 +1331,7 @@ pub fn create_transfer(conn: &mut Connection, t: Transfer) -> Result<(JournalEnt
         return Err(Error::Invalid("amount must be positive".into()));
     }
     let to_q = t.to_quantity.unwrap_or(t.from_quantity);
+    let kind = crate::intervault::parse_kind(t.kind.as_deref().unwrap_or(""))?;
     let origin = if t.origin.is_empty() { "transfer".to_string() } else { t.origin.clone() };
     if from.entity_id == to.entity_id {
         let entry = create_simple(
@@ -1153,18 +1389,16 @@ pub fn create_transfer(conn: &mut Connection, t: Transfer) -> Result<(JournalEnt
     b.origin = origin;
     b.postings.push(PostingInput::new(to.id, to_q));
     b.postings.push(PostingInput::balancing(to_contra.id));
-    let first = create_entry(conn, a)?;
+    // One transaction: both halves exist or neither does, and both read the same posting policy.
+    let tx = conn.transaction()?;
+    let first = create_entry_in_transaction(&tx, a)?;
     b.counterpart_id = Some(first.id);
-    let second = match create_entry(conn, b) {
-        Ok(e) => e,
-        Err(e) => {
-            // Roll back the first half so the books do not keep a one-sided transfer.
-            let _ = conn.execute("DELETE FROM journal_entries WHERE id = ?1", [first.id]);
-            return Err(e);
-        }
-    };
-    conn.execute("UPDATE journal_entries SET counterpart_id = ?2 WHERE id = ?1", params![first.id, second.id])?;
-    Ok((get_entry(conn, first.id)?, Some(second)))
+    let second = create_entry_in_transaction(&tx, b)?;
+    tx.execute("UPDATE journal_entries SET counterpart_id = ?2 WHERE id = ?1", params![first.id, second.id])?;
+    crate::intervault::link_in_transaction(&tx, first.id, second.id, &kind, "")?;
+    let first = get_entry(&tx, first.id)?;
+    tx.commit()?;
+    Ok((first, Some(second)))
 }
 
 /// A human confirmed these entries (or touched them): stamp the review mark. Outside the chain.
@@ -1366,6 +1600,7 @@ mod tests {
                 status: EntryStatus::Posted,
                 origin: String::new(),
                 external: None,
+                kind: None,
             },
         )
         .unwrap();
@@ -1448,6 +1683,46 @@ mod tests {
         assert_eq!(e.postings[0].amount.major(), d("-18"));
         assert_eq!(e.postings[1].quantity.major(), d("18"));
         assert_eq!(e.postings[0].rate_source, "exact");
+    }
+
+    #[test]
+    fn usd_posting_in_sgd_entity_uses_cross_rate_through_eur() {
+        let db = Db::open_memory().unwrap();
+        let mut conn = db.conn();
+        let entity = entities::create_entity(&mut conn, "Harbor Pte", "company", "SG", "SGD").unwrap();
+        let usd = accounts::ensure_account(&conn, entity.id, AccountType::Asset, &["Bank", "USD"], "bank", "USD").unwrap();
+        let fees = accounts::ensure_account(&conn, entity.id, AccountType::Expense, &["Fees"], "expense", "SGD").unwrap();
+        // ECB rows: 1 EUR = 1.10 USD and 1 EUR = 1.45 SGD.
+        rates::set_price(&conn, "USD", "EUR", date("2026-03-02"), d("1") / d("1.10"), "ecb").unwrap();
+        rates::set_price(&conn, "SGD", "EUR", date("2026-03-02"), d("1") / d("1.45"), "ecb").unwrap();
+        let entry = |conn: &mut Connection, on: &str| {
+            create_simple(
+                conn,
+                SimpleEntry {
+                    entity_id: entity.id,
+                    date: date(on),
+                    kind: "expense".into(),
+                    account_id: usd.id,
+                    contra_account_id: Some(fees.id),
+                    quantity: d("100"),
+                    contra_quantity: None,
+                    payee: "Wire fee".into(),
+                    notes: String::new(),
+                    splits: vec![],
+                    status: EntryStatus::Posted,
+                    fee: None,
+                    fee_account_id: None,
+                    origin: String::new(),
+                },
+            )
+            .unwrap()
+        };
+        let e = entry(&mut conn, "2026-03-02");
+        assert_eq!(e.postings[0].rate_source, "cross:ECB");
+        assert_eq!(e.postings[0].amount.major(), d("-131.82"));
+        // Before the first ECB row, one leg is missing, so the posting has no rate.
+        let early = entry(&mut conn, "2026-03-01");
+        assert_eq!(early.postings[0].rate_source, "missing");
     }
 }
 

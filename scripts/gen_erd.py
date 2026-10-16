@@ -3,7 +3,7 @@
 
     python3 scripts/gen_erd.py
 
-The output is a generated mirror; field semantics live in docs/data-model.md section 3.
+The output is a generated mirror. docs/data-model.md gives the meaning of each table.
 """
 import pathlib
 import sqlite3
@@ -14,14 +14,27 @@ for f in sorted((root / "crates/means-core/migrations").glob("*.sql")):
     db.executescript(f.read_text())
 
 tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
-order = ["entities", "commodities", "prices", "accounts", "journal_entries", "postings", "entry_templates", "rules", "imports", "statement_lines", "import_profiles", "audit_log", "settings"]
+# The order of docs/data-model.md: entities and facts, accounts, journal, evidence, tax, invoices,
+# inter-vault links, close and filings, audit, then operational tables.
+order = [
+    "entities", "entity_classifications", "entity_flag_history", "entity_groups", "entity_group_members",
+    "commodities", "prices", "accounts",
+    "journal_entries", "postings", "entry_tags", "entry_templates", "rules", "payees", "payee_aliases", "party_relationships", "budgets",
+    "imports", "statement_lines", "import_profiles", "documents", "document_links",
+    "tax_codes", "tax_events",
+    "invoices", "invoice_lines", "settlements",
+    "intervault_links",
+    "filings",
+    "audit_log", "settings",
+    "channel_connections", "connection_jobs", "enable_banking_sessions", "enable_banking_account_aliases",
+]
 tables.sort(key=lambda t: (order.index(t) if t in order else 99, t))
 
 lines = [
     "# Entity-relationship diagram",
     "",
     "Generated from `crates/means-core/migrations/` by `scripts/gen_erd.py`; regenerate after a migration, never edit.",
-    "Field semantics live in `docs/data-model.md` section 3. Money columns are INTEGER counts of their commodity's minor unit (D14); dates are TEXT `YYYY-MM-DD`.",
+    "See [the accounting model](data-model.md) for the meaning of each table. Money columns are INTEGER counts of the minor unit of their commodity. Dates are TEXT `YYYY-MM-DD`.",
     "",
     "```mermaid",
     "erDiagram",

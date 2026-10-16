@@ -122,6 +122,33 @@ pub struct Account {
     pub closed_at: Option<String>,
     /// Budget nature of an expense account: fixed | committed | discretionary | savings | not-spending, or ''.
     pub class: String,
+    /// Code of the matching line in a national chart or reporting taxonomy, or ''.
+    #[serde(default)]
+    pub statutory_code: String,
+    /// Free-text tax tag, such as output_tax, input_tax or owner_capital, or ''.
+    #[serde(default)]
+    pub tax_treatment: String,
+    /// True when the account holds balances with a related party.
+    #[serde(default)]
+    pub intercompany: bool,
+    /// ISO 3166-1 alpha-2 country of the account, or ''.
+    #[serde(default)]
+    pub country: String,
+    /// IBAN without spaces, or ''.
+    #[serde(default)]
+    pub iban: String,
+    /// BIC (SWIFT code), or ''.
+    #[serde(default)]
+    pub bic: String,
+    /// The bank, broker or other institution that holds the account, or ''.
+    #[serde(default)]
+    pub institution: String,
+    /// Free text for the place of the asset, for example a state, or ''.
+    #[serde(default)]
+    pub location: String,
+    /// The payee at the other side of the account, a payee of the same entity, or None.
+    #[serde(default)]
+    pub counterparty_payee_id: Option<i64>,
     // Derived when listing:
     pub balance: Decimal,
     pub balance_functional: Decimal,
@@ -258,6 +285,29 @@ pub struct PostingInput {
     /// The posting's value expressed in another commodity, e.g. an expense posting valued as (30.00, "BRL")
     /// when the card is in BRL and the expense account is in EUR. Quantity is then derived.
     pub value_in: Option<(Decimal, String)>,
+    /// A tax block. The engine records a tax event for this posting and adds the tax lines.
+    pub tax: Option<TaxInput>,
+}
+
+/// The tax block of a posting or an entry.
+///
+/// The caller gives net amounts. The engine computes the missing amounts from the rate of the
+/// code on the tax point and adds the tax lines, so the entry balances. Amounts are magnitudes
+/// in the functional currency of the entity: the engine gives them the sign of the posting.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TaxInput {
+    /// The tax code of the entity, for example `SR`.
+    pub code: String,
+    /// The taxable base. Default: the functional amount of the posting.
+    pub base_amount: Option<Decimal>,
+    /// The tax. Default: base times the rate, rounded half-even to the currency precision.
+    pub tax_amount: Option<Decimal>,
+    /// The date that decides the tax period. Default: the entry date.
+    pub tax_point: Option<NaiveDate>,
+    /// The payee id of the other party. Default: the canonical payee of the entry.
+    pub party_id: Option<i64>,
+    /// The invoice or document number.
+    pub document_ref: String,
 }
 
 impl PostingInput {
@@ -304,6 +354,8 @@ pub struct EntryInput {
     pub reverses_id: Option<i64>,
     /// Post any residual after rating to the FX gain/loss account instead of failing.
     pub absorb_fx: bool,
+    /// A default tax block for each income or expense posting that has no block of its own.
+    pub tax: Option<TaxInput>,
 }
 
 impl EntryInput {
@@ -322,6 +374,7 @@ impl EntryInput {
             counterpart_id: None,
             reverses_id: None,
             absorb_fx: false,
+            tax: None,
         }
     }
 }

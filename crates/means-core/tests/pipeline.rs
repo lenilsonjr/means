@@ -279,9 +279,9 @@ fn merge_accounts_and_apply_chart() {
     .unwrap();
     // A chart with codes; the existing Food account is kept and coded.
     let nodes = vec![
-        accounts::ChartNode { code: "6000".into(), path: "Expenses".into(), r#type: "expense".into(), placeholder: true, description: String::new() },
-        accounts::ChartNode { code: "6200".into(), path: "Expenses:Food".into(), r#type: "expense".into(), placeholder: false, description: "meals".into() },
-        accounts::ChartNode { code: "6210".into(), path: "Expenses:Groceries".into(), r#type: "expense".into(), placeholder: false, description: String::new() },
+        accounts::ChartNode { code: "6000".into(), path: "Expenses".into(), r#type: "expense".into(), placeholder: true, description: String::new(), ..Default::default() },
+        accounts::ChartNode { code: "6200".into(), path: "Expenses:Food".into(), r#type: "expense".into(), placeholder: false, description: "meals".into(), ..Default::default() },
+        accounts::ChartNode { code: "6210".into(), path: "Expenses:Groceries".into(), r#type: "expense".into(), placeholder: false, description: String::new(), ..Default::default() },
     ];
     let (created, existing) = accounts::apply_chart(&mut conn, w.entity.id, &nodes).unwrap();
     assert_eq!((created, existing), (1, 1));
@@ -335,7 +335,8 @@ fn remap_is_atomic_and_rechains_once() {
         )
         .unwrap();
     }
-    let node = |code: &str, path: &str, ph: bool| accounts::ChartNode { code: code.into(), path: path.into(), r#type: "expense".into(), placeholder: ph, description: String::new() };
+    let node =
+        |code: &str, path: &str, ph: bool| accounts::ChartNode { code: code.into(), path: path.into(), r#type: "expense".into(), placeholder: ph, description: String::new(), ..Default::default() };
     let chart = vec![
         node("6000", "Expenses", true),
         node("6300", "Expenses:Transport", true),
@@ -623,7 +624,7 @@ fn rollback_cannot_remove_locked_entries_or_reconciliation_even_with_force() {
             assert!(matches!(imports::delete_import(&mut conn, out.import.id, force), Err(Error::Locked(_))));
             assert_eq!(ledger_snapshot(&conn), before);
         }
-        entities::update_entity(&mut conn, w.entity.id, "Personal", "person", "PT", None, false).unwrap();
+        means_core::close::unlock(&mut conn, w.entity.id, date("2026-01-01"), "Test Reviewer", "Reopen the fixture period", false).unwrap();
         imports::delete_import(&mut conn, out.import.id, false).unwrap();
     }
 }
@@ -645,7 +646,7 @@ fn rematch_preserves_both_sides_when_either_period_is_locked() {
         assert!(report.notes[0].contains("lock date"));
         // The pass itself is audited, but no accounting or evidence rows change.
         assert_eq!(ledger_snapshot(&conn)[..4], before[..4]);
-        entities::update_entity(&mut conn, w.entity.id, "Personal", "person", "PT", None, false).unwrap();
+        means_core::close::unlock(&mut conn, w.entity.id, date("2026-01-01"), "Test Reviewer", "Reopen the fixture period", false).unwrap();
         assert_eq!(imports::rematch_import(&mut conn, out.import.id).unwrap().rematched, 1);
     }
 }

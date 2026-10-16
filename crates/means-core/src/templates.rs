@@ -326,11 +326,15 @@ pub fn occurrences(t: &EntryTemplate, from: NaiveDate, until: NaiveDate, limit: 
 /// Materialize scheduled occurrences up to `until` (default today + lead days).
 /// Stop on failure without advancing past it. Earlier entries remain; a retry
 /// skips them and resumes unfinished occurrences.
+///
+/// The templates of an archived entity do not run, because its books refuse every write. They
+/// keep their schedule state, so they go on after an unarchive.
 pub fn run_schedules(conn: &mut Connection, until: Option<NaiveDate>) -> Result<usize> {
     let templates = list_templates(conn, None, false)?;
+    let archived: std::collections::HashSet<i64> = crate::entities::list_entities(conn, true)?.into_iter().filter(|e| e.archived_at.is_some()).map(|e| e.id).collect();
     let today = crate::today();
     let mut created = 0usize;
-    for t in templates.iter().filter(|t| !t.rrule.trim().is_empty()) {
+    for t in templates.iter().filter(|t| !t.rrule.trim().is_empty() && !archived.contains(&t.entity_id)) {
         let horizon = until.unwrap_or(today + chrono::Duration::days(t.lead_days.max(0) as i64));
         let from = t.next_on.map(|d| d - chrono::Duration::days(1)).unwrap_or(t.starts_on.unwrap_or(today) - chrono::Duration::days(1));
         let dates = occurrences(t, from, horizon, 400)?;
