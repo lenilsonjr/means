@@ -1255,6 +1255,8 @@ fn entity_flags_account_identifiers_party_residence_and_questions_cli() {
     // A statutory code: set, shown in `accounts --json`, refused with whitespace, then cleared.
     let coded = json(ledger.ok(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--statutory-code", " 572.1 ", "--json"]));
     assert_eq!(coded["account"]["statutory_code"], "572.1");
+    // DE89 3704 0044 0532 0130 00 is the fictional example IBAN of the IBAN documentation. It
+    // passes the mod-97 check and names no real account.
     assert_eq!(coded["account"]["iban"], "DE89370400440532013000");
     let listed = json(ledger.ok(&["accounts", "--entity", &books.entity.to_string(), "--json"]));
     let n26 = listed.as_array().unwrap().iter().find(|a| a["id"] == books.n26).unwrap().clone();
