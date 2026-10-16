@@ -190,3 +190,58 @@ fn the_human_unlink_is_audited_and_a_leg_only_void_ignores_the_other_lock() {
     assert!(!text.contains("Linked entries"), "{text}");
     assert_eq!((f.status(&f.a), f.status(&f.b)), (EntryStatus::Void, EntryStatus::Posted));
 }
+
+#[test]
+fn a_cascade_records_the_actor_on_each_audit_event() {
+    let f = books();
+    let (out, code) = f.json(&["entry", "void", &f.a.uid, "--reason", "wrong lender", "--cascade", "--actor", "Sample Reviewer"], false);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out["actor"], "Sample Reviewer");
+    let conn = f.db();
+    let conn = conn.conn();
+    for id in [f.a.id, f.b.id] {
+        let history = audit::history(&conn, "journal_entries", id).unwrap();
+        let event = history.iter().rev().find(|h| h.action == "void").unwrap();
+        assert_eq!(event.actor, "Sample Reviewer");
+    }
+    let link_id: i64 = conn.query_row("SELECT id FROM intervault_links WHERE uid = ?1", [&f.link_uid], |r| r.get(0)).unwrap();
+    let link_event = audit::history(&conn, "intervault_links", link_id).unwrap().pop().unwrap();
+    assert_eq!((link_event.action.as_str(), link_event.actor.as_str()), ("void", "Sample Reviewer"));
+}
+
+#[test]
+fn means_void_with_cascade_takes_the_actor_from_user() {
+    let f = books();
+    let out = Command::new(env!("CARGO_BIN_EXE_means"))
+        .arg("--db")
+        .arg(f.dir.join("ledger.db"))
+        .args(["void", &f.a.id.to_string(), "--reason", "wrong lender", "--yes", "--cascade"])
+        .env_remove("MEANS_AGENT")
+        .env("USER", "sample-user")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let conn = f.db();
+    let conn = conn.conn();
+    for id in [f.a.id, f.b.id] {
+        let history = audit::history(&conn, "journal_entries", id).unwrap();
+        assert_eq!(history.iter().rev().find(|h| h.action == "void").unwrap().actor, "sample-user");
+    }
+    // --actor needs --cascade.
+    let refused = f.run(&["void", &f.a.id.to_string(), "--reason", "x", "--actor", "Sample Reviewer"], false);
+    assert!(!refused.status.success());
+}
+
+#[test]
+fn a_cascade_preview_saves_nothing_and_shows_the_lock() {
+    let f = books();
+    f.lock(f.subsidiary, "2026-03-31");
+    let (dry, code) = f.json(&["entry", "void", &f.a.uid, "--reason", "wrong lender", "--cascade", "--dry-run"], false);
+    assert_eq!(code, 0, "{dry}");
+    assert_eq!((dry["applied"].as_bool(), dry["cascade"].as_bool()), (Some(false), Some(true)));
+    assert_eq!(dry["linked_entries"][0]["locked"], true);
+    assert_eq!(dry["linked_entries"][0]["voided"], false);
+    let text = f.ok(&["void", &f.a.id.to_string(), "--reason", "wrong lender", "--cascade"]);
+    assert!(text.contains("its period is locked"), "{text}");
+    assert_eq!((f.status(&f.a), f.status(&f.b)), (EntryStatus::Posted, EntryStatus::Posted));
+}

@@ -154,40 +154,60 @@ impl LinkedEntry {
 /// list is the whole link group. `date` is the requested reversal date: without it, each entry
 /// reverses on its own date.
 pub fn linked_entries(conn: &Connection, entry_id: i64, date: Option<NaiveDate>) -> Result<Vec<LinkedEntry>> {
+    Ok(link_group(conn, entry_id, date)?.entries)
+}
+
+/// The link group of an entry: the entries and the links that a cascade void reaches.
+pub(crate) struct LinkGroup {
+    /// Each entry of the group except the start entry, once.
+    pub entries: Vec<LinkedEntry>,
+    /// Each link of the group that is not void, once.
+    pub links: Vec<Link>,
+}
+
+/// Compute the link group of `entry_id` in one walk. The walk starts at the entry and goes on
+/// through each posted entry that it reaches. A draft stays a draft in a cascade, so the walk
+/// does not go on through a draft. The walk records each entry and each link once, also when
+/// the links make a cycle.
+pub(crate) fn link_group(conn: &Connection, entry_id: i64, date: Option<NaiveDate>) -> Result<LinkGroup> {
     let mut seen = HashSet::from([entry_id]);
+    let mut seen_links = HashSet::new();
     let mut queue = vec![entry_id];
-    let mut out = Vec::new();
+    let mut group = LinkGroup { entries: Vec::new(), links: Vec::new() };
     while let Some(id) = queue.pop() {
         for link in links_for_entry(conn, id)?.into_iter().filter(|l| l.status != "void") {
-            let other_id = if link.entry_a_id == id { link.entry_b_id } else { link.entry_a_id };
-            if !seen.insert(other_id) {
+            if !seen_links.insert(link.id) {
                 continue;
             }
-            let other = journal::get_entry(conn, other_id)?;
-            let entity = entities::get_entity(conn, other.entity_id)?;
-            let (amount, _) = side_amount(conn, &other)?;
-            let posted = other.status == EntryStatus::Posted;
-            let day = date.unwrap_or(other.date);
-            if posted {
-                queue.push(other_id);
+            let other_id = if link.entry_a_id == id { link.entry_b_id } else { link.entry_a_id };
+            if seen.insert(other_id) {
+                let other = journal::get_entry(conn, other_id)?;
+                let entity = entities::get_entity(conn, other.entity_id)?;
+                let (amount, _) = side_amount(conn, &other)?;
+                let posted = other.status == EntryStatus::Posted;
+                let day = date.unwrap_or(other.date);
+                if posted {
+                    queue.push(other_id);
+                }
+                group.entries.push(LinkedEntry {
+                    link_uid: link.uid.clone(),
+                    link_kind: link.kind.clone(),
+                    entity_uid: entity.uid,
+                    entity_name: entity.name,
+                    entry_id: other.id,
+                    entry_uid: other.uid,
+                    date: other.date,
+                    status: other.status,
+                    amount,
+                    cascade_action: if posted { "void" } else { "keep" }.into(),
+                    locked: posted && entity.lock_date.is_some_and(|lock| day <= lock),
+                    voided: false,
+                });
             }
-            out.push(LinkedEntry {
-                link_uid: link.uid,
-                link_kind: link.kind,
-                entity_uid: entity.uid,
-                entity_name: entity.name,
-                entry_id: other.id,
-                entry_uid: other.uid,
-                date: other.date,
-                status: other.status,
-                amount,
-                cascade_action: if posted { "void" } else { "keep" }.into(),
-                locked: posted && entity.lock_date.is_some_and(|lock| day <= lock),
-                voided: false,
-            });
+            group.links.push(link);
         }
     }
-    Ok(out)
+    Ok(group)
 }
 
 /// The message of a void that the links refuse.
@@ -449,11 +469,23 @@ pub(crate) fn on_post(conn: &Connection, entry_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// An entry was voided with cascade: void each linked entry that is posted, with the same
-/// reason, and mark the links `void`. A linked draft stays a draft. `date` is the reversal date
-/// that the caller asked for; without it, each linked entry reverses on its own date.
-pub(crate) fn on_void_cascade(tx: &rusqlite::Transaction<'_>, entry_id: i64, entry_uid: &str, date: Option<NaiveDate>, reason: &str) -> Result<()> {
-    for link in links_for_entry(tx, entry_id)?.into_iter().filter(|l| l.status != "void") {
+/// Void the link group of the entry `root_uid` with cascade, inside the caller's transaction.
+/// The caller has reversed the start entry already. Each link of the group becomes `void`, with
+/// one audit event per link. Each posted entry of the group gets one reversal. A draft stays a
+/// draft. `date` is the reversal date that the caller asked for; without it, each entry
+/// reverses on its own date. The engine refuses the cascade when a reversal falls on or before
+/// the lock date of its entity. `actor` goes on each audit event.
+pub(crate) fn void_group(tx: &rusqlite::Transaction<'_>, root_uid: &str, group: &LinkGroup, date: Option<NaiveDate>, reason: &str, actor: &str) -> Result<()> {
+    if let Some(locked) = group.entries.iter().find(|e| e.locked) {
+        let entity = entities::get_entity(tx, journal::get_entry(tx, locked.entry_id)?.entity_id)?;
+        let day = date.unwrap_or(locked.date);
+        let lock = entity.lock_date.map(|d| d.to_string()).unwrap_or_default();
+        return Err(Error::Locked(format!(
+            "linked entry {} belongs to {}, and {day} is on or before its lock date {lock}; unlock {} first or choose a later void date",
+            locked.entry_uid, entity.name, entity.name
+        )));
+    }
+    for link in &group.links {
         tx.execute("UPDATE intervault_links SET status = 'void', updated_at = ?2 WHERE id = ?1", params![link.id, now_ts()])?;
         audit::log_by(
             tx,
@@ -461,31 +493,17 @@ pub(crate) fn on_void_cascade(tx: &rusqlite::Transaction<'_>, entry_id: i64, ent
             link.id,
             "void",
             Some(serde_json::json!({"status": link.status})),
-            Some(serde_json::json!({"status": "void", "cascade": true, "voided_from": entry_uid})),
-            "",
+            Some(serde_json::json!({"status": "void", "cascade": true, "voided_from": root_uid})),
+            actor,
             reason,
         )?;
-        let other_id = if link.entry_a_id == entry_id { link.entry_b_id } else { link.entry_a_id };
-        let other = journal::get_entry(tx, other_id)?;
-        if other.status != EntryStatus::Posted {
-            continue;
-        }
-        let entity = entities::get_entity(tx, other.entity_id)?;
-        let day = date.unwrap_or(other.date);
-        if let Some(lock) = entity.lock_date {
-            if day <= lock {
-                return Err(Error::Locked(format!(
-                    "linked entry {} belongs to {}, and {day} is on or before its lock date {lock}; unlock {} first or choose a later void date",
-                    other.uid, entity.name, entity.name
-                )));
-            }
-        }
-        journal::void_cascaded(tx, other_id, Some(day), reason, entry_uid)?;
+    }
+    for entry in group.entries.iter().filter(|e| e.status == EntryStatus::Posted) {
+        journal::void_cascaded(tx, entry.entry_id, Some(date.unwrap_or(entry.date)), reason, root_uid, actor)?;
     }
     Ok(())
 }
 
-/// A draft is about to be deleted: delete its links.
 pub(crate) fn on_delete(conn: &Connection, entry_id: i64) -> Result<()> {
     for link in links_for_entry(conn, entry_id)? {
         conn.execute("DELETE FROM intervault_links WHERE id = ?1", [link.id])?;

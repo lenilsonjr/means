@@ -22,6 +22,9 @@ pub struct Args {
     /// Also void the linked entries of other entities (inter-vault links)
     #[arg(long)]
     cascade: bool,
+    /// The person who voids with --cascade; saved on each audit event of the cascade (default: $USER)
+    #[arg(long, requires = "cascade")]
+    actor: Option<String>,
     /// Print the original entry, reversal, linked entries, evidence count and `applied` as JSON
     #[arg(long)]
     json: bool,
@@ -32,9 +35,14 @@ pub fn run(path: PathBuf, args: Args) -> Result<()> {
         crate::entry_cli::guard("void --yes");
     }
     let db = Db::open(path)?;
-    let result = journal::review_void(&mut db.conn(), args.id, args.date, &args.reason, args.yes, args.cascade)?;
+    let actor = if args.cascade { crate::entry_cli::actor_or_user(args.actor.clone()) } else { String::new() };
+    let result = journal::review_void_by(&mut db.conn(), args.id, args.date, &args.reason, args.yes, args.cascade, &actor)?;
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        let mut value = serde_json::to_value(&result)?;
+        if args.cascade {
+            value["actor"] = serde_json::json!(actor);
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
         return Ok(());
     }
     if result.already_void {

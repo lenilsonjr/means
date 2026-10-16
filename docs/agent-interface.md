@@ -96,7 +96,7 @@ These commands describe the books. They never change postings. See [entity facts
 | `means entry draft --entity <e> (--json-file <path> \| --stdin)` | A draft, its tax events, an optional inter-vault link and an audit event | Allowed |
 | `means entry propose <uid>` | Nothing | Allowed |
 | `means entry confirm <uid> --digest <proposal_digest> [--actor <name>]` | Posts the draft, the review mark and an audit event | Refused |
-| `means entry void <uid> --reason <text> [--date D] [--cascade] [--dry-run]` | A reversal. With `--cascade`, also the reversals of the linked entries. With `--dry-run`, nothing. | Refused, except with `--dry-run` |
+| `means entry void <uid> --reason <text> [--date D] [--cascade [--actor A]] [--dry-run]` | A reversal. With `--cascade`, also the reversals of the linked entries. With `--dry-run`, nothing. | Refused, except with `--dry-run` |
 | `means rates set --date D --base B --quote Q --rate R [--source S] [--no-revalue] [--json]` | A rate and revalued postings | Allowed |
 | `means rates list [--base B] [--quote Q] [--from D] [--to D] [--limit N] [--json]` | Nothing | Allowed |
 | `means rates list --derive B/Q --date D [--json]` | Nothing | Allowed |
@@ -117,7 +117,7 @@ These commands describe the books. They never change postings. See [entity facts
 
 `confirm` returns `entry`, `actor`, `proposal_digest` and `audit_event_id`. The audit event records the actor, the action and the digest. The entry gets its review mark.
 
-`void` returns `entry`, `reversal`, `already_void`, `applied`, `cascade`, `needs_cascade`, `linked_entries` and `evidence_lines_returned`. A `--dry-run` result has `applied` false, the entry as it is now, and a `reversal` with the date only (its `uid` is null). See [void of a linked entry](#void-of-a-linked-entry).
+`void` returns `entry`, `reversal`, `already_void`, `applied`, `cascade`, `needs_cascade`, `linked_entries` and `evidence_lines_returned`. A `--dry-run` result has `applied` false, the entry as it is now, and a `reversal` with the date only (its `uid` is null). With `--cascade`, the result also has `actor`. See [void of a linked entry](#void-of-a-linked-entry).
 
 `means void <id> --json` returns `entry`, `reversal`, `evidence_lines`, `applied`, `already_void`, `cascade`, `needs_cascade` and `linked_entries`. Without `--yes`, the command is a preview and saves nothing. `applied` is then false, and `entry` is the stored entry with its real status. `reversal` shows the entry that `--yes` creates, but the preview does not save it. The preview also lists the linked entries in `linked_entries`. With `--yes`, `applied` is true, and `entry` has the status `void` and `reversed_by_id`.
 
@@ -325,14 +325,14 @@ The entries keep their postings. Without the link, they are not reconciled for i
 
 A void of an entry with an inter-vault link that is not void reaches the other entries of the link group. The group can include entries of more than one other entity.
 
-- The preview (`means void <ID>` without `--yes`, or `means entry void <uid> --dry-run`) lists them in `linked_entries`. It reverses the requested entry only, and `needs_cascade` is true.
+- The preview (`means void <ID>` without `--yes`, or `means entry void <uid> --dry-run`) lists them in `linked_entries`. It reverses the requested entry only, and `needs_cascade` is true. A preview with `--cascade` never applies the cascade either: it lists the linked entries with their `locked` flag and saves nothing.
 - Without `--cascade`, the apply fails with `invalid_input`. The message names each linked entry. Nothing changes.
 - With `--cascade`, the engine voids each posted linked entry in the same transaction, with the same reason, and marks the links `void`. A linked draft stays a draft. The lock date of each entity applies to its own reversal: a locked period fails with `locked_period` and names the entity.
 - To void one entry only, remove each link first with `means intervault unlink`. The lock date of the other entity then does not apply.
 
 Each linked entry has `link_uid`, `link_kind`, `entity_uid`, `entity_name`, `entry_id`, `entry_uid`, `date`, `status`, `amount` (the intercompany side now), `cascade_action` (`void` for a posted entry, `keep` for a draft), `locked` (a cascade reversal falls in a locked period) and `voided` (this void voided the entry).
 
-The audit event of a cascade void has `cascade` true and `linked_entry_uids`. The void event of each linked entry has `cascaded_from`, and the event of each link has `cascade` true and `voided_from`.
+The engine computes the link group once. Each entry of the group gets one reversal, and each link gets one audit event, also when the links make a cycle. The audit event of a cascade void has `cascade` true and `linked_entry_uids`. The void event of each linked entry has `cascaded_from`, and the event of each link has `cascade` true and `voided_from`. `--actor A` (default `$USER`) goes on each of these events.
 
 ## Close and filings
 

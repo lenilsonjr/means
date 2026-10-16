@@ -53,6 +53,9 @@ pub enum Command {
         /// Also void the linked entries of other entities (inter-vault links)
         #[arg(long)]
         cascade: bool,
+        /// The person who voids with --cascade; saved on each audit event of the cascade (default: $USER)
+        #[arg(long, requires = "cascade")]
+        actor: Option<String>,
         /// Preview the void and the linked entries; save nothing
         #[arg(long)]
         dry_run: bool,
@@ -150,7 +153,7 @@ fn execute(db_path: &Path, command: Command) -> AgentResult<Output> {
         Command::Draft { entity, json_file, stdin } => draft(db_path, &entity, json_file.as_deref(), stdin),
         Command::Propose { uid } => propose(db_path, &uid),
         Command::Confirm { uid, digest, actor } => confirm(db_path, &uid, &digest, actor),
-        Command::Void { uid, reason, date, cascade, dry_run } => void(db_path, &uid, &reason, date.as_deref(), cascade, dry_run),
+        Command::Void { uid, reason, date, cascade, actor, dry_run } => void(db_path, &uid, &reason, date.as_deref(), cascade.then(|| actor_or_user(actor)), dry_run),
         Command::List { entity, status, since, until, limit, all, json } => list(db_path, &entity, status.as_deref(), since.as_deref(), until.as_deref(), (!all).then_some(limit), json),
         Command::Show { uid, json } => show(db_path, &uid, json),
     }
@@ -281,8 +284,14 @@ fn confirm(db_path: &Path, uid: &str, digest: &str, actor: Option<String>) -> Ag
     })))
 }
 
+/// The given actor, else `$USER`, else "unknown".
+pub(crate) fn actor_or_user(actor: Option<String>) -> String {
+    actor.or_else(|| std::env::var("USER").ok()).filter(|a| !a.trim().is_empty()).unwrap_or_else(|| "unknown".into()).trim().to_string()
+}
+
 /// A void writes a reversal. `--dry-run` previews it and saves nothing, so an agent can run it.
-fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>, cascade: bool, dry_run: bool) -> AgentResult<Output> {
+/// `cascade` holds the actor of a void with cascade.
+fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>, cascade: Option<String>, dry_run: bool) -> AgentResult<Output> {
     if !dry_run {
         refuse_agent("entry void")?;
     }
@@ -293,7 +302,7 @@ fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>, cascade: bo
     let db = open(db_path)?;
     let mut conn = db.conn();
     let id = proposal::entry_id_by_uid(&conn, uid)?;
-    let review = journal::review_void(&mut conn, id, date, reason, !dry_run, cascade)?;
+    let review = journal::review_void_by(&mut conn, id, date, reason, !dry_run, cascade.is_some(), cascade.as_deref().unwrap_or(""))?;
     // A preview rolls back: the entry keeps its status, and the reversal does not exist.
     let saved = review.applied || review.already_void;
     let entry = if saved { review.entry.clone() } else { journal::get_entry(&conn, id)? };
@@ -305,6 +314,7 @@ fn void(db_path: &Path, uid: &str, reason: &str, date: Option<&str>, cascade: bo
         "already_void": review.already_void,
         "applied": review.applied,
         "cascade": review.cascade,
+        "actor": cascade,
         "needs_cascade": review.needs_cascade,
         "linked_entries": linked,
         "evidence_lines_returned": review.evidence_lines,

@@ -550,3 +550,111 @@ fn a_link_with_mismatched_amounts_is_named_in_the_warning() {
     assert!(warning.message.contains(&link.uid), "{}", warning.message);
     assert!(finding(&report, "intercompany_linked").is_none());
 }
+
+/// A third entity, in EUR, with a bank account and an intercompany account. Returns the entity,
+/// the bank and the intercompany account.
+fn third_entity(b: &Books) -> (i64, i64, i64) {
+    let mut c = b.db.conn();
+    let third = entities::create_entity(&mut c, "Example Services GmbH", "company", "DE", "EUR").unwrap();
+    let bank = accounts::ensure_account(&c, third.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap().id;
+    let due = accounts::ensure_account(&c, third.id, AccountType::Liability, &["Due to group"], "payable", "EUR").unwrap().id;
+    c.execute("UPDATE accounts SET intercompany = 1 WHERE id = ?1", [due]).unwrap();
+    (third.id, bank, due)
+}
+
+/// The number of audit events of one action on one row.
+fn events(b: &Books, table: &str, id: i64, action: &str) -> Vec<audit::AuditRow> {
+    audit::history(&b.db.conn(), table, id).unwrap().into_iter().filter(|h| h.action == action).collect()
+}
+
+/// The number of reversals of an entry.
+fn reversals(b: &Books, entry: &JournalEntry) -> i64 {
+    b.db.conn().query_row("SELECT COUNT(*) FROM journal_entries WHERE reverses_id = ?1", [entry.id], |r| r.get(0)).unwrap()
+}
+
+#[test]
+fn a_cascade_reaches_three_entities_and_records_the_actor_on_each_event() {
+    let b = books();
+    let (third, third_bank, third_due) = third_entity(&b);
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
+    let t = b.entry(third, "2026-03-04", third_bank, "900.00", third_due, EntryStatus::Posted);
+    let first = b.link(&a, &s, "loan").unwrap();
+    let second = b.link(&s, &t, "loan").unwrap();
+
+    let review = journal::review_void_by(&mut b.db.conn(), a.id, None, "wrong lender", true, true, "Sample Reviewer").unwrap();
+    let mut reached: Vec<i64> = review.linked_entries.iter().map(|l| l.entry_id).collect();
+    reached.sort();
+    assert_eq!(reached, vec![s.id, t.id]);
+    assert!(review.linked_entries.iter().all(|l| l.voided));
+    for entry in [&a, &s, &t] {
+        assert_eq!(b.get(entry).status, EntryStatus::Void);
+        assert_eq!(reversals(&b, entry), 1);
+        let voids = events(&b, "journal_entries", entry.id, "void");
+        assert_eq!(voids.len(), 1);
+        assert_eq!(voids[0].actor, "Sample Reviewer");
+    }
+    for link in [&first, &second] {
+        assert_eq!(b.status_of(link), "void");
+        let voids = events(&b, "intervault_links", link.id, "void");
+        assert_eq!(voids.len(), 1, "one audit event per link");
+        assert_eq!((voids[0].actor.as_str(), voids[0].reason.as_str()), ("Sample Reviewer", "wrong lender"));
+    }
+}
+
+#[test]
+fn a_cascade_through_a_cycle_voids_each_entry_once_and_logs_each_link_once() {
+    let b = books();
+    let (third, third_bank, third_due) = third_entity(&b);
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
+    let t = b.entry(third, "2026-03-04", third_bank, "900.00", third_due, EntryStatus::Posted);
+    let links = [b.link(&a, &s, "loan").unwrap(), b.link(&s, &t, "loan").unwrap(), b.link(&t, &a, "loan").unwrap()];
+
+    // The preview lists each other entry once.
+    let preview = journal::review_void(&mut b.db.conn(), a.id, None, "wrong lender", false, false).unwrap();
+    assert_eq!(preview.linked_entries.len(), 2);
+
+    void_cascade(&b, &a, None, "wrong lender").unwrap();
+    for entry in [&a, &s, &t] {
+        assert_eq!(b.get(entry).status, EntryStatus::Void);
+        assert_eq!(reversals(&b, entry), 1, "one reversal per entry");
+        assert_eq!(events(&b, "journal_entries", entry.id, "void").len(), 1);
+    }
+    for link in &links {
+        assert_eq!(b.status_of(link), "void");
+        assert_eq!(events(&b, "intervault_links", link.id, "void").len(), 1, "one audit event per link");
+    }
+}
+
+#[test]
+fn a_cascade_preview_never_applies_and_shows_the_locked_entry() {
+    let b = books();
+    let (third, third_bank, third_due) = third_entity(&b);
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
+    let t = b.entry(third, "2026-03-04", third_bank, "900.00", third_due, EntryStatus::Posted);
+    let first = b.link(&a, &s, "loan").unwrap();
+    b.link(&s, &t, "loan").unwrap();
+    b.lock(third, "2026-03-31");
+    let audit_before: i64 = b.db.conn().query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0)).unwrap();
+
+    // The preview with cascade does not fail on the lock: it lists the entries and their lock.
+    let preview = journal::review_void(&mut b.db.conn(), a.id, None, "wrong lender", false, true).unwrap();
+    assert!(!preview.applied && preview.cascade && !preview.needs_cascade);
+    let locked: Vec<(i64, bool)> = preview.linked_entries.iter().map(|l| (l.entry_id, l.locked)).collect();
+    assert!(locked.contains(&(s.id, false)) && locked.contains(&(t.id, true)), "{locked:?}");
+    assert!(preview.linked_entries.iter().all(|l| !l.voided));
+    assert_eq!(preview.entry.status, EntryStatus::Posted);
+    // The preview saves nothing.
+    for entry in [&a, &s, &t] {
+        assert_eq!(b.get(entry).status, EntryStatus::Posted);
+    }
+    assert_eq!(b.status_of(&first), "posted");
+    let audit_after: i64 = b.db.conn().query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0)).unwrap();
+    assert_eq!(audit_before, audit_after);
+
+    // The apply is refused because of the lock, and names the entity.
+    let err = void_cascade(&b, &a, None, "wrong lender").unwrap_err();
+    assert!(matches!(&err, Error::Locked(m) if m.contains("Example Services GmbH")), "{err:?}");
+}
