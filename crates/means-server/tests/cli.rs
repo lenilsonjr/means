@@ -1434,7 +1434,14 @@ fn entity_archive_hides_the_books_refuses_writes_and_unarchive_reverses_it() {
 
     // The export leaves it out by default.
     let out = std::env::temp_dir().join(format!("means-archive-snapshot-{}-{}", std::process::id(), LEDGERS.fetch_add(1, Ordering::SeqCst)));
-    ledger.ok(&["export", "--format", "snapshot", "--output", out.to_str().unwrap(), "--json"]);
+    let exported = ledger.run(&["export", "--format", "snapshot", "--output", out.to_str().unwrap(), "--json"]);
+    assert!(exported.status.success());
+    // The export names the archived entity that it leaves out, in the JSON and on stderr.
+    let result = json_of(&String::from_utf8_lossy(&exported.stdout));
+    assert_eq!(result["skipped_archived"].as_array().unwrap().len(), 1);
+    assert_eq!(result["skipped_archived"][0]["name"], "Northwind Trading LLC");
+    let notice = String::from_utf8_lossy(&exported.stderr);
+    assert!(notice.contains("left out 1 archived entities: Northwind Trading LLC") && notice.contains("--include-archived"), "{notice}");
     let names: Vec<String> = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(out.join("entities.json")).unwrap())
         .unwrap()
         .as_array()
@@ -1447,6 +1454,9 @@ fn entity_archive_hides_the_books_refuses_writes_and_unarchive_reverses_it() {
     ledger.ok(&["export", "--format", "snapshot", "--include-archived", "--output", out.to_str().unwrap(), "--json"]);
     let entities_json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(out.join("entities.json")).unwrap()).unwrap();
     assert_eq!(entities_json.as_array().unwrap().len(), 2);
+    // With --include-archived, entities.json marks the archived entity.
+    let flags: Vec<(String, bool)> = entities_json.as_array().unwrap().iter().map(|e| (e["name"].as_str().unwrap().to_string(), e["archived"].as_bool().unwrap())).collect();
+    assert!(flags.contains(&("Northwind Trading LLC".to_string(), true)) && flags.contains(&("Northwind Trading LLC (rebuilt)".to_string(), false)), "{flags:?}");
     let _ = std::fs::remove_dir_all(&out);
     let beancount = ledger.ok(&["export"]);
     assert!(!beancount.contains("Northwind Trading LLC\""), "the default Beancount export leaves the archived entity out");

@@ -62,14 +62,19 @@ fn export(db_path: &Path, format: &str, output: Option<PathBuf>, scope: &Scope<'
     let mut conn = db.conn();
     let mut entity_uids = scope.entity.iter().map(|key| crate::entity_cli::find_entity(&conn, key).map(|e| e.uid)).collect::<means_core::Result<Vec<_>>>()?;
     // Without --entity, the export has every active entity. An empty list means every entity,
-    // so name the active entities when an archived entity exists.
+    // so name the active entities when an archived entity exists. The export says which
+    // archived entities it leaves out, on stderr and in the JSON result.
+    let mut skipped_archived = Vec::new();
     if entity_uids.is_empty() && !scope.include_archived {
         let all = means_core::entities::list_entities(&conn, true)?;
         if all.iter().any(|e| e.archived_at.is_some()) {
+            skipped_archived = all.iter().filter(|e| e.archived_at.is_some()).map(|e| json!({"uid": e.uid, "name": e.name})).collect();
             entity_uids = all.into_iter().filter(|e| e.archived_at.is_none()).map(|e| e.uid).collect();
             if entity_uids.is_empty() {
                 bail!("every entity is archived; give --entity or --include-archived");
             }
+            let names: Vec<&str> = skipped_archived.iter().filter_map(|e| e["name"].as_str()).collect();
+            eprintln!("export: left out {} archived entities: {}; give --include-archived to export them", names.len(), names.join(", "));
         }
     }
     match format {
@@ -78,7 +83,7 @@ fn export(db_path: &Path, format: &str, output: Option<PathBuf>, scope: &Scope<'
             let outcome = snapshot::export(&mut conn, &dir, &SnapshotOptions { entity_uids, as_of })?;
             let counts = &outcome.manifest["counts"];
             if json {
-                println!("{}", json!({"schema_version": 1, "ok": true, "output": dir, "counts": counts}));
+                println!("{}", json!({"schema_version": 1, "ok": true, "output": dir, "counts": counts, "skipped_archived": skipped_archived}));
             } else {
                 println!("Snapshot written to {}: {} entries, {} drafts, {} documents.", dir.display(), counts["entries"], counts["drafts"], counts["documents"]);
             }

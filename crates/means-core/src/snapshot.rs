@@ -177,7 +177,9 @@ fn collect(tx: &Connection, options: &SnapshotOptions) -> Result<Collected> {
             v.insert("lock_date".into(), json!(r.get::<_, Option<String>>(8)?));
             v.insert("incorporated_on".into(), json!(r.get::<_, Option<String>>(9)?));
             v.insert("registrations".into(), json_text(&r.get::<_, String>(10)?));
-            v.insert("archived_at".into(), json!(r.get::<_, Option<String>>(11)?));
+            let archived_at: Option<String> = r.get(11)?;
+            v.insert("archived".into(), json!(archived_at.is_some()));
+            v.insert("archived_at".into(), json!(archived_at));
             v.insert("address".into(), json_text(&r.get::<_, String>(12)?));
             Ok(EntityRow { id: r.get(0)?, uid, currency, value: v })
         })?;

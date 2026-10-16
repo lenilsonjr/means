@@ -395,7 +395,7 @@ Each report object has `report`, `entity` (`uid`, `name` and `currency`), `funct
 | `means export verify DIR [--json]` | Nothing | Allowed |
 | `means export [--format beancount] [--output FILE] [--entity <e>]... [--include-archived] [--as-of D]` | A new Beancount file, or stdout | Allowed |
 
-`export --format snapshot --json` returns `output` and `counts`. `export verify --json` returns `ok`, `files_checked` and `problems`. `export verify` exits with code 1 when a check fails. A failed snapshot export with `--json` prints the error object and exits with code 1. A failed export without `--json` prints a text error on stderr and exits with code 1. See the [snapshot format](snapshot-format.md) and [Beancount export](export.md).
+`export --format snapshot --json` returns `output`, `counts` and `skipped_archived`: the archived entities that the export leaves out, each with `uid` and `name`. The export also names them on stderr. With `--include-archived`, each entity in `entities.json` has `archived` true or false. `export verify --json` returns `ok`, `files_checked` and `problems`. `export verify` exits with code 1 when a check fails. A failed snapshot export with `--json` prints the error object and exits with code 1. A failed export without `--json` prints a text error on stderr and exits with code 1. See the [snapshot format](snapshot-format.md) and [Beancount export](export.md).
 
 ## Posting policy
 
