@@ -152,6 +152,14 @@ Lock dates protect closed periods. Reconciled postings retain their account and 
 
 `rules` choose an account, a payee, tags or a template from statement data. Rules run in their position order. Refund candidates and ambiguous cross-source matches require review.
 
+`means rule apply --entity <e> [--import N] [--dry-run] [--json]` runs the rules again over the drafts that the bank imports of the entity created:
+
+- The first matching rule decides. A rule with a template leaves the draft as it is, also when the rule has an account too, because an import gives the template priority.
+- The command checks the account and the payee apart. The balancing posting moves to the account of the rule, also to another account type. The payee becomes the payee of the rule, or the line description when the rule has none. A rule can change only the payee.
+- The command skips a draft that a human edited: an `update` or `split` event, or a payee link, that the import and `rule apply` did not write, or a payee or an account that differs from what the import or the last `rule apply` wrote. It never overwrites an edited payee. The JSON result lists these drafts in `skipped_edited`.
+- Each change writes a `rule_apply` audit event and raises the hit count of the rule. A skipped draft does not raise it.
+- Posted entries, drafts that no rule matches and drafts with more than one balancing posting do not change. `--dry-run` writes nothing.
+
 `budgets` applies one limit to an inclusive date range. It can cover a category and its children, an expense class, or a tag. The default period is a calendar month. A budget never creates postings. See [reports and budgets](expense-reports.md).
 
 ## Evidence: statement lines and documents

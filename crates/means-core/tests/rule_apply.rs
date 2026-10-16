@@ -156,3 +156,110 @@ fn the_import_filter_limits_the_drafts() {
     let this_import = rules::apply_to_drafts(&mut conn, w.entity.id, Some(w.import_id), true).unwrap();
     assert_eq!((this_import.examined, this_import.changed), (3, 2));
 }
+
+/// Edit a draft as a human does: through `journal::update_entry`.
+fn human_edit(conn: &mut rusqlite::Connection, id: i64, payee: Option<&str>, contra_account: Option<i64>, bank: &Account) {
+    let entry = journal::get_entry(conn, id).unwrap();
+    let mut input = EntryInput::new(entry.entity_id, entry.date);
+    input.payee = payee.map(str::to_string).unwrap_or(entry.payee.clone());
+    input.description = entry.description.clone();
+    input.status = EntryStatus::Draft;
+    for p in &entry.postings {
+        if p.account_id == bank.id {
+            input.postings.push(PostingInput::new(p.account_id, p.quantity.major()));
+        } else {
+            input.postings.push(PostingInput::balancing(contra_account.unwrap_or(p.account_id)));
+        }
+    }
+    journal::update_entry(conn, id, input).unwrap();
+}
+
+fn hits(conn: &rusqlite::Connection, name: &str) -> i64 {
+    conn.query_row("SELECT hits_count FROM rules WHERE name = ?1", [name], |r| r.get(0)).unwrap()
+}
+
+#[test]
+fn a_draft_that_a_human_edited_is_skipped_and_keeps_its_payee() {
+    let w = world();
+    let mut conn = w.db.conn();
+    // A human gives the first draft another payee, and the third draft another account.
+    human_edit(&mut conn, w.entries[0], Some("Sample Vendor GmbH"), None, &w.bank);
+    human_edit(&mut conn, w.entries[2], None, Some(w.other.id), &w.bank);
+    let hits_before = (hits(&conn, "sample vendor"), hits(&conn, "owner draw"));
+
+    let r = rules::apply_to_drafts(&mut conn, w.entity.id, None, true).unwrap();
+    assert_eq!(r.changed, 0, "{:?}", r.changes);
+    assert_eq!(r.skipped_edited, vec![w.entries[0], w.entries[2]]);
+    assert_eq!(journal::get_entry(&conn, w.entries[0]).unwrap().payee, "Sample Vendor GmbH");
+    assert_eq!(contra(&journal::get_entry(&conn, w.entries[2]).unwrap(), &w.bank), w.other.id);
+    // A skipped draft does not raise the hit count of its rule.
+    assert_eq!((hits(&conn, "sample vendor"), hits(&conn, "owner draw")), hits_before);
+}
+
+#[test]
+fn a_second_apply_follows_a_changed_rule_after_its_own_change() {
+    let w = world();
+    let mut conn = w.db.conn();
+    rules::apply_to_drafts(&mut conn, w.entity.id, None, true).unwrap();
+    // The rule now selects another account. The first apply is not a human edit.
+    conn.execute("UPDATE rules SET account_id = ?1 WHERE name = 'sample vendor'", [w.other.id]).unwrap();
+    let r = rules::apply_to_drafts(&mut conn, w.entity.id, None, true).unwrap();
+    assert!(r.skipped_edited.is_empty(), "{:?}", r.skipped_edited);
+    assert_eq!(r.changes.len(), 1);
+    assert_eq!((r.changes[0].from.as_str(), r.changes[0].to.as_str()), (w.domains.path.as_str(), w.other.path.as_str()));
+}
+
+#[test]
+fn a_rule_with_a_template_leaves_the_draft_alone_also_with_an_account() {
+    let w = world();
+    let mut conn = w.db.conn();
+    let template = means_core::templates::save_template(
+        &conn,
+        &EntryTemplate {
+            id: 0,
+            uid: String::new(),
+            entity_id: w.entity.id,
+            name: "Vendor split".into(),
+            payee: "Sample Vendor".into(),
+            description: String::new(),
+            lines: vec![
+                TemplateLine { account_id: w.bank.id, method: "input".into(), value: None, of_line: None, memo: String::new(), label: String::new() },
+                TemplateLine { account_id: w.domains.id, method: "balance".into(), value: None, of_line: None, memo: String::new(), label: String::new() },
+            ],
+            rrule: String::new(),
+            starts_on: None,
+            next_on: None,
+            ends_on: None,
+            auto_post: false,
+            lead_days: 0,
+            version: 1,
+            active: true,
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+    // The rule has an account and a template. An import gives the template priority.
+    conn.execute("UPDATE rules SET template_id = ?1 WHERE name = 'sample vendor'", [template.id]).unwrap();
+    let r = rules::apply_to_drafts(&mut conn, w.entity.id, None, true).unwrap();
+    assert!(r.changes.iter().all(|c| c.entry_id != w.entries[0]), "{:?}", r.changes);
+    let suspense = accounts::find_by_role(&conn, w.entity.id, "suspense").unwrap();
+    assert_eq!(contra(&journal::get_entry(&conn, w.entries[0]).unwrap(), &w.bank), suspense.id);
+}
+
+#[test]
+fn a_rule_that_changes_only_the_payee_changes_the_draft() {
+    let w = world();
+    let mut conn = w.db.conn();
+    rules::apply_to_drafts(&mut conn, w.entity.id, None, true).unwrap();
+    let hits_before = hits(&conn, "sample vendor");
+    // The account stays; only the payee of the rule changes.
+    conn.execute("UPDATE rules SET payee = 'Sample Vendor Ltd' WHERE name = 'sample vendor'", []).unwrap();
+    let r = rules::apply_to_drafts(&mut conn, w.entity.id, None, true).unwrap();
+    assert_eq!(r.changes.len(), 1, "{r:?}");
+    let change = &r.changes[0];
+    assert_eq!((change.payee_from.as_str(), change.payee.as_str()), ("Sample Vendor", "Sample Vendor Ltd"));
+    assert_eq!(change.from, change.to);
+    let vendor = journal::get_entry(&conn, w.entries[0]).unwrap();
+    assert_eq!((vendor.payee.as_str(), contra(&vendor, &w.bank)), ("Sample Vendor Ltd", w.domains.id));
+    assert_eq!(hits(&conn, "sample vendor"), hits_before + 1);
+}

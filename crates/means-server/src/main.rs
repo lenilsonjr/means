@@ -379,7 +379,8 @@ enum RuleCommand {
     /// Re-run the rules over import drafts and move each draft to the account the rules now select
     ///
     /// The balancing posting moves, also to another account type. The payee follows the rule.
-    /// Drafts stay drafts. Posted entries, drafts that no rule matches and split drafts do not change.
+    /// Drafts stay drafts. Posted entries, drafts that no rule matches, template rules, split
+    /// drafts and drafts that a human edited do not change.
     Apply {
         /// Entity id or name
         #[arg(long)]
@@ -1134,7 +1135,12 @@ fn rule(db_path: PathBuf, command: RuleCommand) -> Result<()> {
             }
             println!("{}: {} drafts examined, {} changed, {} unchanged", e.name, r.examined, r.changed, r.unchanged);
             for c in &r.changes {
-                println!("  #{} {} {}: {} -> {} (rule: {})", c.entry_id, c.date, c.payee, c.from, c.to, c.rule);
+                let payee = if c.payee_from == c.payee { c.payee.clone() } else { format!("{} -> {}", c.payee_from, c.payee) };
+                println!("  #{} {} {payee}: {} -> {} (rule: {})", c.entry_id, c.date, c.from, c.to, c.rule);
+            }
+            if !r.skipped_edited.is_empty() {
+                let ids: Vec<String> = r.skipped_edited.iter().map(|id| format!("#{id}")).collect();
+                println!("Skipped, edited by a human: {}", ids.join(", "));
             }
             if dry_run {
                 println!("Dry run: no changes saved. Repeat without --dry-run to apply.");

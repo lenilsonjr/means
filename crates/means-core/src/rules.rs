@@ -327,12 +327,16 @@ pub fn run_rules(conn: &mut Connection, entity_id: Option<i64>, account_id: Opti
     Ok((drafted, redrafted))
 }
 
-/// One draft whose balancing posting moves to the account a rule now selects.
+/// One draft whose balancing posting moves to the account a rule now selects, or whose payee
+/// changes to the payee the rule now gives, or both.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DraftChange {
     pub entry_id: i64,
     pub date: chrono::NaiveDate,
+    /// The payee after the change.
     pub payee: String,
+    /// The payee before the change.
+    pub payee_from: String,
     pub from: String,
     pub to: String,
     pub rule: String,
@@ -346,13 +350,48 @@ pub struct DraftApply {
     pub unchanged: usize,
     pub applied: bool,
     pub changes: Vec<DraftChange>,
+    /// The drafts that a human edited. The command leaves them as they are.
+    pub skipped_edited: Vec<i64>,
+}
+
+/// The audit action of a change by `apply_to_drafts`.
+const RULE_APPLY: &str = "rule_apply";
+
+/// True when a human changed the draft after the import: an edit event that the import and
+/// `apply_to_drafts` did not write, or a payee or a balancing account that differs from the
+/// last machine state. The machine state is what the last `rule_apply` event wrote, else what the
+/// import wrote: the line description as the payee, and the suspense account.
+fn edited_by_human(conn: &Connection, entry: &JournalEntry, sl: &crate::model::StatementLine, balancing: &Posting) -> Result<bool> {
+    let completion: Option<i64> = conn.query_row("SELECT MIN(id) FROM audit_log WHERE table_name = 'imports' AND row_id = ?1 AND action = 'create'", [sl.import_id], |r| r.get(0))?;
+    let mut windows = Vec::new();
+    let mut machine: Option<serde_json::Value> = None;
+    for event in crate::audit::history(conn, "journal_entries", entry.id)?.into_iter().filter(|e| e.action == RULE_APPLY) {
+        let after: serde_json::Value = event.after.as_deref().and_then(|a| serde_json::from_str(a).ok()).unwrap_or_default();
+        windows.push((after["from_event"].as_i64().unwrap_or(event.id), event.id));
+        machine = Some(after);
+    }
+    let by_machine = |id: i64| completion.is_none_or(|end| id < end) || windows.iter().any(|(from, to)| id > *from && id < *to);
+    let edits = crate::audit::history(conn, "journal_entries", entry.id)?.into_iter().filter(|e| matches!(e.action.as_str(), "update" | "split"));
+    let payee_edits = crate::audit::history(conn, "entry_payees", entry.id)?.into_iter();
+    if edits.chain(payee_edits).any(|e| !by_machine(e.id)) {
+        return Ok(true);
+    }
+    let (payee, account) = match &machine {
+        Some(m) => (m["payee"].as_str().unwrap_or_default().to_string(), m["account_id"].as_i64().unwrap_or_default()),
+        None => (sl.description.clone(), accounts::find_by_role(conn, entry.entity_id, "suspense")?.id),
+    };
+    Ok(entry.payee != payee || balancing.account_id != account)
 }
 
 /// Re-run the entity's rules, in their order, over the drafts that its bank imports created.
 /// The balancing posting of each draft moves to the account of the first matching rule, and the
-/// entry takes the payee the import gives. Drafts stay drafts. Posted entries do not change.
-/// A draft stays as it is when no rule matches, when the first match applies a template, or when
-/// it has more than one balancing posting. Without `apply`, the transaction rolls back.
+/// entry takes the payee the import gives for that rule. The command checks the account and the
+/// payee apart: a rule can change only the payee. Drafts stay drafts. Posted entries do not
+/// change. A draft stays as it is when no rule matches, when the first match has a template
+/// (also with an account), when it has more than one balancing posting, or when a human edited
+/// it. A human edit is never overwritten. Each change writes a `rule_apply` audit event and
+/// raises the hit count of its rule; a skipped draft does not. Without `apply`, the transaction
+/// rolls back.
 pub fn apply_to_drafts(conn: &mut Connection, entity_id: i64, import_id: Option<i64>, apply: bool) -> Result<DraftApply> {
     let rules = list_rules(conn, Some(entity_id))?;
     let tx = conn.transaction()?;
@@ -367,15 +406,29 @@ pub fn apply_to_drafts(conn: &mut Connection, entity_id: i64, import_id: Option<
     };
     let mut seen = std::collections::HashSet::new();
     let mut changes = Vec::new();
+    let mut skipped_edited = Vec::new();
     for line_id in line_ids {
         let sl = crate::imports::get_line(&tx, line_id)?;
         let Some(eid) = sl.journal_entry_id.filter(|id| seen.insert(*id)) else { continue };
         let entry = journal::get_entry(&tx, eid)?;
         let balancing: Vec<&Posting> = entry.postings.iter().filter(|p| Some(p.id) != sl.posting_id).collect();
         let (Some(rule), [old]) = (resolved_rule(&tx, entity_id, &rules, &sl)?, balancing.as_slice()) else { continue };
-        let Some(target) = rule.account_id.filter(|a| *a != old.account_id) else { continue };
+        // A template rule wins over its account in an import, so it leaves the draft alone here.
+        if rule.template_id.is_some() {
+            continue;
+        }
+        let target = rule.account_id.unwrap_or(old.account_id);
+        let payee = if rule.payee.is_empty() { sl.description.clone() } else { rule.payee.clone() };
+        if target == old.account_id && payee == entry.payee {
+            continue;
+        }
+        if edited_by_human(&tx, &entry, &sl, old)? {
+            skipped_edited.push(eid);
+            continue;
+        }
+        let from_event: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM audit_log", [], |r| r.get(0))?;
         let mut input = EntryInput::new(entry.entity_id, entry.date);
-        input.payee = if rule.payee.is_empty() { sl.description.clone() } else { rule.payee.clone() };
+        input.payee = payee.clone();
         input.description = entry.description.clone();
         input.notes = entry.notes.clone();
         input.status = EntryStatus::Draft;
@@ -395,20 +448,29 @@ pub fn apply_to_drafts(conn: &mut Connection, entity_id: i64, import_id: Option<
                 });
             }
         }
-        let payee = input.payee.clone();
         journal::update_entry_in_transaction(&tx, eid, input)?;
         let canonical = if rule.payee.trim().is_empty() { crate::payees::resolve(&tx, entity_id, &sl.description)? } else { crate::payees::explicit(&tx, entity_id, &rule.payee)? };
         crate::payees::link(&tx, eid, canonical.map(|p| p.id))?;
         tx.execute("UPDATE rules SET hits_count = hits_count + 1 WHERE id = ?1", [rule.id])?;
         tx.execute("UPDATE statement_lines SET note = ?2 WHERE id = ?1", params![sl.id, format!("rule: {}", rule.name)])?;
-        changes.push(DraftChange { entry_id: eid, date: entry.date, payee, from: old.account_path.clone(), to: accounts::get_account(&tx, target)?.path, rule: rule.name.clone() });
+        crate::audit::log(
+            &tx,
+            "journal_entries",
+            eid,
+            RULE_APPLY,
+            Some(serde_json::json!({"payee": entry.payee, "account_id": old.account_id})),
+            Some(serde_json::json!({"payee": payee, "account_id": target, "rule": rule.name, "from_event": from_event})),
+        )?;
+        let to = accounts::get_account(&tx, target)?.path;
+        changes.push(DraftChange { entry_id: eid, date: entry.date, payee, payee_from: entry.payee.clone(), from: old.account_path.clone(), to, rule: rule.name.clone() });
     }
     if apply {
         tx.commit()?;
     } else {
         tx.rollback()?;
     }
-    Ok(DraftApply { examined: seen.len(), changed: changes.len(), unchanged: seen.len() - changes.len(), applied: apply, changes })
+    let unchanged = seen.len() - changes.len();
+    Ok(DraftApply { examined: seen.len(), changed: changes.len(), unchanged, applied: apply, changes, skipped_edited })
 }
 
 /// Create (or post) the entry a statement line evidences, with the contra account, splits or template chosen on the review screen.
