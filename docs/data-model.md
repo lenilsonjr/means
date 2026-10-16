@@ -8,7 +8,7 @@ The sections follow the schema: entities and their facts, accounts, the journal,
 
 A vault is one entity’s set of books. The `entities` table holds each entity with its kind (`person` or `company`), country, functional currency and lock date. Personal and company vaults report their own balances. Overview shows the selected vault; consolidated reports are an explicit reporting choice.
 
-An entity name is unique among the active entities. `means entity set <e> --name N` renames an entity, and the audit log records the names before and after.
+An entity name is unique among the active entities, without case: `Acme` and `ACME` cannot both be active. Migration 28 adds a unique index on `name COLLATE NOCASE` for the active entities. The migration first checks the active names, and it refuses to run when two of them differ only in case. Rename one of them with the older build, then open the ledger again. Create, rename, unarchive and gRPC `UpdateEntity` use the same check. `means entity set <e> --name N` renames an entity, and the audit log records the names before and after.
 
 ### Archived entities
 

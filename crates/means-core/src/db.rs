@@ -54,7 +54,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (25, Migration::Sql(include_str!("../migrations/0025_intervault_links.sql"))),
     (26, Migration::Sql(include_str!("../migrations/0026_invoices.sql"))),
     (27, Migration::Sql(include_str!("../migrations/0027_entity_flags.sql"))),
-    (28, Migration::Rebuild { sql: include_str!("../migrations/0028_entity_active_names.sql"), check: no_check }),
+    (28, Migration::Rebuild { sql: include_str!("../migrations/0028_entity_active_names.sql"), check: crate::entities::refuse_case_twins }),
     (29, Migration::Sql(include_str!("../migrations/0029_archive_guards.sql"))),
     (30, Migration::Sql(include_str!("../migrations/0030_account_counterparty.sql"))),
 ];
@@ -294,11 +294,6 @@ fn foreign_keys_hold(conn: &Connection, before: i64) -> Result<()> {
     Ok(())
 }
 
-/// A rebuild without a check.
-fn no_check(_: &Connection) -> Result<()> {
-    Ok(())
-}
-
 /// Read a setting.
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
     use rusqlite::OptionalExtension;
@@ -322,6 +317,11 @@ pub fn latest_version() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rebuild without a check.
+    fn no_check(_: &Connection) -> Result<()> {
+        Ok(())
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("means-db-{name}-{}", crate::new_uid()));

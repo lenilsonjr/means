@@ -56,6 +56,7 @@ pub fn create_entity(conn: &mut Connection, name: &str, kind: &str, country: &st
     };
     let currency = normalize_code(currency)?;
     let tx = conn.transaction()?;
+    check_active_name(&tx, 0, name)?;
     ensure_currency(&tx, &currency)?;
     let ts = now_ts();
     tx.execute(
@@ -109,7 +110,25 @@ pub fn ensure_active(conn: &Connection, id: i64) -> Result<Entity> {
     Ok(entity)
 }
 
-/// Refuse a name that another active entity has. The comparison ignores case.
+/// Refuse migration 28 when two active entities have names that differ only in case. The
+/// unique index of migration 28 ignores case, as `check_active_name` does.
+pub(crate) fn refuse_case_twins(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT group_concat(printf('%Q (#%d)', name, id), ', ') FROM entities WHERE archived_at IS NULL
+         GROUP BY name COLLATE NOCASE HAVING COUNT(*) > 1 ORDER BY MIN(id)",
+    )?;
+    let twins: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+    if !twins.is_empty() {
+        return Err(Error::Invalid(format!(
+            "migration 28 makes active entity names unique without case, but these active entities differ only in case: {}; rename one entity of each group with the older means build that opened this ledger, then open the ledger again",
+            twins.join("; ")
+        )));
+    }
+    Ok(())
+}
+
+/// Refuse a name that another active entity has. The comparison ignores case. Every route
+/// that names an entity uses this check: create, rename, unarchive and gRPC.
 fn check_active_name(conn: &Connection, id: i64, name: &str) -> Result<()> {
     if let Some(other) = list_entities(conn, false)?.into_iter().find(|e| e.id != id && e.name.eq_ignore_ascii_case(name)) {
         return Err(Error::Conflict(format!("the active entity #{} already has the name {:?}", other.id, other.name)));

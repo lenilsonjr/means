@@ -171,3 +171,41 @@ fn migration_28_keeps_entities_and_their_references() {
     raw.execute("UPDATE entities SET archived_at = 'now' WHERE id = 1", []).unwrap();
     raw.execute(twin, []).unwrap();
 }
+
+#[test]
+fn active_entity_names_are_unique_without_case() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let first = entities::create_entity(&mut c, "Litware Studio", "company", "PT", "EUR").unwrap();
+    // The engine check and the index both ignore case.
+    assert!(matches!(entities::create_entity(&mut c, "LITWARE studio", "company", "PT", "EUR"), Err(Error::Conflict(_))));
+    let raw = c.execute("INSERT INTO entities (uid, name, currency, created_at, updated_at) VALUES ('e-twin', 'litware STUDIO', 'EUR', 'now', 'now')", []);
+    assert!(raw.is_err(), "the index of migration 28 ignores case");
+    // An archived entity frees the name for every case.
+    entities::archive(&mut c, first.id, "Test User", "rebuilt").unwrap();
+    let second = entities::create_entity(&mut c, "LITWARE STUDIO", "company", "PT", "EUR").unwrap();
+    let taken = entities::unarchive(&mut c, first.id, "Test User", "reopen", None);
+    assert!(matches!(&taken, Err(Error::Conflict(m)) if m.contains("--name")), "{taken:?}");
+    let other = entities::create_entity(&mut c, "Litware Studio Two", "company", "PT", "EUR").unwrap();
+    assert!(matches!(entities::rename_in(&c, other.id, "litware studio"), Err(Error::Conflict(_))));
+    assert_ne!(second.id, other.id);
+}
+
+#[test]
+fn migration_28_refuses_active_names_that_differ_only_in_case() {
+    let raw = rusqlite::Connection::open_in_memory().unwrap();
+    db::migrate_to(&raw, 27).unwrap();
+    raw.execute_batch(
+        "INSERT INTO commodities (code, kind, name, precision) VALUES ('GBP', 'currency', 'Pound sterling', 2);
+         INSERT INTO entities (uid, name, currency, created_at, updated_at) VALUES ('e-1', 'Woodgrove Ltd', 'GBP', 'now', 'now');
+         INSERT INTO entities (uid, name, currency, created_at, updated_at) VALUES ('e-2', 'WOODGROVE LTD', 'GBP', 'now', 'now');",
+    )
+    .unwrap();
+    let err = db::migrate_to(&raw, 28).unwrap_err().to_string();
+    assert!(err.contains("'Woodgrove Ltd' (#1)") && err.contains("'WOODGROVE LTD' (#2)") && err.contains("differ only in case"), "{err}");
+    let version: i64 = raw.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+    assert_eq!(version, 27);
+    // A case twin that is archived does not block the migration.
+    raw.execute("UPDATE entities SET archived_at = 'now' WHERE id = 2", []).unwrap();
+    db::migrate_to(&raw, 28).unwrap();
+}

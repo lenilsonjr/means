@@ -1,5 +1,6 @@
--- An entity name is unique among the active entities only. An archived set of books keeps its
--- name, and a new entity can take the same name.
+-- An entity name is unique among the active entities only, without case. An archived set of
+-- books keeps its name, and a new entity can take the same name. Before this script, the runner
+-- refuses the migration when two active entities have names that differ only in case.
 -- SQLite cannot drop a UNIQUE column constraint, so this script rebuilds the table. The runner
 -- turns foreign keys off for it and checks every foreign key before the commit.
 CREATE TABLE entities_new (
@@ -27,4 +28,4 @@ INSERT INTO entities_new (id, uid, name, kind, country, currency, lock_date, arc
   FROM entities;
 DROP TABLE entities;
 ALTER TABLE entities_new RENAME TO entities;
-CREATE UNIQUE INDEX entities_active_name ON entities(name) WHERE archived_at IS NULL;
+CREATE UNIQUE INDEX entities_active_name ON entities(name COLLATE NOCASE) WHERE archived_at IS NULL;
