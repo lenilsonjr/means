@@ -9,13 +9,25 @@ use crate::Result;
 
 /// A migration is a script, or code when a row needs a decision that SQL cannot make.
 /// `Rebuild` is a script that recreates a table. It runs with foreign keys off, as the SQLite
-/// procedure for a table rebuild requires, and checks every foreign key before the commit.
+/// procedure for a table rebuild requires. `check` runs first and can refuse the migration with
+/// a message for the user. After the script, the runner refuses the migration when it finds more
+/// foreign keys without a parent row than before the script.
 enum Migration {
     Sql(&'static str),
     Code(fn(&Connection) -> Result<()>),
-    Rebuild(&'static str),
+    Rebuild { sql: &'static str, check: fn(&Connection) -> Result<()> },
 }
 
+// Rules for a new migration:
+//
+// - Migration 29 adds the triggers `archive_guard_*`. They refuse each write to the rows of an
+//   archived entity. A `Code` or a `Rebuild` migration runs without them: the runner drops them
+//   before the migration and creates them again after it, in the same transaction. A data
+//   migration can then change the rows of an archived entity, and a table rebuild keeps the
+//   guards of its table.
+// - A `Sql` migration runs with the guards. A `Sql` migration that writes rows of an entity
+//   must be a `Code` migration, or it fails on a ledger with an archived entity.
+// - A migration that adds a table with rows of an entity adds its guards too.
 const MIGRATIONS: &[(i64, Migration)] = &[
     (1, Migration::Sql(include_str!("../migrations/0001_init.sql"))),
     (2, Migration::Sql(include_str!("../migrations/0002_indexes.sql"))),
@@ -42,7 +54,7 @@ const MIGRATIONS: &[(i64, Migration)] = &[
     (25, Migration::Sql(include_str!("../migrations/0025_intervault_links.sql"))),
     (26, Migration::Sql(include_str!("../migrations/0026_invoices.sql"))),
     (27, Migration::Sql(include_str!("../migrations/0027_entity_flags.sql"))),
-    (28, Migration::Rebuild(include_str!("../migrations/0028_entity_active_names.sql"))),
+    (28, Migration::Rebuild { sql: include_str!("../migrations/0028_entity_active_names.sql"), check: no_check }),
     (29, Migration::Sql(include_str!("../migrations/0029_archive_guards.sql"))),
     (30, Migration::Sql(include_str!("../migrations/0030_account_counterparty.sql"))),
 ];
@@ -60,6 +72,11 @@ pub struct Db {
 impl Db {
     /// Open (or create) the ledger file and apply pending migrations.
     pub fn open(path: impl AsRef<Path>) -> Result<Db> {
+        Db::open_with(path, MIGRATIONS)
+    }
+
+    /// `open` with a list of migrations. Tests give a list with a later migration.
+    fn open_with(path: impl AsRef<Path>, migrations: &[(i64, Migration)]) -> Result<Db> {
         let path = path.as_ref().to_path_buf();
         if let Some(dir) = path.parent() {
             if !dir.as_os_str().is_empty() {
@@ -71,7 +88,8 @@ impl Db {
             return Err(crate::Error::Locked("shared vault is read-only; open it through sharing".into()));
         }
         configure(&conn)?;
-        migrate(&conn)?;
+        let target = migrations.last().map(|(v, _)| *v).unwrap_or(0).max(schema_version());
+        migrate_with(&conn, migrations, target)?;
         Ok(Db { conn: Mutex::new(conn), path, replica: false })
     }
 
@@ -150,55 +168,134 @@ fn migrate(conn: &Connection) -> Result<()> {
 /// Apply pending migrations up to and including `target`. A migration that fails is rolled back
 /// whole, and `PRAGMA user_version` stays at the version before it.
 pub fn migrate_to(conn: &Connection, target: i64) -> Result<()> {
+    migrate_with(conn, MIGRATIONS, target)
+}
+
+fn migrate_with(conn: &Connection, migrations: &[(i64, Migration)], target: i64) -> Result<()> {
     let current: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    for (version, migration) in MIGRATIONS {
+    for (version, migration) in migrations {
         if *version > current && *version <= target {
-            let rebuild = matches!(migration, Migration::Rebuild(_));
-            // PRAGMA foreign_keys has no effect inside a transaction, so set it before BEGIN.
-            if rebuild {
-                conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+            if matches!(migration, Migration::Rebuild { .. }) {
+                // PRAGMA foreign_keys has no effect inside a transaction, so set it before BEGIN.
+                // The guard turns foreign keys on again on every path out of this block.
+                let _keys = ForeignKeysOff::new(conn)?;
+                apply_one(conn, *version, migration)?;
+            } else {
+                apply_one(conn, *version, migration)?;
             }
-            let outcome = apply_one(conn, *version, migration);
-            if rebuild {
-                conn.execute_batch("PRAGMA foreign_keys = ON")?;
-            }
-            outcome?;
         }
     }
     Ok(())
 }
 
-/// Apply one migration in its own transaction.
+/// Foreign keys off while the value lives. The drop turns them on again, also after an error.
+struct ForeignKeysOff<'a>(&'a Connection);
+
+impl<'a> ForeignKeysOff<'a> {
+    fn new(conn: &'a Connection) -> Result<ForeignKeysOff<'a>> {
+        conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+        Ok(ForeignKeysOff(conn))
+    }
+}
+
+impl Drop for ForeignKeysOff<'_> {
+    fn drop(&mut self) {
+        // A transaction that is still open ignores the pragma, so end it first.
+        if !self.0.is_autocommit() {
+            let _ = self.0.execute_batch("ROLLBACK");
+        }
+        if let Err(e) = self.0.execute_batch("PRAGMA foreign_keys = ON") {
+            tracing::error!("cannot turn foreign keys on again after a migration: {e}");
+        }
+    }
+}
+
+/// Apply one migration in its own transaction. Any error rolls the transaction back.
 fn apply_one(conn: &Connection, version: i64, migration: &Migration) -> Result<()> {
     // Another process can open the same file at the same time. Take the write lock first,
     // then read the version again, so each migration runs once.
     conn.execute_batch("BEGIN IMMEDIATE")?;
-    let now: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if now >= version {
+    let outcome = (|| -> Result<bool> {
+        let now: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if now >= version {
+            return Ok(false);
+        }
+        match migration {
+            Migration::Sql(sql) => conn.execute_batch(sql)?,
+            Migration::Code(f) => without_archive_guards(conn, || f(conn))?,
+            Migration::Rebuild { sql, check } => {
+                check(conn)?;
+                let before = foreign_key_violations(conn)?;
+                without_archive_guards(conn, || Ok(conn.execute_batch(sql)?))?;
+                foreign_keys_hold(conn, before)?;
+            }
+        }
+        conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+        Ok(true)
+    })()
+    .and_then(|applied| {
         conn.execute_batch("COMMIT")?;
-        return Ok(());
+        Ok(applied)
+    });
+    match outcome {
+        Ok(applied) => {
+            if applied {
+                tracing::info!(version, "applied migration");
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if !conn.is_autocommit() {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
+            Err(e)
+        }
     }
-    let applied = match migration {
-        Migration::Sql(sql) => conn.execute_batch(sql).map_err(Into::into),
-        Migration::Code(f) => f(conn),
-        Migration::Rebuild(sql) => conn.execute_batch(sql).map_err(Into::into).and_then(|_| foreign_keys_hold(conn)),
+}
+
+/// Run `f` without the archive guard triggers of migration 29, inside the caller's
+/// transaction. The triggers come back after `f`, also when `f` dropped their table and created
+/// it again. A guard whose table no longer exists stays dropped.
+fn without_archive_guards(conn: &Connection, f: impl FnOnce() -> Result<()>) -> Result<()> {
+    let guards: Vec<(String, String, String)> = {
+        let mut stmt = conn.prepare("SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'archive_guard_%'")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        rows
     };
-    if let Err(e) = applied {
-        let _ = conn.execute_batch("ROLLBACK");
-        return Err(e);
+    for (name, _, _) in &guards {
+        conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{name}\""))?;
     }
-    conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
-    conn.execute_batch("COMMIT")?;
-    tracing::info!(version, "applied migration");
+    f()?;
+    for (name, table, sql) in &guards {
+        let table_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [table], |r| r.get(0))?;
+        let trigger_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?1)", [name], |r| r.get(0))?;
+        if table_exists && !trigger_exists {
+            conn.execute_batch(sql)?;
+        }
+    }
     Ok(())
 }
 
-/// Refuse a rebuild that leaves a foreign key without its parent row.
-fn foreign_keys_hold(conn: &Connection) -> Result<()> {
-    let broken: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
-    if broken > 0 {
-        return Err(crate::Error::Invalid(format!("the table rebuild left {broken} foreign key(s) without a parent row")));
+/// The number of foreign keys without a parent row.
+fn foreign_key_violations(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?)
+}
+
+/// Refuse a rebuild that leaves more foreign keys without a parent row than before it. A ledger
+/// can have such rows from before the migration; the rebuild does not cause them.
+fn foreign_keys_hold(conn: &Connection, before: i64) -> Result<()> {
+    let after = foreign_key_violations(conn)?;
+    if after > before {
+        return Err(crate::Error::Invalid(format!("the table rebuild left {} new foreign key(s) without a parent row ({before} existed before the rebuild, {after} after it)", after - before)));
     }
+    if before > 0 {
+        tracing::warn!(count = before, "the ledger has foreign keys without a parent row from before the migration");
+    }
+    Ok(())
+}
+
+/// A rebuild without a check.
+fn no_check(_: &Connection) -> Result<()> {
     Ok(())
 }
 
@@ -220,4 +317,96 @@ pub fn replica_marker(conn: &Connection) -> Result<bool> {
 /// Alias of `schema_version`.
 pub fn latest_version() -> i64 {
     schema_version()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("means-db-{name}-{}", crate::new_uid()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("ledger.db")
+    }
+
+    fn archived_entity(path: &Path) -> i64 {
+        let db = Db::open(path).unwrap();
+        let mut c = db.conn();
+        let e = crate::entities::create_entity(&mut c, "Example Archive Ltd", "company", "GB", "GBP").unwrap();
+        crate::entities::archive(&mut c, e.id, "Test User", "test").unwrap();
+        e.id
+    }
+
+    fn touch_archived(conn: &Connection) -> Result<()> {
+        conn.execute("UPDATE entities SET updated_at = 'migrated' WHERE archived_at IS NOT NULL", [])?;
+        conn.execute("UPDATE accounts SET notes = 'migrated' WHERE entity_id IN (SELECT id FROM entities WHERE archived_at IS NOT NULL)", [])?;
+        Ok(())
+    }
+
+    fn guard_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'archive_guard_%'", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_later_data_migration_can_touch_an_archived_entity() {
+        let path = temp_path("data-migration");
+        let id = archived_entity(&path);
+        let guards = guard_count(&Connection::open(&path).unwrap());
+        assert!(guards > 0);
+        let next = schema_version() + 1;
+        let db = Db::open_with(&path, &[(next, Migration::Code(touch_archived))]).unwrap();
+        let c = db.conn();
+        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, next);
+        let notes: String = c.query_row("SELECT updated_at FROM entities WHERE id = ?1", [id], |r| r.get(0)).unwrap();
+        assert_eq!(notes, "migrated");
+        // The guards are back after the migration, and they refuse writes again.
+        assert_eq!(guard_count(&c), guards);
+        assert!(touch_archived(&c).is_err());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_rebuild_fails_only_on_new_orphans_and_turns_foreign_keys_on_again() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let parent = crate::entities::create_entity(&mut conn, "Example Parent", "company", "GB", "GBP").unwrap();
+        let commodity: i64 = conn.query_row("SELECT id FROM commodities WHERE code = 'GBP'", [], |r| r.get(0)).unwrap();
+        // An orphan from before the migration: an account of an entity that does not exist.
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        conn.execute("INSERT INTO accounts (uid, entity_id, name, type, commodity_id, created_at, updated_at) VALUES ('orphan', 99, 'Lost', 'asset', ?1, 'now', 'now')", [commodity]).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        let v = schema_version();
+        // A rebuild that adds no orphan passes, although the old orphan is there.
+        migrate_with(&conn, &[(v + 1, Migration::Rebuild { sql: "CREATE TABLE scratch_rebuild (id INTEGER PRIMARY KEY)", check: no_check })], v + 1).unwrap();
+        // A rebuild that adds an orphan fails, and the message counts only the new one.
+        conn.execute("INSERT INTO accounts (uid, entity_id, name, type, commodity_id, created_at, updated_at) VALUES ('child', ?1, 'Child', 'asset', ?2, 'now', 'now')", [parent.id, commodity])
+            .unwrap();
+        let err = migrate_with(
+            &conn,
+            &[(
+                v + 2,
+                Migration::Rebuild {
+                    sql: "DELETE FROM accounts WHERE entity_id = (SELECT id FROM entities WHERE name = 'Example Parent') AND uid <> 'child'; DELETE FROM entities WHERE name = 'Example Parent'",
+                    check: no_check,
+                },
+            )],
+            v + 2,
+        )
+        .unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("1 new foreign key") && message.contains("1 existed before"), "{message}");
+        // The failure rolls back, ends the transaction and turns foreign keys on again.
+        assert!(conn.is_autocommit());
+        let on: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(on, 1);
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, v + 1);
+        // A script error is a failure path too.
+        assert!(migrate_with(&conn, &[(v + 2, Migration::Rebuild { sql: "NOT SQL", check: no_check })], v + 2).is_err());
+        let on: i64 = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).unwrap();
+        assert_eq!(on, 1);
+        assert!(conn.is_autocommit());
+    }
 }
