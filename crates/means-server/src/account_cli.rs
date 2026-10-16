@@ -64,16 +64,6 @@ fn find_account(conn: &Connection, entity_id: i64, key: &str) -> means_core::Res
     accounts::find_by_path(conn, entity_id, key)?.ok_or_else(|| Error::NotFound(format!("account {key} in entity {entity_id}")))
 }
 
-/// Check the shape of a statutory code. An empty value clears the code. Any other value
-/// must not contain whitespace. The engine does not check the code against a chart.
-fn statutory_code(raw: &str) -> means_core::Result<String> {
-    let code = raw.trim();
-    if code.chars().any(char::is_whitespace) {
-        return Err(Error::Invalid(format!("statutory code {code:?} contains whitespace")));
-    }
-    Ok(code.to_string())
-}
-
 pub fn account_json(conn: &Connection, a: &Account) -> means_core::Result<Value> {
     let counterparty = a.counterparty_payee_id.map(|id| means_core::payees::get(conn, id)).transpose()?;
     Ok(json!({
@@ -107,7 +97,7 @@ fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             let mut conn = db.conn();
             let entity = find_entity(&conn, &args.entity)?;
             let account = find_account(&conn, entity.id, &args.account)?;
-            let statutory_code = args.statutory_code.as_deref().map(statutory_code).transpose()?;
+            let statutory_code = args.statutory_code.as_deref().map(accounts::check_statutory_code).transpose()?;
             // A group account takes no statutory code. An empty value clears it on any account.
             if account.placeholder && statutory_code.as_deref().is_some_and(|c| !c.is_empty()) {
                 return Err(Error::Invalid(format!("{} is a group account; a statutory code needs a leaf account", account.path)).into());

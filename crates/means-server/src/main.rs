@@ -741,6 +741,8 @@ fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {
                 anyhow::bail!("give the account a name");
             }
             let given_subtype = subtype.as_deref().map(|s| means_core::accounts::check_subtype(t, s)).transpose()?;
+            // The same check as `account set`: no whitespace, and an empty value clears the code.
+            let statutory_code = statutory_code.as_deref().map(means_core::accounts::check_statutory_code).transpose()?;
             let default_subtype = means_core::accounts::SUBTYPES.iter().find(|(k, _)| *k == t).map(|(_, v)| v[0]).unwrap_or("expense");
             let leaf_currency = currency.as_deref().unwrap_or(&e.currency);
             // One transaction: the account and its codes, or nothing.
@@ -749,7 +751,7 @@ fn chart(db_path: PathBuf, command: ChartCommand) -> Result<()> {
             if currency.is_some() && a.commodity != leaf_currency {
                 anyhow::bail!("{} already exists in {}, not {}", a.path, a.commodity, leaf_currency);
             }
-            if a.placeholder && (given_subtype.is_some() || statutory_code.is_some()) {
+            if a.placeholder && (given_subtype.is_some() || statutory_code.as_deref().is_some_and(|c| !c.is_empty())) {
                 anyhow::bail!("{} is a group account; a subtype or a statutory code needs a leaf account", a.path);
             }
             let upd = means_core::accounts::AccountUpdate {

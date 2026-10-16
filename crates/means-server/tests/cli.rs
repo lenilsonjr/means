@@ -1513,6 +1513,26 @@ fn chart_new_sets_commodity_statutory_code_and_subtype_in_one_command() {
 }
 
 #[test]
+fn chart_new_checks_the_statutory_code_as_account_set_does() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let entity = entities::create_entity(&mut db.conn(), "Blue Harbor Pte. Ltd.", "company", "SG", "SGD").unwrap();
+    // A code with whitespace is refused, and nothing is created.
+    let refused = ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--statutory-code", "1 1", "Assets:Bank:Example Bank"]);
+    assert!(refused.contains("contains whitespace"), "{refused}");
+    assert!(accounts::find_by_path(&db.conn(), entity.id, "Assets:Bank:Example Bank").unwrap().is_none());
+    // The code is trimmed, as in account set.
+    ledger.ok(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--statutory-code", " 1.1 ", "Assets:Bank:Example Bank"]);
+    assert_eq!(accounts::find_by_path(&db.conn(), entity.id, "Assets:Bank:Example Bank").unwrap().unwrap().statutory_code, "1.1");
+    // An empty code is allowed on any account, also on a group account.
+    ledger.ok(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--statutory-code", "", "Assets:Bank"]);
+    ledger.ok(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--statutory-code", "", "Assets:Bank:Example Bank"]);
+    assert_eq!(accounts::find_by_path(&db.conn(), entity.id, "Assets:Bank:Example Bank").unwrap().unwrap().statutory_code, "");
+    // A non-empty code on a group account stays refused.
+    ledger.refused(&["chart", "new", "--entity", "Blue Harbor Pte. Ltd.", "--statutory-code", "1", "Assets:Bank"]);
+}
+
+#[test]
 fn account_set_counterparty_turns_the_close_warning_into_a_related_party_balance() {
     let ledger = Ledger::new();
     let db = ledger.db();

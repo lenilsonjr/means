@@ -71,6 +71,17 @@ pub const SUBTYPES: &[(AccountType, &[&str])] = &[
     (AccountType::Expense, &["expense"]),
 ];
 
+/// Check the shape of a statutory code. An empty value clears the code, on any account. Any
+/// other value must not contain whitespace. The engine does not check the code against a chart.
+/// `account set` and `chart new` use this check.
+pub fn check_statutory_code(raw: &str) -> Result<String> {
+    let code = raw.trim();
+    if code.chars().any(char::is_whitespace) {
+        return Err(Error::Invalid(format!("statutory code {code:?} contains whitespace")));
+    }
+    Ok(code.to_string())
+}
+
 /// Check a subtype against the account type. The subtype becomes lowercase.
 pub fn check_subtype(t: AccountType, subtype: &str) -> Result<String> {
     let s = subtype.trim().to_ascii_lowercase();

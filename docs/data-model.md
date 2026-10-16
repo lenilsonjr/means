@@ -102,7 +102,7 @@ Three columns map an account to statutory reporting. They never change postings:
 - `intercompany`: 1 when the account holds balances with a related party. Inter-vault links and the close check use it.
 - `counterparty_payee_id`: the payee at the other side of the account, for example the shareholder of an "Amount due to related parties" account. It must be a payee of the same entity. `means account set --counterparty` sets it, and the close check reads it.
 
-A [chart template](../charts/README.md) sets these columns when it creates the accounts. `means chart new --statutory-code C` sets the statutory code of one new account. Without it, the account has no statutory code. `means account set --statutory-code` changes `statutory_code` of one account, and the change goes to the audit log.
+A [chart template](../charts/README.md) sets these columns when it creates the accounts. `means chart new --statutory-code C` sets the statutory code of one new account. Without it, the account has no statutory code. `chart new` and `account set` check the code in the same way: it must not contain whitespace, and an empty value clears it on any account. A group account takes no other code. `means account set --statutory-code` changes `statutory_code` of one account, and the change goes to the audit log.
 
 Five columns identify an account for external tools. They never change postings:
 
