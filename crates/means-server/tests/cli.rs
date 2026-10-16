@@ -1790,3 +1790,26 @@ fn an_import_range_that_skips_lines_stores_no_file_balance_and_its_own_period() 
     // The period is the one of the drafted lines.
     assert_eq!((import.period_from, import.period_to), (Some(date("2026-01-05")), Some(date("2026-01-20"))));
 }
+
+#[test]
+fn close_check_and_questions_carry_the_time_and_the_chain_head() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    posted(&ledger, &books, "2026-03-02", "Sample Cafe", "-4.50");
+    posted(&ledger, &books, "2026-03-05", "Sample Shop", "-12.00");
+    // `means verify` prints "<name>: <count> entries verified, head <hash>".
+    let verified = ledger.ok(&["verify"]);
+    let line = verified.lines().find(|l| l.starts_with("Personal:")).unwrap();
+    let count: usize = line.split(": ").nth(1).unwrap().split(' ').next().unwrap().parse().unwrap();
+    let head = line.rsplit("head ").next().unwrap().trim().to_string();
+    assert_eq!(count, 2);
+
+    let check = json_of(&ledger.ok(&["close", "check", "--entity", "Personal", "--from", "2026-03-01", "--to", "2026-03-31", "--json"]));
+    let questions = json_of(&ledger.ok(&["close", "questions", "--entity", "Personal", "--jurisdiction", "PT", "--json"]));
+    for out in [&check, &questions] {
+        assert_eq!(out["chain_head"].as_str(), Some(head.as_str()), "{out}");
+        assert_eq!(out["entry_count"].as_u64(), Some(count as u64));
+        let at = out["generated_at"].as_str().unwrap();
+        assert!(at.ends_with('Z') && chrono::DateTime::parse_from_rfc3339(at).is_ok(), "{at}");
+    }
+}

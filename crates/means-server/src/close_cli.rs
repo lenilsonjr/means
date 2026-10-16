@@ -117,6 +117,27 @@ fn report_text(report: &CloseReport) -> String {
     out
 }
 
+/// When the result was made and the state of the ledger it read: `generated_at` (UTC),
+/// `chain_head` (the head of the hash chain of the entity, as `means verify` prints it, or null
+/// for an empty chain) and `entry_count` (the entries in the chain). A snapshot manifest records
+/// the chain head of each entity, so an offline reader can tell a stale result from a current one.
+fn ledger_fingerprint(conn: &means_core::rusqlite::Connection, entity_id: i64) -> AgentResult<Value> {
+    let chain = means_core::hashchain::verify(conn, entity_id)?;
+    Ok(json!({
+        "generated_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "chain_head": chain.head,
+        "entry_count": chain.checked,
+    }))
+}
+
+/// Add the fields of `ledger_fingerprint` to a JSON result.
+fn with_fingerprint(mut value: Value, fingerprint: Value) -> Value {
+    if let (Some(out), Value::Object(extra)) = (value.as_object_mut(), fingerprint) {
+        out.extend(extra);
+    }
+    value
+}
+
 fn check(db_path: &Path, entity: &str, from: &str, to: &str, json: bool) -> AgentResult<Output> {
     let from = parse_date("from", from)?;
     let to = parse_date("to", to)?;
@@ -128,7 +149,7 @@ fn check(db_path: &Path, entity: &str, from: &str, to: &str, json: bool) -> Agen
         return Ok(Output::Text(report_text(&report)));
     }
     let digest = report.digest()?;
-    Ok(Output::Json(json!({"report": to_value(&report)?, "report_digest": digest})))
+    Ok(Output::Json(with_fingerprint(json!({"report": to_value(&report)?, "report_digest": digest}), ledger_fingerprint(&conn, entity.id)?)))
 }
 
 fn lock(db_path: &Path, entity: &str, through: &str, actor: &str, reason: &str, force: bool, json: bool) -> AgentResult<Output> {
@@ -204,11 +225,12 @@ fn questions(db_path: &Path, entity: &str, jurisdiction: &str, as_of: Option<&st
         }
         return Ok(Output::Text(text));
     }
-    Ok(Output::Json(json!({
+    let value = json!({
         "entity_uid": entity.uid,
         "jurisdiction": q.jurisdiction,
         "as_of": q.as_of.to_string(),
         "answered": to_value(&q.answered)?,
         "missing": to_value(&q.missing)?,
-    })))
+    });
+    Ok(Output::Json(with_fingerprint(value, ledger_fingerprint(&conn, entity.id)?)))
 }
