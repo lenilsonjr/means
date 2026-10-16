@@ -158,6 +158,7 @@ Lock dates protect closed periods. Reconciled postings retain their account and 
 - The command checks the account and the payee apart. The balancing posting moves to the account of the rule, also to another account type. The payee becomes the payee of the rule, or the line description when the rule has none. A rule can change only the payee.
 - The command skips a draft that a human edited: an `update` or `split` event, or a payee link, that the import and `rule apply` did not write, or a payee or an account that differs from what the import or the last `rule apply` wrote. It never overwrites an edited payee. The JSON result lists these drafts in `skipped_edited`.
 - Each change writes a `rule_apply` audit event and raises the hit count of the rule. A skipped draft does not raise it.
+- A draft whose change fails, for example on a closed or a group account, stays as it is. The JSON result lists it in `failed` with `entry_id` and `message`, and the run goes on with the next draft.
 - Posted entries, drafts that no rule matches and drafts with more than one balancing posting do not change. `--dry-run` writes nothing.
 
 `budgets` applies one limit to an inclusive date range. It can cover a category and its children, an expense class, or a tag. The default period is a calendar month. A budget never creates postings. See [reports and budgets](expense-reports.md).

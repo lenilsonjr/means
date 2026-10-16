@@ -1138,6 +1138,9 @@ fn rule(db_path: PathBuf, command: RuleCommand) -> Result<()> {
                 let payee = if c.payee_from == c.payee { c.payee.clone() } else { format!("{} -> {}", c.payee_from, c.payee) };
                 println!("  #{} {} {payee}: {} -> {} (rule: {})", c.entry_id, c.date, c.from, c.to, c.rule);
             }
+            for f in &r.failed {
+                println!("  #{} failed: {}", f.entry_id, f.message);
+            }
             if !r.skipped_edited.is_empty() {
                 let ids: Vec<String> = r.skipped_edited.iter().map(|id| format!("#{id}")).collect();
                 println!("Skipped, edited by a human: {}", ids.join(", "));

@@ -263,3 +263,23 @@ fn a_rule_that_changes_only_the_payee_changes_the_draft() {
     assert_eq!((vendor.payee.as_str(), contra(&vendor, &w.bank)), ("Sample Vendor Ltd", w.domains.id));
     assert_eq!(hits(&conn, "sample vendor"), hits_before + 1);
 }
+
+#[test]
+fn a_draft_that_fails_is_listed_and_the_run_goes_on() {
+    let w = world();
+    let mut conn = w.db.conn();
+    // The owner account is closed, so the move of the owner draw fails.
+    conn.execute("UPDATE accounts SET closed_at = '2026-01-01' WHERE id = ?1", [w.owner.id]).unwrap();
+    let hits_before = hits(&conn, "owner draw");
+    let r = rules::apply_to_drafts(&mut conn, w.entity.id, None, true).unwrap();
+    assert_eq!(r.changes.len(), 1, "{r:?}");
+    assert_eq!(r.changes[0].entry_id, w.entries[0]);
+    assert_eq!(r.failed.len(), 1, "{r:?}");
+    assert_eq!(r.failed[0].entry_id, w.entries[2]);
+    assert!(!r.failed[0].message.is_empty());
+    // The failed draft keeps its account, and its rule keeps its hit count.
+    let suspense = accounts::find_by_role(&conn, w.entity.id, "suspense").unwrap();
+    assert_eq!(contra(&journal::get_entry(&conn, w.entries[2]).unwrap(), &w.bank), suspense.id);
+    assert_eq!(hits(&conn, "owner draw"), hits_before);
+    assert_eq!(contra(&journal::get_entry(&conn, w.entries[0]).unwrap(), &w.bank), w.domains.id);
+}

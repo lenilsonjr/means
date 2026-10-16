@@ -352,6 +352,16 @@ pub struct DraftApply {
     pub changes: Vec<DraftChange>,
     /// The drafts that a human edited. The command leaves them as they are.
     pub skipped_edited: Vec<i64>,
+    /// The drafts whose change failed, for example on a closed or a group account. The command
+    /// leaves each one as it is and goes on with the next draft.
+    pub failed: Vec<DraftFailure>,
+}
+
+/// A draft whose change failed, and why.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DraftFailure {
+    pub entry_id: i64,
+    pub message: String,
 }
 
 /// The audit action of a change by `apply_to_drafts`.
@@ -407,6 +417,7 @@ pub fn apply_to_drafts(conn: &mut Connection, entity_id: i64, import_id: Option<
     let mut seen = std::collections::HashSet::new();
     let mut changes = Vec::new();
     let mut skipped_edited = Vec::new();
+    let mut failed = Vec::new();
     for line_id in line_ids {
         let sl = crate::imports::get_line(&tx, line_id)?;
         let Some(eid) = sl.journal_entry_id.filter(|id| seen.insert(*id)) else { continue };
@@ -426,51 +437,66 @@ pub fn apply_to_drafts(conn: &mut Connection, entity_id: i64, import_id: Option<
             skipped_edited.push(eid);
             continue;
         }
-        let from_event: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM audit_log", [], |r| r.get(0))?;
-        let mut input = EntryInput::new(entry.entity_id, entry.date);
-        input.payee = payee.clone();
-        input.description = entry.description.clone();
-        input.notes = entry.notes.clone();
-        input.status = EntryStatus::Draft;
-        for p in &entry.postings {
-            if p.id == old.id {
-                input.postings.push(PostingInput::balancing(target).memo(&p.memo));
-            } else {
-                input.postings.push(PostingInput {
-                    account_id: p.account_id,
-                    quantity: p.quantity.major(),
-                    amount: Some(p.amount.major()),
-                    memo: p.memo.clone(),
-                    metadata: p.metadata.clone(),
-                    external_id: p.external_id.clone(),
-                    fingerprint: p.fingerprint.clone(),
-                    ..Default::default()
-                });
+        // Each draft runs in its own savepoint. A draft that fails (for example a closed or a
+        // group target account) rolls back alone, goes to `failed`, and the run goes on.
+        tx.execute_batch("SAVEPOINT rule_apply_draft")?;
+        let outcome = (|| -> Result<DraftChange> {
+            let from_event: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM audit_log", [], |r| r.get(0))?;
+            let mut input = EntryInput::new(entry.entity_id, entry.date);
+            input.payee = payee.clone();
+            input.description = entry.description.clone();
+            input.notes = entry.notes.clone();
+            input.status = EntryStatus::Draft;
+            for p in &entry.postings {
+                if p.id == old.id {
+                    input.postings.push(PostingInput::balancing(target).memo(&p.memo));
+                } else {
+                    input.postings.push(PostingInput {
+                        account_id: p.account_id,
+                        quantity: p.quantity.major(),
+                        amount: Some(p.amount.major()),
+                        memo: p.memo.clone(),
+                        metadata: p.metadata.clone(),
+                        external_id: p.external_id.clone(),
+                        fingerprint: p.fingerprint.clone(),
+                        ..Default::default()
+                    });
+                }
+            }
+            journal::update_entry_in_transaction(&tx, eid, input)?;
+            let canonical = if rule.payee.trim().is_empty() { crate::payees::resolve(&tx, entity_id, &sl.description)? } else { crate::payees::explicit(&tx, entity_id, &rule.payee)? };
+            crate::payees::link(&tx, eid, canonical.map(|p| p.id))?;
+            tx.execute("UPDATE rules SET hits_count = hits_count + 1 WHERE id = ?1", [rule.id])?;
+            tx.execute("UPDATE statement_lines SET note = ?2 WHERE id = ?1", params![sl.id, format!("rule: {}", rule.name)])?;
+            crate::audit::log(
+                &tx,
+                "journal_entries",
+                eid,
+                RULE_APPLY,
+                Some(serde_json::json!({"payee": entry.payee, "account_id": old.account_id})),
+                Some(serde_json::json!({"payee": payee, "account_id": target, "rule": rule.name, "from_event": from_event})),
+            )?;
+            let to = accounts::get_account(&tx, target)?.path;
+            Ok(DraftChange { entry_id: eid, date: entry.date, payee, payee_from: entry.payee.clone(), from: old.account_path.clone(), to, rule: rule.name.clone() })
+        })();
+        match outcome {
+            Ok(change) => {
+                tx.execute_batch("RELEASE rule_apply_draft")?;
+                changes.push(change);
+            }
+            Err(e) => {
+                tx.execute_batch("ROLLBACK TO rule_apply_draft; RELEASE rule_apply_draft")?;
+                failed.push(DraftFailure { entry_id: eid, message: e.to_string() });
             }
         }
-        journal::update_entry_in_transaction(&tx, eid, input)?;
-        let canonical = if rule.payee.trim().is_empty() { crate::payees::resolve(&tx, entity_id, &sl.description)? } else { crate::payees::explicit(&tx, entity_id, &rule.payee)? };
-        crate::payees::link(&tx, eid, canonical.map(|p| p.id))?;
-        tx.execute("UPDATE rules SET hits_count = hits_count + 1 WHERE id = ?1", [rule.id])?;
-        tx.execute("UPDATE statement_lines SET note = ?2 WHERE id = ?1", params![sl.id, format!("rule: {}", rule.name)])?;
-        crate::audit::log(
-            &tx,
-            "journal_entries",
-            eid,
-            RULE_APPLY,
-            Some(serde_json::json!({"payee": entry.payee, "account_id": old.account_id})),
-            Some(serde_json::json!({"payee": payee, "account_id": target, "rule": rule.name, "from_event": from_event})),
-        )?;
-        let to = accounts::get_account(&tx, target)?.path;
-        changes.push(DraftChange { entry_id: eid, date: entry.date, payee, payee_from: entry.payee.clone(), from: old.account_path.clone(), to, rule: rule.name.clone() });
     }
     if apply {
         tx.commit()?;
     } else {
         tx.rollback()?;
     }
-    let unchanged = seen.len() - changes.len();
-    Ok(DraftApply { examined: seen.len(), changed: changes.len(), unchanged, applied: apply, changes, skipped_edited })
+    let unchanged = seen.len() - changes.len() - failed.len();
+    Ok(DraftApply { examined: seen.len(), changed: changes.len(), unchanged, applied: apply, changes, skipped_edited, failed })
 }
 
 /// Create (or post) the entry a statement line evidences, with the contra account, splits or template chosen on the review screen.
