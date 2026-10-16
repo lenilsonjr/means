@@ -376,6 +376,8 @@ message ListPricesRequest { string commodity = 1; string currency = 2; string fr
 message ListPricesResponse { repeated Price prices = 1; }
 message SetPriceRequest { string commodity = 1; string currency = 2; string on = 3; string price = 4; string source = 5; }
 message FetchRatesRequest { string from = 1; }   // earliest date to fetch, "" = 2020-01-01
+// revalued counts the entries booked without a rate that now have one and the revalued drafts
+// together. Drafts with tax events are not revalued.
 message FetchRatesResponse { int32 inserted = 1; int32 revalued = 2; string latest = 3; }
 
 message ListAccountsRequest { int64 entity_id = 1; bool include_closed = 2; string as_of = 3; string type = 4; }

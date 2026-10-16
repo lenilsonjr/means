@@ -1747,3 +1747,23 @@ fn entity_unarchive_by_name_takes_the_archived_entity() {
     assert!(entities::get_entity(&c, old).unwrap().archived_at.is_none());
     assert_eq!(entities::get_entity(&c, new).unwrap().name, "Contoso Studio");
 }
+
+#[test]
+fn import_from_and_to_ignore_a_line_without_a_date() {
+    let ledger = Ledger::new();
+    let books = seed(&ledger);
+    let file = ledger.path.with_extension("undated.csv");
+    std::fs::write(&file, "Booked,Text,Value,Ref\n2025-12-30,Old fee,-1.00,ref-old\n,Undated fee,-3.00,ref-undated\n").unwrap();
+    let account = books.n26.to_string();
+    let out = ledger.run(&["import", "--account", &account, "--map", "date=Booked,amount=Value,description=Text,external_id=Ref", "--from", "2026-01-01", file.to_str().unwrap()]);
+    std::fs::remove_file(&file).unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let id: String = text.trim_start_matches("import #").chars().take_while(char::is_ascii_digit).collect();
+    let lines: serde_json::Value = serde_json::from_str(&ledger.ok(&["import", "lines", &id, "--json"])).unwrap();
+    let undated = lines.as_array().unwrap().iter().find(|l| l["reference"] == "ref-undated").expect("the undated line stays in the import");
+    // The range reads the line date. A line without a date keeps the status the parser gives it.
+    let note = undated["note"].as_str().unwrap_or_default();
+    assert!(note.contains("empty date") && !note.contains("--from"), "{undated}");
+    let dated = lines.as_array().unwrap().iter().find(|l| l["reference"] == "ref-old").unwrap();
+    assert_eq!((dated["status"].as_str(), dated["note"].as_str()), (Some("skipped"), Some("before --from 2026-01-01")));
+}

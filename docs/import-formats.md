@@ -898,8 +898,9 @@ means import --account 12 --from 2026-01-01 --to 2026-12-31 all-time.csv
 
 Both days are included, and each option is optional. The import keeps every line outside the range
 as a statement line with the status `skipped` and a note such as `before --from 2026-01-01`. These
-lines get no draft, and the summary counts them as skipped. The range works with every bank
-source. The file checksum still identifies the file, so the same file cannot be imported again
+lines get no draft, and the summary counts them as skipped. The range reads the date of each
+line: a line without a date ignores the range and keeps the status that the parser gives it. The
+range works with every bank source. The file checksum still identifies the file, so the same file cannot be imported again
 with another range. Roll the first import back before you import the file again.
 
 ## Retrying an interrupted bank import

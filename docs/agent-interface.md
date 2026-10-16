@@ -105,7 +105,7 @@ These commands describe the books. They never change postings. See [entity facts
 | `means rates list [--base B] [--quote Q] [--from D] [--to D] [--limit N] [--json]` | Nothing | Allowed |
 | `means rates list --derive B/Q --date D [--json]` | Nothing | Allowed |
 | `means rates fetch [--from D] [--pairs B/Q,...] [--to D] [--no-revalue]` | ECB rates, stored cross rates, revalued postings and revalued drafts | Allowed |
-| `means rates import <csv> [--source S] [--no-revalue] [--json]` | Rates and revalued postings | Allowed |
+| `means rates import <csv> [--source S] [--no-revalue] [--json]` | Rates, revalued postings and revalued drafts | Allowed |
 
 `--actor` defaults to `$USER`.
 
@@ -133,7 +133,7 @@ The rate lookup uses the latest row on or before the date. A row older than 400 
 
 `rates list --derive B/Q --date D` returns `rate` with `date`, `base`, `quote`, `rate`, `source` and `derived`. `source` is `exact`, `nearest`, `inverse` or `cross:<SOURCE>`. `derived` is true for a cross rate. When the lookup finds no rate, the command fails with `missing_rate`.
 
-`rates fetch` stores the ECB rate of every ECB currency against EUR from `--from`. `--pairs USD/SGD,GBP/SGD` also stores a cross rate for each pair on each day from `--from` to `--to` (default: today) that has a stored rate. The command skips a day where the pair has a direct or an inverse row. A stored cross row keeps its `cross:<SOURCE>` source, so reports, packs and snapshots see the pair. `rates fetch` needs a network, and it prints text.
+`rates fetch` stores the ECB rate of every ECB currency against EUR from `--from`. `--pairs USD/SGD,GBP/SGD` also stores a cross rate for each pair on each day from `--from` to `--to` (default: today) that has a stored rate. The command skips a day where the pair has a direct or an inverse row. A stored cross row keeps its `cross:<SOURCE>` source, so reports, packs and snapshots see the pair. `rates fetch` needs a network, and it prints text. gRPC `FetchRates` returns `inserted`, `revalued` and `latest`. Its `revalued` counts the entries booked without a rate that now have one and the revalued drafts together.
 
 ### Draft document
 
@@ -234,7 +234,7 @@ The document can carry an `intervault` block at the top level. The engine then l
 
 `import --map` reads the file as `generic_csv` and builds the same column mapping as the TUI. See [column maps](import-formats.md#column-maps-for-other-csv-files). `import` prints text.
 
-`import --from D --to D` drafts only the lines dated in the range, both days included. It works with every bank source, with or without `--map`. A line outside the range stays in the import with the status `skipped` and the note `before --from D` or `after --to D`. It gets no draft. The summary counts it as skipped. `--from` after `--to` is refused.
+`import --from D --to D` drafts only the lines dated in the range, both days included. It works with every bank source, with or without `--map`. A line outside the range stays in the import with the status `skipped` and the note `before --from D` or `after --to D`. It gets no draft. The summary counts it as skipped. `--from` after `--to` is refused. The range reads the date of each line. A line without a date ignores `--from` and `--to`: the range does not skip it, and it keeps the status that the parser gives it, for example a parse error.
 
 ## Tax
 
