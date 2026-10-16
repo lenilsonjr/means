@@ -1594,3 +1594,15 @@ fn an_entity_name_that_matches_several_archived_entities_is_ambiguous() {
     entities::create_entity(&mut ledger.db().conn(), "Fourth Coffee", "company", "US", "USD").unwrap();
     ledger.ok(&["entity", "facts", "fourth coffee"]);
 }
+
+#[test]
+fn chart_new_accepts_the_holding_subtype() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let entity = entities::create_entity(&mut db.conn(), "Personal", "person", "PT", "EUR").unwrap();
+    ledger.ok(&["chart", "new", "--entity", "Personal", "--currency", "BTC", "--subtype", "holding", "Assets:Wallets:BTC"]);
+    let btc = accounts::find_by_path(&db.conn(), entity.id, "Assets:Wallets:BTC").unwrap().unwrap();
+    assert_eq!((btc.subtype.as_str(), btc.commodity.as_str()), ("holding", "BTC"));
+    assert_eq!(accounts::check_subtype(AccountType::Asset, "Holding").unwrap(), "holding");
+    assert!(accounts::check_subtype(AccountType::Liability, "holding").is_err());
+}

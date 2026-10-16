@@ -64,7 +64,7 @@ fn row_to_account(r: &rusqlite::Row<'_>) -> rusqlite::Result<Account> {
 /// The subtypes of a postable account, by account type. The first subtype of each type is the
 /// default for a new account of that type. `placeholder` marks a group account and is not here.
 pub const SUBTYPES: &[(AccountType, &[&str])] = &[
-    (AccountType::Asset, &["bank", "savings", "cash", "wallet", "receivable", "investment", "crypto"]),
+    (AccountType::Asset, &["bank", "savings", "cash", "wallet", "receivable", "investment", "crypto", "holding"]),
     (AccountType::Liability, &["card", "loan", "mortgage", "payable"]),
     (AccountType::Equity, &["equity"]),
     (AccountType::Income, &["income"]),

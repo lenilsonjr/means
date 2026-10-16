@@ -87,11 +87,11 @@ Accounts form a hierarchy. Placeholder accounts group children (subtype `placeho
 
 | Type | Subtypes |
 | --- | --- |
-| Asset | `bank` (the default), `savings`, `cash`, `wallet`, `receivable`, `investment`, `crypto` |
+| Asset | `bank` (the default), `savings`, `cash`, `wallet`, `receivable`, `investment`, `crypto`, `holding` |
 | Liability | `card` (the default), `loan`, `mortgage`, `payable` |
 | Equity, Income, Expense | `equity`, `income`, `expense` |
 
-The cash flow report reads `bank`, `cash`, `card` and `wallet` accounts. `means chart new --subtype` accepts only a subtype of the account type. Spending categories are expense accounts. An expense account can have a class (`fixed`, `committed`, `discretionary`, `savings` or `not-spending`) for reports and budgets. A system role marks the accounts that the engine creates with the entity, such as `Uncategorized` and `FX gain/loss`.
+The cash flow report reads `bank`, `cash`, `card` and `wallet` accounts. A `holding` account holds a security or a crypto asset: the balance sheet and net worth show its market value when a price exists, and an entry on it is a trade. `means chart new --subtype` accepts only a subtype of the account type. Spending categories are expense accounts. An expense account can have a class (`fixed`, `committed`, `discretionary`, `savings` or `not-spending`) for reports and budgets. A system role marks the accounts that the engine creates with the entity, such as `Uncategorized` and `FX gain/loss`.
 
 Each account has a commodity. `commodities` holds each currency, security or crypto asset with its precision. `prices` holds the price of one commodity in another on a date, with its source. ECB rates (`means rates fetch`), hand-entered rates (`means rates set`) and CSV rates (`means rates import`) all go in this table. A posting in a commodity without a direct or an inverse rate takes a cross rate through a common quote, such as EUR. Its `rate_source` is then `cross:<SOURCE>`, for example `cross:ECB`. See [the rate lookup](agent-interface.md#drafting).
 

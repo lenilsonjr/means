@@ -539,7 +539,7 @@ enum ChartCommand {
         /// Statutory code of the account: a code from a national chart or a reporting taxonomy (default: none)
         #[arg(long)]
         statutory_code: Option<String>,
-        /// Asset: bank | savings | cash | wallet | receivable | investment | crypto; liability: card | loan | mortgage | payable (default: bank or card)
+        /// Asset: bank | savings | cash | wallet | receivable | investment | crypto | holding; liability: card | loan | mortgage | payable (default: bank or card)
         #[arg(long)]
         subtype: Option<String>,
     },
