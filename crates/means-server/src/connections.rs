@@ -232,6 +232,10 @@ impl Manager {
             }
             (_, "pull") => {
                 let account = core::get(&self.db.conn(), r.connection_id)?;
+                // The books of an archived entity refuse every write, so the pull skips them.
+                if let Some(name) = core::archived_owner(&self.db.conn(), &account)? {
+                    return Ok(format!("Skipped: the mapped account belongs to {name}, which is archived. Unarchive the entity to pull again."));
+                }
                 match r.provider.as_str() {
                     "pluggy" => {
                         let api = self.pluggy_api.clone();

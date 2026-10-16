@@ -352,3 +352,26 @@ fn a_cascade_to_an_archived_entity_is_refused_early_and_unarchive_reports_the_li
     assert_eq!(back.live_links.len(), 1);
     assert!(back.live_links[0].contains("Tailspin Toys Pte. Ltd.") && back.live_links[0].contains(&link.uid), "{:?}", back.live_links);
 }
+
+#[test]
+fn a_bank_pull_skips_a_connection_of_an_archived_entity() {
+    use means_core::connections::{self, ConnectionAccount};
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let old = entities::create_entity(&mut c, "Litware Books", "company", "PT", "EUR").unwrap();
+    let active = entities::create_entity(&mut c, "Litware Studio", "company", "PT", "EUR").unwrap();
+    let old_bank = accounts::ensure_account(&c, old.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
+    let active_bank = accounts::ensure_account(&c, active.id, AccountType::Asset, &["Bank"], "bank", "EUR").unwrap();
+    let found = |id: &str| ConnectionAccount { provider_account_id: id.into(), currency: "EUR".into(), ..Default::default() };
+    connections::discover(&c, "wise", "", &[found("1:1"), found("1:2")]).unwrap();
+    let saved = connections::list(&c).unwrap();
+    connections::configure(&mut c, saved[0].id, Some(old_bank.id), "").unwrap();
+    connections::configure(&mut c, saved[1].id, Some(active_bank.id), "").unwrap();
+    entities::archive(&mut c, old.id, "Test User", "rebuilt").unwrap();
+
+    let skipped = connections::archived_provider_accounts(&c, "wise").unwrap();
+    assert_eq!(skipped.into_iter().collect::<Vec<_>>(), vec![saved[0].provider_account_id.clone()]);
+    let first = connections::get(&c, saved[0].id).unwrap();
+    assert_eq!(connections::archived_owner(&c, &first).unwrap().as_deref(), Some("Litware Books"));
+    assert_eq!(connections::archived_owner(&c, &connections::get(&c, saved[1].id).unwrap()).unwrap(), None);
+}

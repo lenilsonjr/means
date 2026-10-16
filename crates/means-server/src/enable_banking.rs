@@ -213,6 +213,7 @@ async fn pull(db_path: PathBuf, client: Client, only: Option<String>, dry_run: b
         .filter(|a| a.channel == core::CHANNEL && !a.booked_from.is_empty())
         .map(|a| Ok((a.provider_account_id, means_core::parse_date(&a.booked_from)?)))
         .collect::<means_core::Result<_>>()?;
+    let archived = means_core::connections::archived_provider_accounts(&db.conn(), core::CHANNEL)?;
     let mut selected = false;
     let mut active = false;
     let mut seen = std::collections::HashSet::new();
@@ -268,6 +269,11 @@ async fn pull(db_path: PathBuf, client: Client, only: Option<String>, dry_run: b
                 continue;
             }
             if selected_currency.is_some_and(|unit| unit.is_empty() || (currency != "XXX" && unit != currency)) {
+                continue;
+            }
+            let key = format!("{primary}:{}", selected_currency.unwrap_or(&currency));
+            if archived.contains(&key) {
+                println!("{key}: skipped; its account belongs to an archived entity");
                 continue;
             }
             selected = true;

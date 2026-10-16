@@ -155,8 +155,13 @@ async fn pull(path: PathBuf, client: Client, only: Option<String>, cutoff: Optio
     let db = Db::open(&path)?;
     let saved = means_core::connections::list(&db.conn())?;
     let inbox = inbox.unwrap_or_else(|| path.parent().unwrap_or(std::path::Path::new(".")).join("inbox"));
+    let archived = means_core::connections::archived_provider_accounts(&db.conn(), "wise")?;
     for account in accounts {
         let id = account["id"].as_str().context("missing Wise identity")?;
+        if archived.contains(id) {
+            println!("{id}: skipped; its account belongs to an archived entity");
+            continue;
+        }
         let preference = saved.iter().find(|a| a.channel == "wise" && a.provider_account_id == id).map(|a| a.booked_from.as_str()).unwrap_or_default();
         let from = match cutoff.or(means_core::parse_opt_date(preference)?) {
             Some(d) => d,
