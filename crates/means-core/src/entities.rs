@@ -204,12 +204,38 @@ pub fn archive(conn: &mut Connection, id: i64, actor: &str, reason: &str) -> Res
     if let Some(at) = &before.archived_at {
         return Err(Error::Invalid(format!("{} is archived already, since {at}", before.name)));
     }
+    refuse_live_links(&tx, &before)?;
     let ts = now_ts();
     tx.execute("UPDATE entities SET archived_at = ?2, updated_at = ?2 WHERE id = ?1", params![id, ts])?;
     let audit_event_id = crate::audit::log_by(&tx, "entities", id, "archive", Some(serde_json::json!({"archived_at": null})), Some(serde_json::json!({"archived_at": ts})), actor, reason)?;
     let entity = get_entity(&tx, id)?;
     tx.commit()?;
     Ok(ArchiveOutcome { entity, audit_event_id })
+}
+
+/// Refuse the archive of an entity while it has inter-vault links that are not void to entries
+/// of active entities. The guards would then refuse a void with cascade from the other side.
+/// The message lists each link: the other entity, its entry id and the link uid.
+fn refuse_live_links(conn: &Connection, entity: &Entity) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "SELECT o.name, CASE WHEN ea.entity_id = ?1 THEN eb.id ELSE ea.id END, l.uid
+         FROM intervault_links l
+         JOIN journal_entries ea ON ea.id = l.entry_a_id
+         JOIN journal_entries eb ON eb.id = l.entry_b_id
+         JOIN entities o ON o.id = CASE WHEN ea.entity_id = ?1 THEN eb.entity_id ELSE ea.entity_id END
+         WHERE l.status <> 'void' AND ?1 IN (ea.entity_id, eb.entity_id) AND o.id <> ?1 AND o.archived_at IS NULL
+         ORDER BY l.id",
+    )?;
+    let links: Vec<String> =
+        stmt.query_map([entity.id], |r| Ok(format!("{} entry #{} via link {}", r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))?.collect::<std::result::Result<_, _>>()?;
+    if !links.is_empty() {
+        return Err(Error::Invalid(format!(
+            "{} has inter-vault links that are not void to entries of active entities: {}; void the linked entries with cascade, or remove each link first, then archive the entity",
+            entity.name,
+            links.join("; ")
+        )));
+    }
+    Ok(())
 }
 
 /// Make an archived entity active again. `new_name` renames it in the same step, for an

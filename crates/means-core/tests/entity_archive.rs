@@ -232,3 +232,57 @@ fn update_entity_refuses_an_archive_change_and_checks_a_rename() {
     let rename = audit::history(&c, "entities", second.id).unwrap().into_iter().find(|e| e.action == "rename").unwrap();
     assert_eq!(rename.actor, "grpc");
 }
+
+#[test]
+fn archive_is_refused_while_links_to_active_entities_are_not_void() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let old = entities::create_entity(&mut c, "Tailspin Toys Pte. Ltd.", "company", "SG", "SGD").unwrap();
+    let other = entities::create_entity(&mut c, "Wingtip Toys LLC", "company", "US", "USD").unwrap();
+    let old_bank = accounts::ensure_account(&c, old.id, AccountType::Asset, &["Bank"], "bank", "SGD").unwrap();
+    let old_loan = accounts::ensure_account(&c, old.id, AccountType::Asset, &["Loan to Wingtip"], "receivable", "SGD").unwrap();
+    let other_bank = accounts::ensure_account(&c, other.id, AccountType::Asset, &["Bank"], "bank", "USD").unwrap();
+    let other_loan = accounts::ensure_account(&c, other.id, AccountType::Liability, &["Loan from Tailspin"], "loan", "USD").unwrap();
+    let mut a = EntryInput::new(old.id, day("2026-03-02"));
+    a.postings = vec![PostingInput::new(old_loan.id, dec("1350")), PostingInput::balancing(old_bank.id)];
+    let a = journal::create_entry(&mut c, a).unwrap();
+    let mut b = EntryInput::new(other.id, day("2026-03-03"));
+    b.postings = vec![PostingInput::new(other_bank.id, dec("1000")), PostingInput::balancing(other_loan.id)];
+    let b = journal::create_entry(&mut c, b).unwrap();
+    let link = means_core::intervault::link(&mut c, &a.uid, &b.uid, "loan", "").unwrap();
+
+    let err = entities::archive(&mut c, old.id, "Test User", "rebuilt").unwrap_err();
+    match &err {
+        Error::Invalid(m) => assert!(m.contains("Wingtip Toys LLC") && m.contains(&format!("entry #{}", b.id)) && m.contains(&link.uid), "{m}"),
+        other => panic!("expected invalid input, got {other:?}"),
+    }
+    assert!(entities::get_entity(&c, old.id).unwrap().archived_at.is_none());
+
+    // After a cascade void the link is void, and the archive goes through.
+    journal::review_void(&mut c, a.id, None, "rebuilt", true, true).unwrap();
+    entities::archive(&mut c, old.id, "Test User", "rebuilt").unwrap();
+    // The trigger message names the archived entity.
+    let message = archived(accounts::ensure_account(&c, old.id, AccountType::Asset, &["Bank", "Second"], "bank", "SGD"));
+    assert!(message.contains("Tailspin Toys Pte. Ltd. is archived"), "{message}");
+}
+
+#[test]
+fn archive_ignores_links_to_archived_entities() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let first = entities::create_entity(&mut c, "Proseware One", "company", "SG", "SGD").unwrap();
+    let second = entities::create_entity(&mut c, "Proseware Two", "company", "SG", "SGD").unwrap();
+    let mut ids = Vec::new();
+    for e in [&first, &second] {
+        let bank = accounts::ensure_account(&c, e.id, AccountType::Asset, &["Bank"], "bank", "SGD").unwrap();
+        let due = accounts::ensure_account(&c, e.id, AccountType::Asset, &["Due"], "receivable", "SGD").unwrap();
+        let mut input = EntryInput::new(e.id, day("2026-03-02"));
+        input.postings = vec![PostingInput::new(due.id, dec("10")), PostingInput::balancing(bank.id)];
+        ids.push(journal::create_entry(&mut c, input).unwrap().uid);
+    }
+    means_core::intervault::link(&mut c, &ids[0], &ids[1], "loan", "").unwrap();
+    // The two sets of books go together: the second archive sees only an archived entity.
+    entities::archive(&mut c, second.id, "Test User", "rebuilt").unwrap_err();
+    c.execute("UPDATE entities SET archived_at = 'now' WHERE id = ?1", [second.id]).unwrap();
+    entities::archive(&mut c, first.id, "Test User", "rebuilt").unwrap();
+}
