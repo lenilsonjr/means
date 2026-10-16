@@ -319,3 +319,36 @@ fn schedules_skip_an_archived_entity_and_resume_after_unarchive() {
     assert_eq!(templates::run_schedules(&mut c, Some(day("2026-03-15"))).unwrap(), 3);
     assert_eq!(count(&c, first.id), 3);
 }
+
+#[test]
+fn a_cascade_to_an_archived_entity_is_refused_early_and_unarchive_reports_the_link() {
+    let db = Db::open_memory().unwrap();
+    let mut c = db.conn();
+    let parent = entities::create_entity(&mut c, "Tailspin Toys Pte. Ltd.", "company", "SG", "SGD").unwrap();
+    let sub = entities::create_entity(&mut c, "Wingtip Toys LLC", "company", "US", "USD").unwrap();
+    let mut entry = |entity: i64, debit: &str, credit: &str, currency: &str, amount: &str| {
+        let d = accounts::ensure_account(&c, entity, AccountType::Asset, &[debit], "receivable", currency).unwrap();
+        let k = accounts::ensure_account(&c, entity, AccountType::Asset, &[credit], "bank", currency).unwrap();
+        let mut input = EntryInput::new(entity, day("2026-03-02"));
+        input.postings = vec![PostingInput::new(d.id, dec(amount)), PostingInput::balancing(k.id)];
+        journal::create_entry(&mut c, input).unwrap()
+    };
+    let a = entry(parent.id, "Loan to Wingtip", "Bank", "SGD", "1350");
+    let b = entry(sub.id, "Bank", "Loan from Tailspin", "USD", "1000");
+    let link = means_core::intervault::link(&mut c, &a.uid, &b.uid, "loan", "").unwrap();
+    // A ledger from before the archive check: the entity is archived with a live link.
+    c.execute("UPDATE entities SET archived_at = 'now' WHERE id = ?1", [sub.id]).unwrap();
+
+    let preview = journal::review_void(&mut c, a.id, None, "wrong lender", false, true).unwrap();
+    assert!(preview.linked_entries[0].archived);
+    let err = journal::review_void(&mut c, a.id, None, "wrong lender", true, true).unwrap_err();
+    match &err {
+        Error::Archived(m) => assert!(m.contains("Wingtip Toys LLC") && m.contains(&link.uid), "{m}"),
+        other => panic!("expected an entity_archived refusal, got {other:?}"),
+    }
+    assert_eq!(journal::get_entry(&c, a.id).unwrap().status, EntryStatus::Posted);
+
+    let back = entities::unarchive(&mut c, sub.id, "Test User", "reopen", None).unwrap();
+    assert_eq!(back.live_links.len(), 1);
+    assert!(back.live_links[0].contains("Tailspin Toys Pte. Ltd.") && back.live_links[0].contains(&link.uid), "{:?}", back.live_links);
+}

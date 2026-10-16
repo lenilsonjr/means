@@ -225,6 +225,9 @@ pub fn rename_by(tx: &Connection, id: i64, name: &str, actor: &str) -> Result<En
 pub struct ArchiveOutcome {
     pub entity: Entity,
     pub audit_event_id: i64,
+    /// After an unarchive: the inter-vault links that are not void to entries of active entities.
+    /// A ledger from before the archive check can have them. Empty after an archive.
+    pub live_links: Vec<String>,
 }
 
 fn require(field: &str, value: &str) -> Result<()> {
@@ -250,7 +253,7 @@ pub fn archive(conn: &mut Connection, id: i64, actor: &str, reason: &str) -> Res
     let audit_event_id = crate::audit::log_by(&tx, "entities", id, "archive", Some(serde_json::json!({"archived_at": null})), Some(serde_json::json!({"archived_at": ts})), actor, reason)?;
     let entity = get_entity(&tx, id)?;
     tx.commit()?;
-    Ok(ArchiveOutcome { entity, audit_event_id })
+    Ok(ArchiveOutcome { entity, audit_event_id, live_links: Vec::new() })
 }
 
 /// Refuse the archive of an entity while it has inter-vault links that are not void to entries
@@ -316,8 +319,9 @@ pub fn unarchive(conn: &mut Connection, id: i64, actor: &str, reason: &str, new_
         reason,
     )?;
     let entity = get_entity(&tx, id)?;
+    let live_links = live_links(&tx, id)?;
     tx.commit()?;
-    Ok(ArchiveOutcome { entity, audit_event_id })
+    Ok(ArchiveOutcome { entity, audit_event_id, live_links })
 }
 
 /// Legal and tax facts of an entity. They describe the books and never change postings.

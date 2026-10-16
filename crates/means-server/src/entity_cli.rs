@@ -355,6 +355,7 @@ fn archive_json(outcome: &entities::ArchiveOutcome, actor: &str, reason: &str) -
         "actor": actor.trim(),
         "reason": reason.trim(),
         "audit_event_id": outcome.audit_event_id,
+        "live_links": outcome.live_links,
     })
 }
 

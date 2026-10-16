@@ -138,6 +138,9 @@ pub struct LinkedEntry {
     /// True when a cascade reversal of this entry falls on or before the lock date of its
     /// entity. A cascade is then refused.
     pub locked: bool,
+    /// True when the entity of the entry is archived. A cascade is then refused, because the
+    /// archived books refuse every write.
+    pub archived: bool,
     /// True when this void voided the entry.
     pub voided: bool,
 }
@@ -201,6 +204,7 @@ pub(crate) fn link_group(conn: &Connection, entry_id: i64, date: Option<NaiveDat
                     amount,
                     cascade_action: if posted { "void" } else { "keep" }.into(),
                     locked: posted && entity.lock_date.is_some_and(|lock| day <= lock),
+                    archived: entity.archived_at.is_some(),
                     voided: false,
                 });
             }
@@ -477,6 +481,12 @@ pub(crate) fn on_post(conn: &Connection, entry_id: i64) -> Result<()> {
 /// reverses on its own date. The engine refuses the cascade when a reversal falls on or before
 /// the lock date of its entity. `actor` goes on each audit event.
 pub(crate) fn void_group(tx: &rusqlite::Transaction<'_>, root_uid: &str, group: &LinkGroup, date: Option<NaiveDate>, reason: &str, actor: &str) -> Result<()> {
+    if let Some(archived) = group.entries.iter().find(|e| e.archived) {
+        return Err(Error::Archived(format!(
+            "linked entry #{} ({}) belongs to {}, which is archived; unarchive {} first, or remove the link {}",
+            archived.entry_id, archived.entry_uid, archived.entity_name, archived.entity_name, archived.link_uid
+        )));
+    }
     if let Some(locked) = group.entries.iter().find(|e| e.locked) {
         let entity = entities::get_entity(tx, journal::get_entry(tx, locked.entry_id)?.entity_id)?;
         let day = date.unwrap_or(locked.date);
