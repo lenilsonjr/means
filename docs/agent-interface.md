@@ -48,7 +48,7 @@ In the tables below, the column `MEANS_AGENT=1` tells whether the engine refuses
 | `means status [--json]` | Nothing | Allowed |
 | `means verify` | Nothing | Allowed |
 
-`<e>` and `<entity>` take an entity id, name or uid. A name matches an active entity before an archived entity with the same name. The match ignores case. A name that matches more than one archived entity and no active entity is ambiguous: the command fails with `invalid_input` and lists the ids. Give the id or the uid then. `D` is a date `YYYY-MM-DD`.
+`<e>` and `<entity>` take an entity id, name or uid. A name matches an active entity before an archived entity with the same name. The match ignores case. A name that matches more than one archived entity and no active entity is ambiguous: the command fails with `invalid_input` and lists the ids. Give the id or the uid then. `entity unarchive` acts on an archived entity, so for it an archived name match wins over an active entity with the same name. `D` is a date `YYYY-MM-DD`.
 
 `entry list` returns at most 2000 entries. `--all` removes the limit: the engine reads every matching entry, page by page. The `unreviewed` status selects posted entries that no human has confirmed. The snapshot export is the complete read of the books. Use it for a full copy.
 

@@ -382,7 +382,8 @@ pub fn unarchive(path: PathBuf, args: UnarchiveArgs) -> Result<()> {
         (|| -> Result<Map<String, Value>> {
             let db = Db::open(path)?;
             let mut conn = db.conn();
-            let entity = find_entity(&conn, &args.entity)?;
+            // An unarchive acts on an archived entity: an archived name match wins.
+            let entity = entities::find_archived_by_key(&conn, &args.entity)?;
             let outcome = entities::unarchive(&mut conn, entity.id, &args.actor, &args.reason, args.name.as_deref())?;
             Ok(fields(archive_json(&outcome, &args.actor, &args.reason)))
         })(),

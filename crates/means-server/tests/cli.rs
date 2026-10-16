@@ -1606,3 +1606,23 @@ fn chart_new_accepts_the_holding_subtype() {
     assert_eq!(accounts::check_subtype(AccountType::Asset, "Holding").unwrap(), "holding");
     assert!(accounts::check_subtype(AccountType::Liability, "holding").is_err());
 }
+
+#[test]
+fn entity_unarchive_by_name_takes_the_archived_entity() {
+    let ledger = Ledger::new();
+    let db = ledger.db();
+    let (old, new) = {
+        let mut c = db.conn();
+        let old = entities::create_entity(&mut c, "Contoso Studio", "company", "PT", "EUR").unwrap();
+        entities::archive(&mut c, old.id, "Test User", "rebuilt").unwrap();
+        let new = entities::create_entity(&mut c, "Contoso Studio", "company", "PT", "EUR").unwrap();
+        (old.id, new.id)
+    };
+    // The name matches the active entity and the archived one; unarchive takes the archived one.
+    let out = json_of(&ledger.ok(&["entity", "unarchive", "contoso studio", "--actor", "Test User", "--reason", "keep both books", "--name", "Contoso Studio (first books)", "--json"]));
+    assert_eq!(out["entity"]["name"], "Contoso Studio (first books)");
+    assert_eq!(out["entity"]["archived"], false);
+    let c = db.conn();
+    assert!(entities::get_entity(&c, old).unwrap().archived_at.is_none());
+    assert_eq!(entities::get_entity(&c, new).unwrap().name, "Contoso Studio");
+}

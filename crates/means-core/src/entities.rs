@@ -66,6 +66,27 @@ pub fn find_by_key(conn: &Connection, key: &str) -> Result<Entity> {
     }
 }
 
+/// Find the entity of an unarchive: by id or uid, else by a name among the archived entities.
+/// An unarchive acts on an archived entity, so an archived match wins over an active entity with
+/// the same name. More than one archived match is ambiguous. Without an archived match, the
+/// lookup is the one of `find_by_key`.
+pub fn find_archived_by_key(conn: &Connection, key: &str) -> Result<Entity> {
+    let key = key.trim();
+    let all = list_entities(conn, true)?;
+    if let Some(e) = all.iter().find(|e| key.parse::<i64>().ok() == Some(e.id) || e.uid == key) {
+        return Ok(e.clone());
+    }
+    let archived: Vec<&Entity> = all.iter().filter(|e| e.archived_at.is_some() && e.name.eq_ignore_ascii_case(key)).collect();
+    match archived.as_slice() {
+        [] => find_by_key(conn, key),
+        [one] => Ok((*one).clone()),
+        many => {
+            let list: Vec<String> = many.iter().map(|e| format!("#{} {} (archived)", e.id, e.name)).collect();
+            Err(Error::Invalid(format!("the entity name {key:?} is ambiguous: it matches {}; give the id or the uid", list.join(", "))))
+        }
+    }
+}
+
 /// Create an entity with its functional currency and the system accounts every set of books needs.
 pub fn create_entity(conn: &mut Connection, name: &str, kind: &str, country: &str, currency: &str) -> Result<Entity> {
     let name = name.trim();
