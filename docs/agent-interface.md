@@ -87,7 +87,7 @@ These commands describe the books. They never change postings. See [entity facts
 - With `--from D`, each `--flag` of the command starts a dated value on D. An open value of the same key that starts earlier ends on D. Another overlap is a `conflict`. An empty value ends the open value on D. To give flags different dates, run the command once for each date.
 - A key with dated values refuses an undated change.
 
-`account set` takes an account path, a uid or an id. The IBAN loses its spaces and must pass the check digits. The BIC has 8 or 11 characters, and the first six are letters. An empty value clears an identifier. `location` is free text, for example the state where an asset is. `--statutory-code` sets the code of the account in a national chart or a reporting taxonomy. The code must not contain whitespace. The engine does not check it against a chart. An empty value clears it.
+`account set` takes an account path, a uid or an id. The IBAN loses its spaces and must pass the check digits. The BIC has 8 or 11 characters, and the first six are letters. An empty value clears an identifier. `location` is free text, for example the state where an asset is. `--statutory-code` sets the code of the account in a national chart or a reporting taxonomy. The code must not contain whitespace. A group account (a placeholder) refuses a code that is not empty; an empty value clears the code on any account. The engine does not check it against a chart. An empty value clears it.
 
 ## Drafting
 

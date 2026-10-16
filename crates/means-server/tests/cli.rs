@@ -1266,6 +1266,11 @@ fn entity_flags_account_identifiers_party_residence_and_questions_cli() {
     assert!(String::from_utf8_lossy(&bad.stdout).contains("invalid_input"));
     let cleared = json(ledger.ok(&["account", "set", "Assets:Bank:N26", "--entity", "Personal", "--statutory-code", "", "--json"]));
     assert_eq!(cleared["account"]["statutory_code"], "");
+    // A group account takes no statutory code, but an empty value is allowed on it.
+    let group = ledger.run(&["account", "set", "Assets:Bank", "--entity", "Personal", "--statutory-code", "57", "--json"]);
+    assert_eq!(group.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&group.stdout).contains("group account"), "{}", String::from_utf8_lossy(&group.stdout));
+    ledger.ok(&["account", "set", "Assets:Bank", "--entity", "Personal", "--statutory-code", "", "--json"]);
 
     // Party residence and citizenship, and the payees without a tax id.
     {

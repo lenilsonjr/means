@@ -102,6 +102,10 @@ fn set(path: PathBuf, args: SetArgs) -> Result<()> {
             let entity = find_entity(&conn, &args.entity)?;
             let account = find_account(&conn, entity.id, &args.account)?;
             let statutory_code = args.statutory_code.as_deref().map(statutory_code).transpose()?;
+            // A group account takes no statutory code. An empty value clears it on any account.
+            if account.placeholder && statutory_code.as_deref().is_some_and(|c| !c.is_empty()) {
+                return Err(Error::Invalid(format!("{} is a group account; a statutory code needs a leaf account", account.path)).into());
+            }
             let upd = AccountUpdate { country: args.country, iban: args.iban, bic: args.bic, institution: args.institution, location: args.location, statutory_code, ..Default::default() };
             let changed = upd.country.is_some() || upd.iban.is_some() || upd.bic.is_some() || upd.institution.is_some() || upd.location.is_some() || upd.statutory_code.is_some();
             let after = if changed {
