@@ -284,10 +284,15 @@ fn without_archive_guards(conn: &Connection, f: impl FnOnce() -> Result<()>) -> 
 }
 
 /// The number of foreign keys without a parent row.
-/// The rows with a foreign key without a parent row: the table, the row id and the parent table.
-fn foreign_key_violations(conn: &Connection) -> Result<std::collections::BTreeSet<(String, Option<i64>, String)>> {
-    let mut stmt = conn.prepare("SELECT \"table\", rowid, parent FROM pragma_foreign_key_check")?;
-    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<std::result::Result<_, _>>()?;
+/// One foreign key without a parent row: the table, the row id, the parent table and the index
+/// of the foreign key in the table (`fkid`). Two foreign keys of one row to the same parent
+/// table differ in `fkid`.
+type Orphan = (String, Option<i64>, String, i64);
+
+/// The foreign keys without a parent row.
+fn foreign_key_violations(conn: &Connection) -> Result<std::collections::BTreeSet<Orphan>> {
+    let mut stmt = conn.prepare("SELECT \"table\", rowid, parent, fkid FROM pragma_foreign_key_check")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<std::result::Result<_, _>>()?;
     Ok(rows)
 }
 
@@ -295,9 +300,10 @@ fn foreign_key_violations(conn: &Connection) -> Result<std::collections::BTreeSe
 /// can have such rows from before the migration; the rebuild does not cause them. The runner
 /// compares the rows, not their number, so a rebuild that repairs one row and breaks another
 /// fails too.
-fn foreign_keys_hold(conn: &Connection, before: std::collections::BTreeSet<(String, Option<i64>, String)>) -> Result<()> {
+fn foreign_keys_hold(conn: &Connection, before: std::collections::BTreeSet<Orphan>) -> Result<()> {
     let after = foreign_key_violations(conn)?;
-    let new: Vec<String> = after.difference(&before).map(|(table, rowid, parent)| format!("{table} row {} -> {parent}", rowid.map(|r| r.to_string()).unwrap_or_default())).collect();
+    let new: Vec<String> =
+        after.difference(&before).map(|(table, rowid, parent, fkid)| format!("{table} row {} -> {parent} (foreign key {fkid})", rowid.map(|r| r.to_string()).unwrap_or_default())).collect();
     if !new.is_empty() {
         return Err(crate::Error::Invalid(format!(
             "the table rebuild left {} new foreign key(s) without a parent row ({} existed before the rebuild, {} after it): {}",
@@ -383,6 +389,30 @@ mod tests {
         assert_eq!(guard_count(&c), guards);
         assert!(touch_archived(&c).is_err());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_rebuild_that_moves_an_orphan_to_another_foreign_key_of_the_row_fails() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // One row with two foreign keys to the same parent table. Before the rebuild, the first
+        // key has no parent row and the second key has one.
+        conn.execute_batch(
+            "CREATE TABLE fk_parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE fk_child (id INTEGER PRIMARY KEY, a INTEGER REFERENCES fk_parent(id), b INTEGER REFERENCES fk_parent(id));
+             INSERT INTO fk_parent (id) VALUES (1);
+             PRAGMA foreign_keys = OFF;
+             INSERT INTO fk_child (id, a, b) VALUES (1, 99, 1);
+             PRAGMA foreign_keys = ON;",
+        )
+        .unwrap();
+        // The rebuild repairs the first key and breaks the second: one orphan before and after,
+        // on the same row and parent table, but on another foreign key.
+        let sql = "UPDATE fk_child SET a = 1, b = 99 WHERE id = 1";
+        let err = migrate_with(&conn, &[(1, Migration::Rebuild { sql, check: no_check })], 1).unwrap_err().to_string();
+        assert!(err.contains("1 new foreign key") && err.contains("fk_child row 1 -> fk_parent"), "{err}");
+        let b: i64 = conn.query_row("SELECT b FROM fk_child WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(b, 1, "the failed rebuild rolls back");
     }
 
     #[test]
