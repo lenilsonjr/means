@@ -306,6 +306,28 @@ fn posted_duplicates_with_human_edits_review_or_shared_evidence_are_skipped() {
 }
 
 #[test]
+fn a_posted_duplicate_with_an_inter_vault_link_is_left_for_review() {
+    let f = fixture_with_rule("2026-08-19", true);
+    let mut c = f.db.conn();
+    // The rule-posted duplicate has a link to an entry of another entity.
+    let other = entities::create_entity(&mut c, "Sample Trading Ltd", "company", "GB", "BRL").unwrap();
+    let other_bank = accounts::ensure_account(&c, other.id, AccountType::Asset, &["Bank"], "bank", "BRL").unwrap();
+    let other_income = accounts::ensure_account(&c, other.id, AccountType::Income, &["Services"], "income", "BRL").unwrap();
+    let mut input = EntryInput::new(other.id, "2026-08-19".parse().unwrap());
+    input.postings = vec![PostingInput::new(other_bank.id, Decimal::new(123456, 2)), PostingInput::balancing(other_income.id)];
+    let linked = journal::create_entry(&mut c, input).unwrap();
+    let duplicate = journal::get_entry(&c, f.draft).unwrap();
+    means_core::intervault::link(&mut c, &duplicate.uid, &linked.uid, "service", "").unwrap();
+
+    // The rematch does not void with cascade: the line stays, and the note gives the refusal.
+    let preview = cross_source::rematch(&mut c, f.pluggy, None).unwrap();
+    assert!(preview.matches.is_empty(), "{preview:?}");
+    assert!(preview.notes.iter().any(|n| n.contains("inter-vault links") && n.contains("void the linked entries with cascade")), "{:?}", preview.notes);
+    assert_eq!(journal::get_entry(&c, f.draft).unwrap().status, EntryStatus::Posted);
+    assert_eq!(journal::get_entry(&c, linked.id).unwrap().status, EntryStatus::Posted);
+}
+
+#[test]
 fn posted_merge_rechecks_preview_and_rolls_back_reversal_if_audit_fails() {
     let f = fixture_with_rule("2026-08-21", true);
     let mut c = f.db.conn();

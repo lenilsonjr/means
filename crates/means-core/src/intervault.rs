@@ -210,11 +210,12 @@ pub(crate) fn link_group(conn: &Connection, entry_id: i64, date: Option<NaiveDat
     Ok(group)
 }
 
-/// The message of a void that the links refuse.
-pub(crate) fn refusal(entry: &JournalEntry, linked: &[LinkedEntry]) -> String {
+/// The message of a void that the links refuse. The message names no command or flag, because
+/// the CLI and gRPC give the cascade in different ways.
+pub fn refusal(entry: &JournalEntry, linked: &[LinkedEntry]) -> String {
     let list: Vec<String> = linked.iter().map(LinkedEntry::describe).collect();
     format!(
-        "entry #{} ({}) has inter-vault links to entries of other entities: {}; void them too with --cascade, or remove each link first with `means intervault unlink` to void only this entry",
+        "entry #{} ({}) has inter-vault links to entries of other entities: {}; void the linked entries with cascade, or remove each link first to void only this entry",
         entry.id,
         entry.uid,
         list.join("; ")

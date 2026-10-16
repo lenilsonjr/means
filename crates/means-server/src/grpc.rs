@@ -916,7 +916,21 @@ impl Means for MeansService {
         self.writable()?;
         let r = req.into_inner();
         let d = date_opt(&r.date)?;
-        let out = self.run(move |c| journal::void_entry(c, r.id, d, &r.reason)).await?;
+        // A link that is not void needs cascade. The refusal is a failed precondition: the
+        // caller can void with cascade or remove the links first.
+        let out = self
+            .run(move |c| {
+                let entry = journal::get_entry(c, r.id)?;
+                if !r.cascade && entry.status == EntryStatus::Posted {
+                    let linked = means_core::intervault::linked_entries(c, r.id, d)?;
+                    if !linked.is_empty() {
+                        return Ok(Err(means_core::intervault::refusal(&entry, &linked)));
+                    }
+                }
+                Ok(Ok(journal::review_void_by(c, r.id, d, &r.reason, true, r.cascade, "grpc")?.entry))
+            })
+            .await?
+            .map_err(Status::failed_precondition)?;
         Ok(Response::new(pb::JournalEntryResponse { entry: Some(entry_pb(&out)), counterpart: None }))
     }
 

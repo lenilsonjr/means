@@ -830,6 +830,11 @@ confirmation will delete a draft or void a posted duplicate. Copy its token only
 after reviewing every pair. Apply checks the preview against the current ledger in
 one transaction; changed books require a new preview.
 
+The command never voids with cascade. A posted duplicate with an inter-vault link
+that is not void stays as it is. The preview gives a note with the linked entries,
+as a void without cascade does. Void the linked entries with cascade, or remove the
+link, and then preview again.
+
 Matching requires the same bank account, signed native amount, and currency, with
 dates at most **five days apart** (the normal import matching window). This covers
 CSV value dates differing from Enable Banking booking dates. Both the older entry

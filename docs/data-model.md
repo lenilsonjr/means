@@ -314,7 +314,7 @@ The audit log records every new link, every status change and every removal.
 | Link, when either entry is a draft | The link is `draft`. |
 | Link, when both entries are posted | The link is `posted`. |
 | Post one entry of a draft link | The link stays `draft` until the other entry is posted too. Then it becomes `posted`. |
-| Void one entry, without cascade | The engine refuses the void and names each linked entry. Nothing changes. The CLI gives `invalid_input`. The preview lists the linked entries with the entity, the id, the date, the amount and the `locked` flag. |
+| Void one entry, without cascade | The engine refuses the void and names each linked entry. Nothing changes. The CLI gives `invalid_input`, and gRPC gives `FAILED_PRECONDITION`. The preview lists the linked entries with the entity, the id, the date, the amount and the `locked` flag. |
 | Void one entry, with cascade | The engine computes the link group once. It voids each other posted entry of the group once, in the same transaction, with the same reason. Each link of the group becomes `void`, with one audit event per link, also when the links make a cycle. A linked draft stays a draft. The audit events record the cascade and the actor. |
 | Preview a void with cascade | The preview never applies the cascade. It reverses the requested entry only and lists the linked entries with their `locked` flag. It saves nothing. |
 | Void with cascade, when the period of another entity is locked | The engine refuses the void with `locked_period` and names the entity. Nothing changes. Give a void date after the lock date, or unlock the period. |

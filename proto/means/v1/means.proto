@@ -417,7 +417,10 @@ message PostDraftRequest { int64 id = 1; repeated SplitInput splits = 2; optiona
 message ReviewPostingRequest { SimpleEntryInput capture = 1; PostDraftRequest categorize = 2; bool existing = 3; string tags = 4; string confirmation = 5; }
 message ReviewPostingResponse { JournalEntry entry = 1; string confirmation = 2; }
 
-message VoidJournalEntryRequest { int64 id = 1; string date = 2; string reason = 3; }
+// A void of an entry with inter-vault links that are not void needs cascade = true. The engine
+// then voids the posted linked entries of the link group in the same transaction and marks the
+// links void. Without cascade, the void fails with FAILED_PRECONDITION and names each linked entry.
+message VoidJournalEntryRequest { int64 id = 1; string date = 2; string reason = 3; bool cascade = 4; }
 message DeleteJournalEntryRequest { int64 id = 1; }
 message SetTagsRequest { int64 entry_id = 1; repeated string tags = 2; }  // replace-all; tags never touch the hash chain
 message ConfirmEntriesRequest { repeated int64 ids = 1; }  // stamp the review mark; edits confirm implicitly

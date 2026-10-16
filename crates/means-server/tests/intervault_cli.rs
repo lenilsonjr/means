@@ -130,7 +130,7 @@ fn a_cross_entity_void_is_refused_without_cascade() {
     let out = f.run(&["void", &f.a.id.to_string(), "--reason", "wrong lender", "--yes"], false);
     assert_eq!(out.status.code(), Some(1));
     let said = String::from_utf8_lossy(&out.stderr);
-    assert!(said.contains("Blue Harbor LLC") && said.contains(&f.b.uid) && said.contains("--cascade"), "{said}");
+    assert!(said.contains("Blue Harbor LLC") && said.contains(&f.b.uid) && said.contains("void the linked entries with cascade"), "{said}");
 
     let (refused, code) = f.json(&["entry", "void", &f.a.uid, "--reason", "wrong lender"], false);
     assert_eq!(code, 1);

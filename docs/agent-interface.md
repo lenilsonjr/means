@@ -326,13 +326,13 @@ The entries keep their postings. Without the link, they are not reconciled for i
 A void of an entry with an inter-vault link that is not void reaches the other entries of the link group. The group can include entries of more than one other entity.
 
 - The preview (`means void <ID>` without `--yes`, or `means entry void <uid> --dry-run`) lists them in `linked_entries`. It reverses the requested entry only, and `needs_cascade` is true. A preview with `--cascade` never applies the cascade either: it lists the linked entries with their `locked` flag and saves nothing.
-- Without `--cascade`, the apply fails with `invalid_input`. The message names each linked entry. Nothing changes.
+- Without `--cascade`, the apply fails with `invalid_input`. The message names each linked entry and says "void the linked entries with cascade, or remove each link first to void only this entry". Nothing changes. Over gRPC, `VoidJournalEntry` without `cascade` fails with `FAILED_PRECONDITION` and the same message. Set `cascade` to true in the request to void the link group.
 - With `--cascade`, the engine voids each posted linked entry in the same transaction, with the same reason, and marks the links `void`. A linked draft stays a draft. The lock date of each entity applies to its own reversal: a locked period fails with `locked_period` and names the entity.
 - To void one entry only, remove each link first with `means intervault unlink`. The lock date of the other entity then does not apply.
 
 Each linked entry has `link_uid`, `link_kind`, `entity_uid`, `entity_name`, `entry_id`, `entry_uid`, `date`, `status`, `amount` (the intercompany side now), `cascade_action` (`void` for a posted entry, `keep` for a draft), `locked` (a cascade reversal falls in a locked period) and `voided` (this void voided the entry).
 
-The engine computes the link group once. Each entry of the group gets one reversal, and each link gets one audit event, also when the links make a cycle. The audit event of a cascade void has `cascade` true and `linked_entry_uids`. The void event of each linked entry has `cascaded_from`, and the event of each link has `cascade` true and `voided_from`. `--actor A` (default `$USER`) goes on each of these events.
+The engine computes the link group once. Each entry of the group gets one reversal, and each link gets one audit event, also when the links make a cycle. The audit event of a cascade void has `cascade` true and `linked_entry_uids`. The void event of each linked entry has `cascaded_from`, and the event of each link has `cascade` true and `voided_from`. `--actor A` (default `$USER`) goes on each of these events. A gRPC cascade records the actor `grpc`.
 
 ## Close and filings
 

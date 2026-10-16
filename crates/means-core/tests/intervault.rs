@@ -658,3 +658,15 @@ fn a_cascade_preview_never_applies_and_shows_the_locked_entry() {
     let err = void_cascade(&b, &a, None, "wrong lender").unwrap_err();
     assert!(matches!(&err, Error::Locked(m) if m.contains("Example Services GmbH")), "{err:?}");
 }
+
+#[test]
+fn the_refusal_names_no_cli_flag() {
+    let b = books();
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-03", EntryStatus::Posted);
+    b.link(&a, &s, "loan").unwrap();
+    let err = journal::void_entry(&mut b.db.conn(), a.id, None, "wrong lender").unwrap_err();
+    let Error::Conflict(m) = err else { panic!("expected a conflict") };
+    assert!(m.contains("void the linked entries with cascade"), "{m}");
+    assert!(!m.contains("--") && !m.contains("means "), "{m}");
+}

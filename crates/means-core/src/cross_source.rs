@@ -80,6 +80,14 @@ fn disposable_entry(conn: &Connection, line: &StatementLine) -> Result<Option<Jo
         return Err(Error::Conflict(format!("entry #{id} has edits or other evidence/dependencies; review it manually")));
     }
     journal::check_lock(&entities::get_entity(conn, own.entity_id)?, own.date).map_err(|e| Error::Conflict(e.to_string()))?;
+    // A rematch never voids with cascade. A posted entry with inter-vault links that are not
+    // void gets the refusal of a void without cascade, and the line stays for a manual review.
+    if own.status == EntryStatus::Posted {
+        let linked = crate::intervault::linked_entries(conn, id, None)?;
+        if !linked.is_empty() {
+            return Err(Error::Conflict(crate::intervault::refusal(&own, &linked)));
+        }
+    }
     for p in &own.postings {
         if accounts::get_account(conn, p.account_id)?.closed_at.is_some() {
             return Err(Error::Conflict(format!("entry #{id} uses a closed account; review it manually")));
