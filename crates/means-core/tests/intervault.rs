@@ -670,3 +670,28 @@ fn the_refusal_names_no_cli_flag() {
     assert!(m.contains("void the linked entries with cascade"), "{m}");
     assert!(!m.contains("--") && !m.contains("means "), "{m}");
 }
+
+#[test]
+fn a_cascade_without_a_date_reverses_each_entry_on_its_own_date() {
+    let b = books();
+    let (third, third_bank, third_due) = third_entity(&b);
+    let a = b.parent_loan_entry("2026-03-02", EntryStatus::Posted);
+    let s = b.sub_loan_entry("2026-03-10", EntryStatus::Posted);
+    let t = b.entry(third, "2026-04-20", third_bank, "900.00", third_due, EntryStatus::Posted);
+    b.link(&a, &s, "loan").unwrap();
+    b.link(&s, &t, "loan").unwrap();
+    // The lock of the third entity falls between the date of S and the date of T. A reversal of
+    // T on its own date is open; a reversal of T on the date of S would be locked.
+    b.lock(third, "2026-03-31");
+
+    let preview = journal::review_void(&mut b.db.conn(), a.id, None, "wrong lender", false, true).unwrap();
+    assert!(preview.linked_entries.iter().all(|l| !l.locked), "{:?}", preview.linked_entries);
+
+    void_cascade(&b, &a, None, "wrong lender").unwrap();
+    for (entry, date) in [(&a, "2026-03-02"), (&s, "2026-03-10"), (&t, "2026-04-20")] {
+        let voided = b.get(entry);
+        assert_eq!(voided.status, EntryStatus::Void);
+        let reversal = journal::get_entry(&b.db.conn(), voided.reversed_by_id.unwrap()).unwrap();
+        assert_eq!(reversal.date, day(date), "reversal of #{}", entry.id);
+    }
+}
