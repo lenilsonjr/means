@@ -923,6 +923,24 @@ fn revalue(conn: &mut Connection, id: i64, rechain: bool, drafts: bool) -> Resul
     }
     check_mutation_lock(conn, &entry)?;
     let entity = entities::get_entity(conn, entry.entity_id)?;
+    let Some(mut prepared) = revaluation(conn, &entry, missing)? else { return Ok(false) };
+    let tx = conn.transaction()?;
+    let links = replacement_links(&tx, &entry, &mut prepared, None)?;
+    replace_postings(&tx, id, &prepared, links)?;
+    if rechain {
+        if let Some(seq) = entry.seq {
+            hashchain::rechain(&tx, entity.id, seq)?;
+        }
+    }
+    crate::audit::log(&tx, "journal_entries", id, "revalue", None, None)?;
+    tx.commit()?;
+    Ok(true)
+}
+
+/// The postings of an entry valued at the rates stored now, or None when the values do not
+/// change or a rate is still missing. It writes nothing.
+fn revaluation(conn: &Connection, entry: &JournalEntry, missing: bool) -> Result<Option<Vec<Prepared>>> {
+    let entity = entities::get_entity(conn, entry.entity_id)?;
     let inputs: Vec<PostingInput> = entry
         .postings
         .iter()
@@ -953,25 +971,26 @@ fn revalue(conn: &mut Connection, id: i64, rechain: bool, drafts: bool) -> Resul
         .collect();
     let has_balance = inputs.iter().any(|p| p.balance);
     let keep_closed: std::collections::HashSet<i64> = entry.postings.iter().map(|p| p.account_id).collect();
-    let mut prepared = prepare(conn, &entity, entry.date, &inputs, !has_balance, &keep_closed)?;
+    let prepared = prepare(conn, &entity, entry.date, &inputs, !has_balance, &keep_closed)?;
     if prepared.iter().any(|p| p.rate_source == "missing") {
-        return Ok(false);
+        return Ok(None);
     }
     let same = |p: &Posting, q: &Prepared| p.account_id == q.account.id && p.quantity == q.quantity && p.amount == q.amount && p.rate == q.rate && p.rate_source == q.rate_source;
     if !missing && entry.postings.len() == prepared.len() && entry.postings.iter().zip(&prepared).all(|(p, q)| same(p, q)) {
+        return Ok(None);
+    }
+    Ok(Some(prepared))
+}
+
+/// True when a revaluation of the draft at the rates stored now changes a value. It writes
+/// nothing. The revaluation report uses it to list only the drafts with tax events that a new
+/// rate would change.
+pub fn draft_would_change(conn: &Connection, id: i64) -> Result<bool> {
+    let entry = get_entry(conn, id)?;
+    if entry.status != EntryStatus::Draft {
         return Ok(false);
     }
-    let tx = conn.transaction()?;
-    let links = replacement_links(&tx, &entry, &mut prepared, None)?;
-    replace_postings(&tx, id, &prepared, links)?;
-    if rechain {
-        if let Some(seq) = entry.seq {
-            hashchain::rechain(&tx, entity.id, seq)?;
-        }
-    }
-    crate::audit::log(&tx, "journal_entries", id, "revalue", None, None)?;
-    tx.commit()?;
-    Ok(true)
+    Ok(revaluation(conn, &entry, false)?.is_some())
 }
 
 // ---------------------------------------------------------------------------

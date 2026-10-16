@@ -346,8 +346,9 @@ pub struct Revalued {
     pub fixed: usize,
     /// Drafts that had a rate and now have another one, for example an exact rate instead of a cross rate.
     pub drafts: usize,
-    /// Drafts with tax events that the pass left as they are. A tax event holds the base and the
-    /// tax in the functional currency of the draft, so a new value of the draft needs a review.
+    /// Drafts with tax events that the pass left as they are, although the rates stored now would
+    /// change their value. A tax event holds the base and the tax in the functional currency of
+    /// the draft, so a new value of the draft needs a review.
     pub skipped_tax_events: Vec<i64>,
     pub failed: usize,
     pub first_error: Option<String>,
@@ -393,6 +394,7 @@ pub fn revalue_missing(conn: &mut Connection) -> Result<Revalued> {
     // an archived entity stay as they are, as its posted entries do. A draft with tax events stays
     // too, and the report lists it.
     let mut drafts: Vec<i64> = Vec::new();
+    let mut taxed_drafts: Vec<i64> = Vec::new();
     {
         let mut stmt = conn.prepare(
             "SELECT DISTINCT e.id, EXISTS (SELECT 1 FROM tax_events t WHERE t.entry_id = e.id)
@@ -404,10 +406,17 @@ pub fn revalue_missing(conn: &mut Connection) -> Result<Revalued> {
         for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)))? {
             let (id, taxed) = row?;
             if taxed {
-                report.skipped_tax_events.push(id);
+                taxed_drafts.push(id);
             } else {
                 drafts.push(id);
             }
+        }
+    }
+    // A draft with tax events is listed only when the new rates would change its value. A
+    // draft that the lookup cannot value is listed too, for a review.
+    for id in taxed_drafts {
+        if crate::journal::draft_would_change(conn, id).unwrap_or(true) {
+            report.skipped_tax_events.push(id);
         }
     }
     for id in drafts {

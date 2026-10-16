@@ -419,6 +419,11 @@ fn the_draft_revaluation_skips_a_draft_with_tax_events_and_lists_it() {
     assert!(!tax::tax_events_for_entry(&c, draft.id).unwrap().is_empty());
     let before = amounts(&journal::get_entry(&c, draft.id).unwrap());
 
+    // A rate that does not change the value of the draft does not list it.
+    rates::set_price(&c, "GBP", "SGD", d("2026-03-05"), n("1.70"), "test").unwrap();
+    let report = rates::revalue_missing(&mut c).unwrap();
+    assert!(report.skipped_tax_events.is_empty(), "{:?}", report.skipped_tax_events);
+
     rates::set_price(&c, "USD", "SGD", d("2026-03-05"), n("1.35"), "test").unwrap();
     let report = rates::revalue_missing(&mut c).unwrap();
     assert_eq!(report.skipped_tax_events, vec![draft.id]);
